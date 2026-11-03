@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 启动 OPC 团队：一个 Herdr space，每个角色一个 tab，每个 tab 一个 agent 终端。
-# 用法：scripts/opc-up.sh [角色...]   # 不带参数 = 启动 roles.json 里所有已启用角色
+# 用法：scripts/opc-up.sh [--install] [角色...]
+#   不带角色 = 启动 roles.json 里所有已启用角色
+#   --install = 模板或启动器缺失时先跑安装脚本（默认不自动执行）
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
@@ -11,12 +13,23 @@ SPACE_NAME="$PREFIX 团队"
 command -v herdr-app >/dev/null || { echo "找不到 herdr-app" >&2; exit 1; }
 command -v hc        >/dev/null || { echo "找不到 hc" >&2; exit 1; }
 
+# 解析参数：--install 是显式选择，默认绝不自动执行安装脚本
+install_first=0
+requested=()
+for arg in "$@"; do
+  case "$arg" in
+    --install) install_first=1 ;;
+    -*) echo "未知参数：$arg" >&2; exit 1 ;;
+    *) requested+=("$arg") ;;
+  esac
+done
+
 # 本次启动哪些角色
-if [[ $# -eq 0 ]]; then
+if [[ ${#requested[@]} -eq 0 ]]; then
   roles=($(opc_roles))
 else
   roles=()
-  for r in "$@"; do
+  for r in "${requested[@]}"; do
     opc_role_exists "$r" || { echo "未知角色：${r}（见 roles.json）" >&2; exit 1; }
     opc_role_enabled "$r" || { echo "角色已停用：${r}（用 scripts/opc-role.sh enable $r 启用）" >&2; exit 1; }
     roles+=("$r")
@@ -24,7 +37,7 @@ else
 fi
 [[ ${#roles[@]} -gt 0 ]] || { echo "没有可启动的角色" >&2; exit 1; }
 
-# 模板或启动器缺失时自动安装（.opc/ 是生成物，不随仓库分发）
+# 模板或启动器缺失：默认 fail-closed，只有显式 --install 才执行安装脚本
 need_install=0
 for role in "${roles[@]}"; do
   if [[ ! -f "$(opc_templates_dir)/$PREFIX-$role.md" || ! -x "$ROOT/.opc/run/$role.sh" ]]; then
@@ -32,8 +45,13 @@ for role in "${roles[@]}"; do
   fi
 done
 if [[ $need_install -eq 1 ]]; then
-  echo "模板或启动器缺失，先安装（scripts/opc-install.sh）"
-  "$ROOT/scripts/opc-install.sh" || { echo "安装失败" >&2; exit 1; }
+  if [[ $install_first -eq 1 ]]; then
+    echo "模板或启动器缺失，按 --install 执行安装"
+    "$ROOT/scripts/opc-install.sh" || { echo "安装失败" >&2; exit 1; }
+  else
+    echo "模板或启动器缺失。先跑 scripts/opc-install.sh，或 opc-up.sh --install" >&2
+    exit 1
+  fi
 fi
 
 # 1. 找到或新建 space

@@ -27,7 +27,13 @@ scripts/opc-install.sh        # 生成模板、权限白名单、启动器
 scripts/opc-up.sh             # 启动所有已启用角色
 scripts/opc-status.sh         # 看状态
 scripts/opc-down.sh           # 停止
+
+scripts/opc-up.sh --install   # 模板/启动器缺失时先装再启动
 ```
+
+`opc-up.sh` 默认 **fail-closed**：缺模板或启动器就报错退出，不自动执行安装脚本。
+脚本属于执行面，agent 不可写（`scripts/` 不在任何角色的 `scope` 内），所以启动时
+也不能悄悄把它跑起来。
 
 也可以在 agent 里初始化：在该目录启动 Claude Code，输入 `/opc-init`。
 它会检查依赖、问你前缀/角色/CLI，改好 `roles.json` 再跑安装。
@@ -93,6 +99,7 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 - 放行 `hc send` / `hc read` / `hc wait`，**只限本实例前缀**（`Bash(hc send opc-*)`），
   不跨实例操作终端；名字带引号时不匹配，退回人工批准（fail-closed）
 - 放行写入 `Edit(./<自己子树>/**)`，路径是 cwd 相对，分发到任何目录都成立
+- `scripts/` 不在任何角色的 `scope` 内：脚本决定权限边界，只能由人改
 - `git` / `rm` / `sudo` 整类进 `deny`，任何模式都挡——前缀匹配绕得过变体
   （`git -C`、`rm -fr`），所以按命令整类封
 - 模式固定 `default`；不用 `acceptEdits`（会架空子树隔离），不用 `bypassPermissions`
@@ -113,6 +120,7 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 | agent 卡在 `blocked` | 权限白名单没生效，查 `.opc/settings-*.json` |
 | 停在「Do you trust this folder?」 | 信任确认是安全闸门，脚本不代按；在该 tab 手动确认，或 `hc keys <终端名> down enter` |
 | `hc run` 报名字被占用 | 同前缀已有实例在跑，`hc ls` 查看或换前缀 |
+| `opc-up` 报「模板或启动器缺失」 | 先跑 `opc-install.sh`，或 `opc-up.sh --install` |
 
 ## License
 
