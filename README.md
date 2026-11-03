@@ -87,9 +87,11 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 
 每个 claude 角色带一份 `.opc/settings-<角色>.json`，通过 `--settings` 加载：
 
-- 放行 `hc send` / `hc ls` / `hc read` / `hc templates` / `hc wait`
+- 放行 `hc send` / `hc read` / `hc wait`，**只限本实例前缀**（`Bash(hc send opc-*)`），
+  不跨实例操作终端；名字带引号时不匹配，退回人工批准（fail-closed）
 - 放行写入 `Edit(./<自己子树>/**)`，路径是 cwd 相对，分发到任何目录都成立
-- `git push` / `git reset --hard` / `rm -rf` 进 `deny`，任何模式都挡
+- `git` / `rm` / `sudo` 整类进 `deny`，任何模式都挡——前缀匹配绕得过变体
+  （`git -C`、`rm -fr`），所以按命令整类封
 - 模式固定 `default`；不用 `acceptEdits`（会架空子树隔离），不用 `bypassPermissions`
 
 > 为什么必须有白名单：不配时，agent 执行 `hc send` 会触发 Bash 审批并进入 `blocked`，
@@ -106,7 +108,7 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 |---|---|
 | `Executable not found in $PATH: "node"` | 重跑 `opc-install.sh` 生成启动器（走登录 shell 加载 mise） |
 | agent 卡在 `blocked` | 权限白名单没生效，查 `.opc/settings-*.json` |
-| 停在「Do you trust this folder?」 | `hc keys <终端名> down enter` |
+| 停在「Do you trust this folder?」 | 信任确认是安全闸门，脚本不代按；在该 tab 手动确认，或 `hc keys <终端名> down enter` |
 | `hc run` 报名字被占用 | 同前缀已有实例在跑，`hc ls` 查看或换前缀 |
 
 ## License

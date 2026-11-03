@@ -83,17 +83,10 @@ for role in "${roles[@]}"; do
   echo "  启动 $tname"
 done
 
-# 3. 首次在新目录启动会有信任对话框：只在检测到提示时按一次
-for role in "${roles[@]}"; do
-  tname="$PREFIX-$role"
-  for _ in $(seq 1 10); do
-    if hc read "$tname" 2>/dev/null | grep -qi "trust this folder"; then
-      hc keys "$tname" down enter >/dev/null 2>&1 || true
-      break
-    fi
-    sleep 0.5
-  done
-done
+# 3. 信任对话框是安全闸门，脚本不代按
+echo
+echo "若某个 tab 停在「Do you trust this folder?」，请在该 tab 里手动确认"
+echo "（或 hc keys <终端名> down enter）。脚本不会替你按。"
 
 echo
 echo "已启动：$(echo "${roles[@]}" | tr ' ' ', ')"

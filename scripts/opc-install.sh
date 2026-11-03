@@ -20,6 +20,12 @@ command -v jq >/dev/null || { echo "缺少 jq" >&2; exit 1; }
   echo "项目路径含空格：$ROOT —— hc 模板的 command 会被空格拆开，请把实例放到无空格路径。" >&2
   exit 1
 }
+# 路径会写进生成的启动器（单引号字符串），拒绝能逃出引号的字符
+case "$ROOT" in
+  *"'"*|*$'\n'*)
+    echo "项目路径不能包含单引号或换行：$ROOT" >&2
+    exit 1 ;;
+esac
 
 mkdir -p "$TEMPLATES" "$ROOT/.opc/run"
 printf '%s' "$PREFIX" > "$ROOT/.opc/prefix"
@@ -29,20 +35,40 @@ roles="$(opc_roles)"
 
 # 1. 生成 hc 模板与启动器（模板名全局唯一，带前缀）
 for role in $roles; do
+  [[ "$role" =~ ^[a-z][a-z0-9_-]{0,19}$ ]] || {
+    echo "角色名不合法：${role}（1-20 位 a-z 0-9 - _，以字母开头）" >&2
+    exit 1
+  }
   src="$ROOT/$(opc_role_template "$role")"
   [[ -f "$src" ]] || { echo "缺少角色简报：$src" >&2; exit 1; }
 
+  # cli 是单个可执行文件名或路径，不接受参数——它会被写进启动器
   cli="$(opc_role_cli "$role")"
+  [[ "$cli" =~ ^[A-Za-z0-9/._-]+$ ]] || {
+    echo "角色 $role 的 cli 不合法：${cli}（只允许单个可执行文件名或路径，不含参数）" >&2
+    exit 1
+  }
+
+  # 值走环境变量，shell 字符串是常量：配置内容不会被当成命令执行
   if [[ "$cli" == "claude" ]]; then
-    inner="exec claude --settings '$ROOT/.opc/settings-$role.json' --permission-mode default"
-  else
-    inner="exec $cli"
-  fi
-  cat > "$ROOT/.opc/run/$role.sh" <<EOF
+    cat > "$ROOT/.opc/run/$role.sh" <<EOF
 #!/bin/sh
 # 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
-exec /bin/zsh -lic "cd '$ROOT' && $inner"
+OPC_ROOT='$ROOT'
+OPC_SETTINGS='$ROOT/.opc/settings-$role.json'
+export OPC_ROOT OPC_SETTINGS
+exec /bin/zsh -lic 'cd "\$OPC_ROOT" && exec claude --settings "\$OPC_SETTINGS" --permission-mode default'
 EOF
+  else
+    cat > "$ROOT/.opc/run/$role.sh" <<EOF
+#!/bin/sh
+# 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
+OPC_ROOT='$ROOT'
+OPC_CLI='$cli'
+export OPC_ROOT OPC_CLI
+exec /bin/zsh -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI"'
+EOF
+  fi
   chmod +x "$ROOT/.opc/run/$role.sh"
 
   sed -e "s/{{PREFIX}}/$PREFIX/g" \
@@ -63,24 +89,30 @@ for role in $roles; do
   fi
   edit_rules='[]'
   for scope in $(opc_role_scope "$role"); do
+    # scope 必须是实例内的相对路径，不能借 .. 逃出去
+    case "$scope" in
+      /*|*..*|*"'"*|*'"'*|*" "*)
+        echo "角色 ${role} 的 scope 不合法：$scope" >&2
+        exit 1 ;;
+    esac
     edit_rules=$(printf '%s' "$edit_rules" \
       | jq --arg p "./$scope/**" '. + ["Edit(" + $p + ")"]')
   done
-  jq -n --argjson edit "$edit_rules" '{
+  jq -n --argjson edit "$edit_rules" --arg prefix "$PREFIX" '{
     "$schema": "https://json.schemastore.org/claude-code-settings.json",
     "permissions": {
       "defaultMode": "default",
       "allow": ([
-        "Bash(hc send:*)",
+        "Bash(hc send \($prefix)-*)",
         "Bash(hc ls:*)",
-        "Bash(hc read:*)",
+        "Bash(hc read \($prefix)-*)",
         "Bash(hc templates:*)",
-        "Bash(hc wait:*)"
+        "Bash(hc wait \($prefix)-*)"
       ] + $edit),
       "deny": [
-        "Bash(git push:*)",
-        "Bash(git reset --hard:*)",
-        "Bash(rm -rf:*)"
+        "Bash(git:*)",
+        "Bash(rm:*)",
+        "Bash(sudo:*)"
       ]
     }
   }' > "$ROOT/.opc/settings-$role.json"

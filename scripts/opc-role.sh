@@ -43,6 +43,11 @@ case "$cmd" in
 
     [[ "$name" =~ ^[a-z][a-z0-9_-]{0,19}$ ]] || {
       echo "角色名不合法：${name}（1-20 位 a-z 0-9 - _，以字母开头）" >&2; exit 1; }
+    [[ "$cli" =~ ^[A-Za-z0-9/._-]+$ ]] || {
+      echo "cli 不合法：${cli}（单个可执行文件名或路径，不含参数）" >&2; exit 1; }
+    case "$desc" in
+      *$'\n'*) echo "desc 不能包含换行" >&2; exit 1 ;;
+    esac
     opc_role_exists "$name" && { echo "角色已存在：$name" >&2; exit 1; }
 
     tpl="agents/opc-$name.md"
@@ -89,6 +94,11 @@ EOF
     scope_json=$(printf '%s' "$scope" | tr ',' '\n' | sed '/^$/d' \
       | jq -R . | jq -s .)
     for s in $(printf '%s' "$scope" | tr ',' '\n' | sed '/^$/d'); do
+      # scope 必须是实例内的相对路径
+      case "$s" in
+        /*|*..*|*"'"*|*'"'*|*" "*)
+          echo "scope 不合法：$s" >&2; exit 1 ;;
+      esac
       mkdir -p "$ROOT/$s"
     done
 
