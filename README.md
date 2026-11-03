@@ -29,6 +29,9 @@ scripts/opc-status.sh         # 看状态
 scripts/opc-down.sh           # 停止
 ```
 
+也可以在 agent 里初始化：在该目录启动 Claude Code，输入 `/opc-init`。
+它会检查依赖、问你前缀/角色/CLI，改好 `roles.json` 再跑安装。
+
 ## 一个实例长什么样
 
 ```
