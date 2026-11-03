@@ -24,12 +24,17 @@ else
 fi
 [[ ${#roles[@]} -gt 0 ]] || { echo "没有可启动的角色" >&2; exit 1; }
 
+# 模板或启动器缺失时自动安装（.opc/ 是生成物，不随仓库分发）
+need_install=0
 for role in "${roles[@]}"; do
-  [[ -f "$(opc_templates_dir)/$PREFIX-$role.md" ]] || {
-    echo "模板未安装：$PREFIX-${role}。先跑 scripts/opc-install.sh" >&2
-    exit 1
-  }
+  if [[ ! -f "$(opc_templates_dir)/$PREFIX-$role.md" || ! -x "$ROOT/.opc/run/$role.sh" ]]; then
+    need_install=1
+  fi
 done
+if [[ $need_install -eq 1 ]]; then
+  echo "模板或启动器缺失，先安装（scripts/opc-install.sh）"
+  "$ROOT/scripts/opc-install.sh" || { echo "安装失败" >&2; exit 1; }
+fi
 
 # 1. 找到或新建 space
 space_id=$(herdr-app ls | jq -r --arg n "$SPACE_NAME" '.spaces[] | select(.name==$n) | .id' | head -1)
