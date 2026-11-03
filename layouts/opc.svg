@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200">
+  <rect width="320" height="200" fill="#1e1e24"/>
+  <!-- 侧边栏 -->
+  <rect x="0" y="0" width="74" height="200" fill="#2a2a33"/>
+  <rect x="10" y="12" width="54" height="10" rx="3" fill="#3d3d4a"/>
+  <rect x="10" y="34" width="54" height="52" rx="4" fill="#33333d"/>
+  <rect x="10" y="92" width="54" height="52" rx="4" fill="#33333d"/>
+  <!-- tab 条 -->
+  <rect x="74" y="0" width="246" height="22" fill="#26262e"/>
+  <rect x="82" y="5" width="40" height="12" rx="3" fill="#4a6fa5"/>
+  <rect x="128" y="5" width="52" height="12" rx="3" fill="#3d3d4a"/>
+  <rect x="186" y="5" width="52" height="12" rx="3" fill="#3d3d4a"/>
+  <rect x="244" y="5" width="40" height="12" rx="3" fill="#3d3d4a"/>
+  <!-- 工作区 -->
+  <rect x="82" y="30" width="148" height="140" rx="6" fill="#15151a" stroke="#3d3d4a"/>
+  <!-- 知识库面板 -->
+  <rect x="238" y="30" width="76" height="140" rx="6" fill="#15151a" stroke="#3d3d4a"/>
+  <rect x="246" y="40" width="60" height="8" rx="2" fill="#3d3d4a"/>
+  <rect x="246" y="54" width="60" height="6" rx="2" fill="#2f2f39"/>
+  <rect x="246" y="66" width="48" height="6" rx="2" fill="#2f2f39"/>
+  <rect x="246" y="78" width="54" height="6" rx="2" fill="#2f2f39"/>
+  <rect x="246" y="90" width="42" height="6" rx="2" fill="#2f2f39"/>
+  <!-- 状态栏 -->
+  <rect x="74" y="182" width="246" height="18" fill="#26262e"/>
+</svg>

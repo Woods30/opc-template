@@ -1,0 +1,44 @@
+{
+  "roles": [
+    {
+      "name": "gm",
+      "enabled": true,
+      "cli": "claude",
+      "template": "agents/opc-gm.md",
+      "scope": [
+        "knowledge/decisions",
+        "knowledge/daily",
+        "knowledge/inbox"
+      ]
+    },
+    {
+      "name": "content",
+      "enabled": true,
+      "cli": "claude",
+      "template": "agents/opc-content.md",
+      "scope": [
+        "knowledge/content"
+      ]
+    },
+    {
+      "name": "growth",
+      "enabled": true,
+      "cli": "claude",
+      "template": "agents/opc-growth.md",
+      "scope": [
+        "knowledge/growth"
+      ]
+    },
+    {
+      "name": "dev",
+      "enabled": true,
+      "cli": "claude",
+      "template": "agents/opc-dev.md",
+      "scope": [
+        "knowledge/product",
+        "scripts",
+        "tools"
+      ]
+    }
+  ]
+}
