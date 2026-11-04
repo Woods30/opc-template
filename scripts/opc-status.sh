@@ -43,6 +43,9 @@ done
 echo
 echo "改角色：scripts/opc-role.sh list | enable <角色> | disable <角色> | add <角色>"
 echo
+echo "权限模式：default/manual=常规审批；acceptEdits=编辑自动放行；auto=分类器代审；"
+echo "          plan=只读；dontAsk=不弹窗、未放行一律拒绝；bypassPermissions=只剩 deny 与目录封锁"
+echo
 echo "CLI 能力差异（Skill 来源与权限模型）："
 for role in $(opc_all_roles); do
   cli="$(opc_role_cli "$role")"

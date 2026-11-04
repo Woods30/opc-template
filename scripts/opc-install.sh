@@ -54,26 +54,41 @@ for role in $roles; do
     echo "角色 $role 的 cli 不合法：${cli}（只允许单个可执行文件名或路径，不含参数）" >&2
     exit 1
   }
+  # cli 会被写进启动器并执行：只允许干净的绝对路径或 PATH 里的裸名字。
+  # 相对跳转（../）会让启动器指向别处，- 开头会被当成选项。
+  [[ "$cli" != -* ]] || {
+    echo "角色 $role 的 cli 不能以 - 开头：${cli}" >&2
+    exit 1
+  }
+  case "/$cli/" in
+    */../*) echo "角色 $role 的 cli 路径不能包含 ..：${cli}" >&2; exit 1 ;;
+  esac
 
-  # 值走环境变量，shell 字符串是常量：配置内容不会被当成命令执行。
-  # 每个 CLI 的权限与 Skill 语义不同，这里只做它真正支持的那一套：
-  #   claude —— settings.json 的 allow/ask/deny + permission-mode；Skill 走
-  #             permissions.allow 的 "Skill" 规则
-  #   codex  —— --sandbox / --ask-for-approval；没有 Skill 工具权限，Skill 由
-  #             .agents/skills/ 与 ~/.agents/skills/ 原生发现
-  #   其他   —— 不接管权限，装完给出提示，由 owner 自己确认该 CLI 的语义
-  cli_base="$(basename "$cli")"
-  if [[ "$cli_base" == "claude" ]]; then
-    mode="$(opc_role_field "$role" permissionMode)"
-    mode="${mode:-default}"
-    case "$mode" in
-      default|manual|auto|acceptEdits|plan|dontAsk) ;;
-      bypassPermissions)
-        echo "角色 $role 的 permissionMode 不能是 bypassPermissions（会架空全部权限）" >&2
-        exit 1 ;;
+  # 权限模式统一翻成各 CLI 自己的语义：OPC 不把 claude 的参数硬塞给别的 CLI。
+  # 口径在 lib.sh（opc_cli_permission_modes / opc_cli_permission_args），这里只调用。
+  #   claude —— --permission-mode <mode>，另有 settings-<角色>.json 托管规则
+  #   codex  —— --sandbox / --ask-for-approval / --approve-for-me /
+  #             --dangerously-bypass-approvals-and-sandbox
+  #   其他   —— 不接管权限，按该 CLI 默认跑，装完提示 owner 自己确认语义
+  mode="$(opc_role_field "$role" permissionMode)"
+  mode="${mode:-default}"
+  valid_modes="$(opc_cli_permission_modes "$cli")"
+  if [[ -n "$valid_modes" ]]; then
+    case " $valid_modes " in
+      *" $mode "*) ;;
       *) echo "角色 $role 的 permissionMode 不合法：${mode}" >&2; exit 1 ;;
     esac
-    cat > "$ROOT/.opc/run/$role.sh" <<EOF
+  fi
+  perm_args="$(opc_cli_permission_args "$cli" "$mode")"
+
+  cli_base="$(basename "$cli")"
+  # 只有 claude 走 settings-<角色>.json；别的 CLI 用各自的原生参数
+  if [[ "$cli_base" == "claude" ]]; then
+    extra_args='--settings "$OPC_SETTINGS"'
+  else
+    extra_args=''
+  fi
+  cat > "$ROOT/.opc/run/$role.sh" <<EOF
 #!/bin/sh
 # 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
 OPC_ROOT='$ROOT'
@@ -81,64 +96,17 @@ OPC_SETTINGS='$ROOT/.opc/settings-$role.json'
 OPC_CLI='$cli'
 export OPC_ROOT OPC_SETTINGS OPC_CLI
 # 用登录 shell 启动：CLI 常由 npm 或版本管理器装，只有交互登录环境的 PATH 里可见。
-# zsh → bash → sh 依次回退——不是所有发行版都装了 zsh，写死 /bin/zsh 会让角色起不来。
+# zsh → bash → sh 依次回退——不是所有发行版都装了 zsh，写死它的绝对路径会让角色起不来。
 for _sh in zsh bash sh; do
   _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
   case "\$_sh" in
-    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --settings "\$OPC_SETTINGS" --permission-mode $mode' ;;
-    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --settings "\$OPC_SETTINGS" --permission-mode $mode' ;;
+    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $extra_args' ;;
+    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $extra_args' ;;
   esac
 done
 echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
 exit 127
 EOF
-  elif [[ "$cli_base" == "codex" ]]; then
-    mode="$(opc_role_field "$role" permissionMode)"
-    mode="${mode:-default}"
-    # permissionMode 是 Claude 的概念，这里翻译成 Codex 的 sandbox + approval。
-    case "$mode" in
-      default|manual|auto|acceptEdits) sandbox="workspace-write"; approval="on-request" ;;
-      plan) sandbox="read-only"; approval="on-request" ;;
-      dontAsk) sandbox="workspace-write"; approval="never" ;;
-      bypassPermissions)
-        echo "角色 $role 的 permissionMode 不能是 bypassPermissions（会架空全部权限）" >&2
-        exit 1 ;;
-      *) echo "角色 $role 的 permissionMode 不合法：${mode}" >&2; exit 1 ;;
-    esac
-    cat > "$ROOT/.opc/run/$role.sh" <<EOF
-#!/bin/sh
-# 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
-OPC_ROOT='$ROOT'
-OPC_CLI='$cli'
-export OPC_ROOT OPC_CLI
-for _sh in zsh bash sh; do
-  _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
-  case "\$_sh" in
-    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --sandbox $sandbox --ask-for-approval $approval' ;;
-    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --sandbox $sandbox --ask-for-approval $approval' ;;
-  esac
-done
-echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
-exit 127
-EOF
-  else
-    cat > "$ROOT/.opc/run/$role.sh" <<EOF
-#!/bin/sh
-# 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
-OPC_ROOT='$ROOT'
-OPC_CLI='$cli'
-export OPC_ROOT OPC_CLI
-for _sh in zsh bash sh; do
-  _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
-  case "\$_sh" in
-    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI"' ;;
-    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI"' ;;
-  esac
-done
-echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
-exit 127
-EOF
-  fi
   chmod +x "$ROOT/.opc/run/$role.sh"
 
   sed -e "s/{{PREFIX}}/$PREFIX/g" \
@@ -191,12 +159,42 @@ for role in $roles; do
     edit_rules=$(printf '%s' "$edit_rules" \
       | jq --arg p "$pattern" '. + ["Edit(" + $p + ")"]')
   done
-  jq -n --argjson edit "$edit_rules" --argjson readonly "$readonly_rules" --arg prefix "$PREFIX" --arg root "$ROOT" '{
+  # 技能：只放行 owner 逐个批准的技能，生成精确的 Skill(名字) 规则。
+  # 不放行裸 Skill——技能 frontmatter 里的 allowed-tools 会在调用那一轮临时
+  # 预授权工具，裸 Skill 等于把角色的工具面交给任意技能。
+  skill_rules='[]'
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    [[ "$s" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || {
+      echo "角色 $role 的 approvedSkills 名字不合法：${s}" >&2
+      exit 1
+    }
+    skill_rules="$(printf '%s' "$skill_rules" | jq --arg n "$s" '. + ["Skill(" + $n + ")"]')"
+  done < <(opc_role_list "$role" approvedSkills)
+
+  # 角色级扩展：roles.json 里 per-role 的 allow / deny
+  extra_allow='[]'
+  while IFS= read -r r; do
+    [[ -n "$r" ]] || continue
+    extra_allow="$(printf '%s' "$extra_allow" | jq --arg r "$r" '. + [$r]')"
+  done < <(opc_role_list "$role" allow)
+  extra_deny='[]'
+  while IFS= read -r r; do
+    [[ -n "$r" ]] || continue
+    extra_deny="$(printf '%s' "$extra_deny" | jq --arg r "$r" '. + [$r]')"
+  done < <(opc_role_list "$role" deny)
+
+  jq -n --argjson edit "$edit_rules" --argjson readonly "$readonly_rules" \
+        --argjson skills "$skill_rules" --argjson extra_allow "$extra_allow" \
+        --argjson extra_deny "$extra_deny" \
+        --arg prefix "$PREFIX" --arg root "$ROOT" '{
     "$schema": "https://json.schemastore.org/claude-code-settings.json",
     "permissions": {
       "defaultMode": "default",
+      # 文件工具在任何权限模式下都拒绝写工作目录之外的路径（含 bypassPermissions）。
+      # 角色的「只能在实例里操作」由这条兜底，不靠 allow 规则——bypass 下 allow 无效。
+      "blockWritesOutsideWorkingDirectories": true,
       "allow": ([
-        "Skill",
         "Bash(hc send \($prefix)-*)",
         "Bash(hc ls:*)",
         "Bash(hc read \($prefix)-*)",
@@ -204,7 +202,7 @@ for role in $roles; do
         "Bash(hc templates:*)",
         "Bash(hc wait \($prefix)-*)",
         "Bash(hc --help)"
-      ] + $readonly + $edit),
+      ] + $skills + $readonly + $edit + $extra_allow),
       "ask": [
         "Bash(hc kill:*)",
         "Bash(hc server stop:*)",
@@ -225,12 +223,20 @@ for role in $roles; do
         "Bash(socat:*)",
         "Bash(unbuffer:*)"
       ],
-      "deny": [
+      # deny 规则在所有权限模式下都生效，bypassPermissions 也不例外——
+      # 这几道闸门是 bypass 模式下唯一还在拦的东西。
+      "deny": ([
         "Bash(git:*)",
         "Bash(rm:*)",
         "Bash(sudo:*)",
-        "Bash(hc keys:*)"
-      ]
+        "Bash(hc keys:*)",
+        "Read(~/.ssh/**)",
+        "Read(~/.aws/**)",
+        "Read(~/.gnupg/**)",
+        "Read(~/.config/gh/**)",
+        "Read(~/.netrc)",
+        "Read(~/.npmrc)"
+      ] + $extra_deny)
     }
   }' > "$ROOT/.opc/settings-$role.json"
 done
@@ -390,5 +396,18 @@ if [[ -n "$unmanaged" ]]; then
   echo
   echo "提示：以下角色的权限不由 OPC 托管：${unmanaged}"
   echo "      技能来源与审批语义见 knowledge/team.md「CLI 能力差异」。"
+fi
+# bypass 模式没有弹窗，也没有 allow 规则兜底：把还在拦的东西说清楚
+bypass_roles=""
+for role in $roles; do
+  mode="$(opc_role_field "$role" permissionMode)"
+  [[ "${mode:-default}" == "bypassPermissions" ]] && bypass_roles="${bypass_roles:+$bypass_roles, }$role"
+done
+if [[ -n "$bypass_roles" ]]; then
+  echo
+  echo "提示：以下角色跑在 bypassPermissions：${bypass_roles}"
+  echo "      该模式下 allow 规则不生效，仍然拦得住的只有：deny 规则、"
+  echo "      工作目录写入封锁、Claude Code 自己的保护路径。"
+  echo "      首次启动会弹一次风险确认——由 owner 本人在终端确认。"
 fi
 echo "下一步：scripts/opc-up.sh [角色...]"

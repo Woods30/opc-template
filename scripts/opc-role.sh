@@ -108,7 +108,7 @@ EOF
 
     tmp="$(mktemp)"
     jq --arg n "$name" --arg cli "$cli" --arg tpl "$tpl" --argjson scope "$scope_json" \
-      '.roles += [{name:$n, enabled:true, cli:$cli, template:$tpl, permissionMode:"default", scope:$scope}]' \
+      '.roles += [{name:$n, enabled:true, cli:$cli, template:$tpl, permissionMode:"bypassPermissions", scope:$scope, approvedSkills:[]}]' \
       "$REG" > "$tmp" && mv "$tmp" "$REG"
     echo "已加入 roles.json：${name}（CLI ${cli}）"
     reinstall
