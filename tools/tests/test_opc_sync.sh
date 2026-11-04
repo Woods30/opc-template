@@ -39,12 +39,20 @@ scripts/opc-sync.sh pull --from "$TPL" --no-install >/dev/null 2>&1
 
 say "opc-sync 场景测试"
 
-# ---- 0. Claude dontAsk 仍可调用已发现的 Skill ----
-jq '(.roles[] | select(.name == "gm") | .permissionMode) = "dontAsk"' \
+# ---- 0. 技能只放行 owner 逐个批准的，不放行裸 Skill ----
+# 技能 frontmatter 的 allowed-tools 会在调用那一轮临时预授权工具，
+# 裸 Skill 等于把角色的工具面交给任意技能，所以只放行精确的 Skill(名字)。
+jq '(.roles[] | select(.name == "gm") | .permissionMode) = "dontAsk"
+  | (.roles[] | select(.name == "gm") | .approvedSkills) = ["humanizer-zh"]' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
 XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
-skill_rule="$(jq -r '.permissions.allow[] | select(. == "Skill")' "$INST/.opc/settings-gm.json")"
-check "Claude dontAsk 明确允许 Skill" "Skill" "$skill_rule"
+check "批准的技能生成精确规则" "Skill(humanizer-zh)" \
+  "$(jq -r '.permissions.allow[] | select(. == "Skill(humanizer-zh)")' "$INST/.opc/settings-gm.json")"
+if jq -e '.permissions.allow | index("Skill")' "$INST/.opc/settings-gm.json" >/dev/null; then
+  bad "白名单里出现了裸 Skill 规则"
+else
+  ok "白名单里没有裸 Skill 规则"
+fi
 
 # Codex 没有 Claude 的 Skill 工具权限；它原生发现 .agents/skills 与 ~/.agents/skills。
 # 安装器要映射的是 approval/sandbox，不能把 Claude permissionMode 原样传给 Codex。
@@ -99,6 +107,73 @@ check "Codex default 映射为 on-request + workspace-write" \
 jq '
   (.roles[] | select(.name == "gm") | .cli) = "claude"
   | (.roles[] | select(.name == "gm") | .permissionMode) = "default"
+' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+
+# ---- 0b. bypassPermissions：零弹窗，但 deny 与目录封锁仍然生效 ----
+# bypassPermissions 下 allow 规则失效、deny 规则照旧生效，文件工具还额外被
+# 锁在工作目录内。注意：deny 清单不是 OS 沙箱，shell 子进程仍可能绕过命令名规则；
+# 这里只验证模版承诺的两层确实生成，不把它们冒充完整隔离。
+jq '(.roles[] | select(.name == "gm") | .permissionMode) = "bypassPermissions"' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+launcher="$(cat "$INST/.opc/run/gm.sh")"
+case "$launcher" in
+  *"--permission-mode bypassPermissions"*) ok "bypassPermissions 传给 claude" ;;
+  *) bad "bypassPermissions 没传给 claude（启动器：${launcher}）" ;;
+esac
+for d in "Bash(git:*)" "Bash(rm:*)" "Bash(sudo:*)" "Bash(hc keys:*)"; do
+  if jq -e --arg d "$d" '.permissions.deny | index($d)' "$INST/.opc/settings-gm.json" >/dev/null; then
+    ok "bypass 模式仍保留 deny：$d"
+  else
+    bad "bypass 模式丢了 deny：$d"
+  fi
+done
+check "写操作被锁在实例目录内" "true" \
+  "$(jq -r '.permissions.blockWritesOutsideWorkingDirectories' "$INST/.opc/settings-gm.json")"
+
+# 角色级扩展：roles.json 里可以给某个角色单独加 deny / allow
+jq '(.roles[] | select(.name == "gm") | .deny) = ["Bash(curl:*)"]' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+if jq -e '.permissions.deny | index("Bash(curl:*)")' "$INST/.opc/settings-gm.json" >/dev/null; then
+  ok "角色级 deny 扩展生效"
+else
+  bad "角色级 deny 扩展没生效"
+fi
+
+# Codex 的 bypass 等价物：跳过审批与沙箱
+jq --arg cli "$FAKE_CODEX" '
+  (.roles[] | select(.name == "gm") | .cli) = $cli
+  | (.roles[] | select(.name == "gm") | .permissionMode) = "bypassPermissions"
+' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+"$INST/.opc/run/gm.sh" </dev/null
+codex_args="$(join_args "$WORK/codex-args")"
+check "Codex bypass 映射为 dangerously-bypass-approvals-and-sandbox" \
+  "--dangerously-bypass-approvals-and-sandbox" "$codex_args"
+
+# Codex 的 auto 等价物：--approve-for-me
+jq '(.roles[] | select(.name == "gm") | .permissionMode) = "auto"' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+"$INST/.opc/run/gm.sh" </dev/null
+codex_args="$(join_args "$WORK/codex-args")"
+check "Codex auto 映射为 approve-for-me" \
+  "--approve-for-me --sandbox workspace-write" "$codex_args"
+
+# cli 路径里带相对跳转的也要拒绝：它会被写进启动器并被执行
+jq --arg cli "../evil" '(.roles[] | select(.name == "gm") | .cli) = $cli' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+if XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1; then
+  bad "带 .. 的 cli 路径被放行了"
+else
+  ok "带 .. 的 cli 路径被拒绝"
+fi
+
+jq '
+  (.roles[] | select(.name == "gm") | .cli) = "claude"
+  | (.roles[] | select(.name == "gm") | .permissionMode) = "default"
+  | del(.roles[] | select(.name == "gm") | .deny)
 ' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
 
 if scripts/opc-sync.sh check --from "$TPL" >/dev/null 2>&1; then
