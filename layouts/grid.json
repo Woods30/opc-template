@@ -1,0 +1,44 @@
+{
+  "id": "root",
+  "type": "row",
+  "titlebar": "none",
+  "traffic_lights": [
+    12,
+    16
+  ],
+  "background": "canvas",
+  "terminal_padding": [
+    8,
+    8
+  ],
+  "children": [
+    {
+      "id": "work",
+      "type": "block",
+      "content": {
+        "tab": "active",
+        "pane": {
+          "gap": 6,
+          "radius": 6,
+          "background": "background",
+          "border": {
+            "width": 1,
+            "color": "border"
+          },
+          "focus": {
+            "width": 1,
+            "color": "accent"
+          },
+          "header": {
+            "content": {
+              "mod": "pane"
+            },
+            "height": 24,
+            "position": "top",
+            "reveal": "always"
+          }
+        }
+      }
+    }
+  ]
+}

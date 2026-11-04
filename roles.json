@@ -5,10 +5,14 @@
       "enabled": true,
       "cli": "claude",
       "template": "agents/opc-gm.md",
+      "permissionMode": "default",
       "scope": [
+        "knowledge/business",
+        "knowledge/review",
         "knowledge/decisions",
         "knowledge/daily",
-        "knowledge/inbox"
+        "knowledge/inbox",
+        "knowledge/work/gm"
       ]
     },
     {
@@ -16,8 +20,11 @@
       "enabled": true,
       "cli": "claude",
       "template": "agents/opc-content.md",
+      "permissionMode": "default",
       "scope": [
-        "knowledge/content"
+        "knowledge/work/content",
+        "knowledge/business/品牌口径.md",
+        "knowledge/business/选题日历.md"
       ]
     },
     {
@@ -25,8 +32,10 @@
       "enabled": true,
       "cli": "claude",
       "template": "agents/opc-growth.md",
+      "permissionMode": "default",
       "scope": [
-        "knowledge/growth"
+        "knowledge/work/growth",
+        "knowledge/business/growth"
       ]
     },
     {
@@ -34,9 +43,11 @@
       "enabled": true,
       "cli": "claude",
       "template": "agents/opc-dev.md",
+      "permissionMode": "default",
       "scope": [
-        "knowledge/product",
-        "tools"
+        "knowledge/work/dev",
+        "knowledge/business/product/README.md",
+        "knowledge/business/product/已知问题.md"
       ]
     }
   ]

@@ -1,0 +1,946 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""发布前自检工具（preflight）——核对稿件与品牌口径、选题日历的一致性。
+
+一条命令读完两份源文件，逐项给出结论：
+
+    tools/preflight knowledge/business/wechat/2026-11-04-四个AI角色的组织设计.md
+
+规则来源（都从仓库文件里读，不写死在本脚本）：
+
+    - 禁用表述、术语表「不说什么」、作者人设的第一人称  → knowledge/business/品牌口径.md
+    - 稿件是否在日历、日历登记的主渠道与稿件路径        → knowledge/business/选题日历.md
+
+新增规则有两条路：改源文件（口径类规则自动跟随），或加一个 check 函数（代码类规则）。
+
+退出码：0 无硬性失败；1 有硬性失败；2 用法错误。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+
+DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BRAND_REL = os.path.join("knowledge", "business", "品牌口径.md")
+CALENDAR_REL = os.path.join("knowledge", "business", "选题日历.md")
+BUSINESS_REL = os.path.join("knowledge", "business")
+
+STATUS_OK = "ok"
+STATUS_FAIL = "fail"
+STATUS_WARN = "warn"
+STATUS_SKIP = "skip"
+
+# 「不把「A」说成「B」」里只禁 B，A 可以写
+RE_NOT_PUT_AS = re.compile(r"不把「([^」]+)」说成「([^」]+)」")
+RE_QUOTED = re.compile(r"「([^」]+)」")
+RE_TABLE_SEP = re.compile(r"^:?-{2,}:?$")
+
+
+# ---------- 基础读取 ----------
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def resolve_in_business(root, name):
+    """日历只登记文件名；在 knowledge/business/ 下按文件名查找。找不到返回 None。"""
+    target = os.path.basename(name)
+    for base, _dirs, files in os.walk(os.path.join(root, BUSINESS_REL)):
+        if target in files:
+            return os.path.join(base, target)
+    return None
+
+
+def section(text, name):
+    """取 '## name' 标题到下一个 '## ' 之间的正文（含标题行）。取不到返回空串。"""
+    pattern = re.compile(
+        r"^##[ \t]+" + re.escape(name) + r"[ \t]*$.*?(?=^##[ \t]+|\Z)",
+        re.M | re.S,
+    )
+    match = pattern.search(text)
+    return match.group(0) if match else ""
+
+
+def table_blocks(text):
+    """把文档里所有连续的表格行切成若干个二维列表。"""
+    blocks = []
+    current = []
+    for line in text.splitlines():
+        if line.strip().startswith("|"):
+            current.append(line)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def parse_table(lines):
+    """解析表格行，返回 (表头, 数据行列表)。只认以 | 开头的行，分隔行会被丢掉。"""
+    rows = []
+    for line in lines:
+        if not line.strip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and all(RE_TABLE_SEP.match(cell or "-") for cell in cells):
+            continue
+        rows.append(cells)
+    if not rows:
+        return [], []
+    return rows[0], rows[1:]
+
+
+# ---------- 从品牌口径抽取禁用词 ----------
+
+
+def forbidden_terms(brand_text):
+    """从品牌口径.md 抽取「不能写」的词，分两组返回。
+
+    术语表组（term_table）：术语表「不说什么」列的词，按顿号、斜杠切分。
+    口径组（other）：禁用表述段与作者人设段里被「不说 / 不称 / 不写」引号框住的词；
+                    「不把「A」说成「B」」只禁 B，A 可以写。
+
+    返回 (全部词, 术语表组, 口径组)。
+    """
+    table_terms = []
+    other_terms = []
+    seen = set()
+
+    def add(bucket, term):
+        term = term.strip()
+        if not term or term in seen:
+            return
+        seen.add(term)
+        bucket.append(term)
+
+    # 术语表「不说什么」列
+    _, rows = parse_table(section(brand_text, "术语表").splitlines())
+    for cells in rows:
+        if len(cells) < 2:
+            continue
+        for term in re.split(r"[、,，/]", cells[1]):
+            add(table_terms, term)
+
+    # 禁用表述段
+    for line in section(brand_text, "禁用表述").splitlines():
+        line = line.strip()
+        if not line.startswith("-"):
+            continue
+        swapped = RE_NOT_PUT_AS.search(line)
+        if swapped:
+            add(other_terms, swapped.group(2))
+            line = line.replace(swapped.group(0), "")
+        for quoted in RE_QUOTED.findall(line):
+            add(other_terms, quoted)
+
+    # 作者人设段：「不称「我们」」
+    for line in section(brand_text, "作者人设").splitlines():
+        for quoted in RE_QUOTED.findall(line):
+            if re.search(r"不(?:说|称|用|写|提)\s*「" + re.escape(quoted) + r"」", line):
+                add(other_terms, quoted)
+
+    return table_terms + other_terms, table_terms, other_terms
+
+
+# ---------- 解析选题日历 ----------
+
+
+@dataclass
+class CalendarRow:
+    cells: dict
+    raw: dict
+
+
+def parse_calendar(calendar_text):
+    """解析选题日历里的所有表格，返回 [(表头, 数据行列表), ...]。
+
+    日历里有三张表：选题（公众号主稿）、改写排期、发布计划。
+    表头名是识别依据，不依赖列的位置。
+    """
+    tables = []
+    for block in table_blocks(calendar_text):
+        header, rows = parse_table(block)
+        if not header:
+            continue
+        tables.append((header, [dict(zip(header, cells)) for cells in rows]))
+    return tables
+
+
+def calendar_main_channel(calendar_text):
+    """从日历的「主渠道与节奏」段里取主渠道名，取不到返回空串。"""
+    section_text = section(calendar_text, "主渠道与节奏")
+    match = re.search(r"主渠道\s*[：:]\s*([^\s（(、，,]+)", section_text)
+    return match.group(1).strip() if match else ""
+
+
+def brand_main_channel(brand_text):
+    """从品牌口径的「渠道口径」段里取主渠道名，取不到返回空串。"""
+    section_text = section(brand_text, "渠道口径")
+    match = re.search(r"主渠道\s*[：:]\s*([^\s（(、，,]+)", section_text)
+    return base_channel(match.group(1)) if match else ""
+
+
+def strip_backticks(value):
+    return value.strip().strip("`").strip()
+
+
+def base_channel(value):
+    """去掉括号注释与 markdown 标记，只留渠道名。"""
+    value = value.replace("*", "").strip()
+    value = re.sub(r"[（(][^）)]*[)）]", "", value)
+    return value.strip()
+
+
+# ---------- 解析稿件 ----------
+
+
+@dataclass
+class Draft:
+    path: str
+    exists: bool
+    title: str
+    channel: str
+    lines: list = field(default_factory=list)
+
+
+def parse_draft(path):
+    draft = Draft(path=path, exists=os.path.isfile(path), title="", channel="")
+    if not draft.exists:
+        return draft
+    text = read_text(path)
+    draft.lines = text.splitlines()
+    for line in draft.lines:
+        heading = re.match(r"^#[ \t]+(.+?)[ \t]*$", line)
+        if heading and not draft.title:
+            draft.title = heading.group(1).strip()
+        channel = re.match(
+            r"^[ \t]*>[ \t]*(?:\*\*)?\s*渠道\s*(?:\*\*)?\s*[：:][ \t]*(.+?)[ \t]*$", line
+        )
+        if channel and not draft.channel:
+            draft.channel = channel.group(1).strip()
+        front = re.match(r"^channel\s*[：:]\s*(.+?)[ \t]*$", line)
+        if front and not draft.channel:
+            draft.channel = front.group(1).strip()
+    return draft
+
+
+# ---------- 检查项 ----------
+
+
+@dataclass
+class Check:
+    id: str
+    title: str
+    status: str
+    detail: list = field(default_factory=list)
+    source: str = ""
+
+
+def scan_terms(draft, terms):
+    """在稿件正文里找禁用词，跳过围栏代码块。返回 (命中列表, 未命中列表)。"""
+    hits = []
+    missed = []
+    in_fence = False
+    for number, line in enumerate(draft.lines, 1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for term in terms:
+            if term in line:
+                snippet = stripped if len(stripped) <= 60 else stripped[:57] + "..."
+                hits.append((term, number, snippet))
+    for term in terms:
+        if not any(hit[0] == term for hit in hits):
+            missed.append(term)
+    return hits, missed
+
+
+def find_row(tables, draft):
+    """在日历所有表里按稿件路径找行；找不到再按标题找。
+
+    返回 (行, 匹配方式, 表类型)。表类型：topic（选题主稿表）/ rewrite（改写排期表）。
+    """
+    base = os.path.basename(draft.path)
+    for header, rows in tables:
+        kind = "rewrite" if "改写渠道" in header else ("topic" if "选题" in header else "other")
+        if kind == "other":
+            continue
+        for row in rows:
+            if strip_backticks(row.get("稿件路径", "")) == base:
+                return row, "path", kind
+    for header, rows in tables:
+        if "选题" not in header:
+            continue
+        for row in rows:
+            if row.get("选题", "").strip() == draft.title:
+                return row, "title", "topic"
+    return None, None, None
+
+
+def word_count(text):
+    """中文字符数 + 英文单词数 + 数字串数。围栏代码块不计入。"""
+    body = re.sub(r"```.*?```", "", text, flags=re.S)
+    body = re.sub(r"`[^`]*`", "", body)
+    cjk = len(re.findall(r"[一-鿿]", body))
+    latin = len(re.findall(r"[A-Za-z]+", body))
+    numbers = len(re.findall(r"\d+", body))
+    return cjk + latin + numbers
+
+
+def channel_word_limits(brand_text, channel):
+    """取某渠道的字数上限规则。
+
+    返回 (区间下限, 区间上限) —— 「N～M 字」这种单区间；
+    或 (None, [(标签, 上限), ...]) —— 多条上限（X：单条 ≤200、thread 每条 ≤140）。
+    取不到返回 (None, [])。
+    """
+    _, rows = parse_table(section(brand_text, "渠道口径").splitlines())
+    for cells in rows:
+        if len(cells) < 4:
+            continue
+        if base_channel(cells[0]) != channel:
+            continue
+        spec = cells[3]
+        match = re.search(r"(\d+)\s*[～~\-—]\s*(\d+)\s*字", spec)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+        limits = []
+        for label, limit in re.findall(r"([^\s；;，,]+)\s*≤\s*(\d+)\s*字", spec):
+            limits.append((label, int(limit)))
+        if limits:
+            return None, limits
+    return None, []
+
+
+def split_version_blocks(lines):
+    """把稿件按二级标题切成若干块，每块返回 (标题, 文本)。
+
+    改写稿常含「版本 A / 版本 B」等多版本，整篇计数没有意义。
+    """
+    blocks = []
+    current_title = ""
+    current = []
+    for line in lines:
+        heading = re.match(r"^##[ \t]+(.+?)[ \t]*$", line)
+        if heading:
+            if current:
+                blocks.append((current_title, current))
+            current_title = heading.group(1).strip()
+            current = []
+            continue
+        current.append(line)
+    if current:
+        blocks.append((current_title, current))
+    return blocks
+
+
+def count_thread_items(text):
+    """把 thread 正文按「**1/3**」这类序号标记切成单条。"""
+    parts = re.split(r"^\*\*\d+/\d+\*\*[ \t]*$", text, flags=re.M)
+    return [part for part in parts if part.strip()]
+
+
+def parse_tables(section_text):
+    """把一节里的所有表格切出来，返回 [(表头, 数据行), ...]。
+
+    一节里可能有多张表（口径表、CTA 表），不能只取第一张。
+    """
+    tables = []
+    for block in table_blocks(section_text):
+        header, rows = parse_table(block)
+        if header:
+            tables.append((header, rows))
+    return tables
+
+
+def strip_markdown(text):
+    """去掉 markdown 强调标记与首尾空白。"""
+    return text.replace("**", "").replace("*", "").strip()
+
+
+def required_phrases(cell):
+    """从一段 CTA 口径里抽出硬性必含话术。
+
+    口径单元格的写法是三段式，用 `→` 或 `；` 分段：
+      `**关注公众号**，后续更新第一时间看到 → 觉得有用就**点赞 / 在看** → 也欢迎**分享**`
+
+    只有**第一段的主 CTA** 算硬性项：
+      - 段内有粗体 → 取粗体短语；
+      - 没有粗体 → 取第一个逗号前的分句（如「关注公众号」）。
+    后续两段（点赞 / 在看、分享）属建议项，各渠道措辞不同，不做硬性判定；
+    「不得出现…」这类禁写段直接丢弃，由 cta_forbidden_terms 单独抽取。
+    """
+    for segment in re.split(r"[→⇒；;]", cell):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if RE_FORBIDDEN_LEAD.search(segment):
+            continue
+        bold = [strip_markdown(b) for b in re.findall(r"\*\*([^*]+)\*\*", segment)]
+        bold = [b for b in bold if b]
+        if bold:
+            return bold
+        head = re.split(r"[，,]", strip_markdown(segment))[0].strip()
+        return [head] if head else []
+    return []
+
+
+def phrase_matches(phrase, body):
+    """一句话术是否出现在正文里。
+
+    容差：去掉空白再比；并容忍尾部语气词（"关注后" → "关注"），
+    因为口径表里的粗体可能只是句子的一个片段。
+    """
+    candidates = {phrase}
+    stripped = re.sub(r"[后时了的呢吧]$", "", phrase)
+    if stripped:
+        candidates.add(stripped)
+    flat_body = re.sub(r"\s+", "", body)
+    for candidate in candidates:
+        if re.sub(r"\s+", "", candidate) in flat_body:
+            return True
+    return False
+
+
+RE_FORBIDDEN_LEAD = re.compile(r"(?:不得出现|不出现|不许出现|禁止|不写|不要出现|不使用)")
+
+
+def cta_forbidden_terms(section_text):
+    """从「渠道口径」一节的散文中抽禁写词。
+
+    写法如「正文不出现链接、二维码、邮箱」「也不写「订阅更新」字样」。
+    两条规则：
+      - 「不出现 / 不得出现 / 禁止」之后的顿号、逗号分隔的短词；
+      - 「不写 / 不用」之后被「」引起来的词。
+    """
+    terms = []
+    for line in section_text.splitlines():
+        stripped = line.strip().strip("|").strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for match in RE_FORBIDDEN_LEAD.finditer(stripped):
+            tail = stripped[match.end():]
+            tail = re.split(r"[；;。]", tail)[0]
+            for item in re.split(r"[、,，/]", tail):
+                item = strip_markdown(item).strip()
+                quoted = re.search(r"「([^」]+)」", item)
+                if quoted:
+                    if quoted.group(1) not in terms:
+                        terms.append(quoted.group(1))
+                    continue
+                item = item.strip("，。 ：:|")
+                # 去掉「也不写…」这类尾巴，只留纯名词
+                item = re.split(r"(?:也|并且|而且|同时|另外|此外)", item)[0]
+                if not item or len(item) > 8:
+                    continue
+                if re.search(r"[不没]", item):
+                    continue
+                if item not in terms:
+                    terms.append(item)
+    return terms
+
+
+def channel_cta_spec(brand_text, channel):
+    """从品牌口径「渠道口径」一节里取某渠道的 CTA 口径。
+
+    来源有两种，都在这一节里：
+      1. 表头含「CTA」的列（口径表直接加了 CTA 列）；
+      2. 表头含「CTA」的独立表格（口径表旁边单列一张 CTA 表）。
+
+    返回 {"required": [...], "forbidden": [...]}；两种来源都没有时返回 None。
+    """
+    section_text = section(brand_text, "渠道口径")
+    required = []
+    cta_cells = []
+    found = False
+
+    for header, rows in parse_tables(section_text):
+        cta_index = None
+        for index, name in enumerate(header):
+            if "CTA" in name:
+                cta_index = index
+                break
+        if cta_index is None:
+            continue
+        for cells in rows:
+            if len(cells) <= cta_index or base_channel(cells[0]) != channel:
+                continue
+            found = True
+            cta_cells.append(cells[cta_index])
+            required.extend(required_phrases(cells[cta_index]))
+
+    if not found:
+        return None
+
+    # 禁写词只看两处：本节表格之外的散文，以及该渠道自己的 CTA 单元格。
+    # 其他列（形态要求等）里的「不写…」不属于 CTA 口径，不参与判定。
+    prose = "\n".join(
+        line for line in section_text.splitlines() if not line.strip().startswith("|")
+    )
+    forbidden = cta_forbidden_terms(prose + "\n" + "\n".join(cta_cells))
+    return {"required": required, "forbidden": forbidden}
+
+
+def publish_body(draft):
+    """取出稿件的发布正文。
+
+    排除两块：
+      - 顶部元信息块（标题之后、正文之前的连续 `>` 引用行）；
+      - 「改写对照」小节（稿内注明非发布内容）。
+    """
+    body = []
+    in_meta = True
+    skipping_section = False
+    for line in draft.lines:
+        stripped = line.strip()
+        if in_meta:
+            if not stripped:
+                continue
+            if stripped.startswith(">"):
+                continue
+            if stripped.startswith("#"):
+                # 标题行之后仍处于元信息块，直到遇到第一行正文
+                body.append(line)
+                continue
+            in_meta = False
+        heading = re.match(r"^#{1,6}[ \t]+(.+?)[ \t]*$", stripped)
+        if heading:
+            skipping_section = "改写对照" in heading.group(1)
+            if skipping_section:
+                continue
+        if skipping_section:
+            continue
+        body.append(line)
+    return "\n".join(body)
+
+
+def cta_check(brand_text, draft, kind, row):
+    """CTA 话术一致性。
+
+    判定方式：
+      1. 口径里取到该渠道的 CTA 口径 → 逐条核对必含话术与禁写词；
+      2. 没取到 → 提示口径尚未补齐，本项不参与判定（警告）。
+
+    硬性失败的条件是「必含话术缺了」或「出现了禁写词」。
+    只取发布正文：顶部元信息块与「改写对照」小节不算。
+    """
+    if kind == "rewrite":
+        channel = base_channel(row.get("改写渠道", ""))
+    else:
+        channel = brand_main_channel(brand_text)
+    if not channel:
+        return Check("cta-consistency", "CTA 话术与渠道口径一致", STATUS_SKIP, ["拿不到渠道名，跳过"])
+
+    spec = channel_cta_spec(brand_text, channel)
+    if spec is None:
+        return Check(
+            "cta-consistency",
+            "CTA 话术与渠道口径一致",
+            STATUS_WARN,
+            ["品牌口径「渠道口径」一节里没有 {} 的 CTA 口径列（表头含「CTA」的列或表），content 补齐后本项自动生效".format(channel)],
+            os.path.join(BRAND_REL, "# 渠道口径"),
+        )
+
+    if not draft.exists:
+        return Check("cta-consistency", "CTA 话术与渠道口径一致", STATUS_SKIP, ["稿件不存在，跳过"])
+
+    body = publish_body(draft)
+    in_fence = False
+    visible = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            visible.append(line)
+    body = "\n".join(visible)
+
+    problems = []
+    for phrase in spec["required"]:
+        if not phrase_matches(phrase, body):
+            problems.append("缺必含话术「{}」".format(phrase))
+    for word in spec["forbidden"]:
+        if word and word in body:
+            problems.append("出现禁写内容「{}」".format(word))
+    detail = problems or [
+        "必含话术 {} 全部出现，禁写词 {} 均未出现".format(
+            "、".join(spec["required"]) or "（无）", "、".join(spec["forbidden"]) or "（无）"
+        )
+    ]
+    return Check(
+        "cta-consistency",
+        "CTA 话术与渠道口径一致",
+        STATUS_FAIL if problems else STATUS_OK,
+        detail,
+        os.path.join(BRAND_REL, "# 渠道口径 / CTA 口径"),
+    )
+
+
+def word_count_check(brand_text, draft, kind, row):
+    """字数是否落在渠道口径的限制内。
+
+    单区间（公众号 1800～3000、知乎 1500～2500）按全文计；
+    多条上限（X 单条 ≤200、thread 每条 ≤140）按版本块与 thread 单条分别计。
+    """
+    if kind == "rewrite":
+        channel = base_channel(row.get("改写渠道", ""))
+    else:
+        channel = brand_main_channel(brand_text)
+    if not channel:
+        return Check("word-count", "字数在渠道口径区间内", STATUS_SKIP, ["拿不到渠道名，跳过"])
+    low, high_or_limits = channel_word_limits(brand_text, channel)
+    if not draft.exists:
+        return Check("word-count", "字数在渠道口径区间内", STATUS_SKIP, ["稿件不存在，跳过"])
+
+    if low is not None:
+        count = word_count("\n".join(draft.lines))
+        ok = low <= count <= high_or_limits
+        return Check(
+            "word-count",
+            "字数在渠道口径区间内",
+            STATUS_OK if ok else STATUS_WARN,
+            ["全文约 {} 字，「{}」口径是 {}～{} 字".format(count, channel, low, high_or_limits)],
+            os.path.join(BRAND_REL, "# 渠道口径 / 字数口径"),
+        )
+
+    limits = high_or_limits
+    if not limits:
+        return Check(
+            "word-count",
+            "字数在渠道口径区间内",
+            STATUS_SKIP,
+            ["「{}」没有可解析的字数口径，跳过".format(channel)],
+        )
+
+    problems = []
+    checked = 0
+    for title, block in split_version_blocks(draft.lines):
+        limit = None
+        for label, value in limits:
+            if label in title:
+                limit = value
+                break
+        if limit is None:
+            continue
+        text = "\n".join(block)
+        if "thread" in title.lower() or re.search(r"\*\*\d+/\d+\*\*", text):
+            items = count_thread_items(text)
+            if items:
+                for index, item in enumerate(items, 1):
+                    count = word_count(item)
+                    checked += 1
+                    if count > limit:
+                        problems.append(
+                            "「{}」第 {} 条约 {} 字，超过 {} 字上限".format(title, index, count, limit)
+                        )
+                continue
+        count = word_count(text)
+        checked += 1
+        if count > limit:
+            problems.append("「{}」约 {} 字，超过 {} 字上限".format(title, count, limit))
+    if not checked:
+        return Check(
+            "word-count",
+            "字数在渠道口径区间内",
+            STATUS_SKIP,
+            ["「{}」的字数口径是 {}，但稿件里找不到对应的版本块，跳过".format(
+                channel, "、".join("{}≤{}字".format(l, v) for l, v in limits))],
+        )
+    return Check(
+        "word-count",
+        "字数在渠道口径区间内",
+        STATUS_OK if not problems else STATUS_WARN,
+        problems or ["已核对 {} 个版本块/单条，均在「{}」的字数上限内".format(checked, channel)],
+        os.path.join(BRAND_REL, "# 渠道口径 / 字数口径"),
+    )
+
+
+def run_checks(root, draft_path, channel_override=None):
+    brand_path = os.path.join(root, BRAND_REL)
+    calendar_path = os.path.join(root, CALENDAR_REL)
+    checks = []
+
+    for path in (brand_path, calendar_path):
+        if not os.path.isfile(path):
+            checks.append(
+                Check(
+                    "source-missing",
+                    "源文件存在",
+                    STATUS_FAIL,
+                    ["缺少文件：{}".format(path)],
+                    path,
+                )
+            )
+            return checks
+
+    brand_text = read_text(brand_path)
+    calendar_text = read_text(calendar_path)
+    draft = parse_draft(draft_path)
+    tables = parse_calendar(calendar_text)
+    terms, table_terms, other_terms = forbidden_terms(brand_text)
+
+    # 1. 稿件文件存在
+    if draft.exists:
+        checks.append(Check("draft-exists", "稿件文件存在", STATUS_OK, [draft.path], draft.path))
+    else:
+        checks.append(
+            Check("draft-exists", "稿件文件存在", STATUS_FAIL, ["找不到文件：{}".format(draft.path)], draft.path)
+        )
+
+    # 2. 稿件在选题日历中
+    row, matched_by, kind = find_row(tables, draft)
+    if row is None:
+        checks.append(
+            Check(
+                "calendar-entry",
+                "稿件在选题日历中",
+                STATUS_FAIL,
+                ["选题日历里没有匹配行（按路径 {} 与标题「{}」都没匹配到）".format(
+                    os.path.basename(draft.path), draft.title)],
+                calendar_path,
+            )
+        )
+    else:
+        label = row.get("选题") or row.get("改写源（公众号主稿）") or ""
+        detail = ["匹配行：{}".format(label)]
+        if matched_by == "title":
+            detail.append(
+                "标题对得上，但日历登记的稿件路径是「{}」，与实际文件不是同一个".format(
+                    strip_backticks(row.get("稿件路径", "")) or "空"
+                )
+            )
+            checks.append(Check("calendar-entry", "稿件在选题日历中", STATUS_FAIL, detail, calendar_path))
+        else:
+            checks.append(Check("calendar-entry", "稿件在选题日历中", STATUS_OK, detail, calendar_path))
+
+    # 3. 稿件路径存在且与日历登记一致
+    if row is None:
+        checks.append(
+            Check("draft-path", "稿件路径存在且与日历一致", STATUS_SKIP, ["没有匹配行，跳过"], calendar_path)
+        )
+    else:
+        registered = strip_backticks(row.get("稿件路径", ""))
+        problems = []
+        if not registered or registered == "—":
+            problems.append("日历里这一行的稿件路径是「{}」，没登记实际文件".format(registered or "空"))
+        else:
+            registered_path = resolve_in_business(root, registered)
+            if registered_path is None:
+                problems.append(
+                    "日历登记的稿件文件在 knowledge/business/ 下找不到：{}".format(registered)
+                )
+            if os.path.basename(draft.path) != os.path.basename(registered):
+                problems.append(
+                    "实际稿件 {} 与日历登记 {} 不是同一个文件".format(
+                        os.path.basename(draft.path), registered
+                    )
+                )
+        checks.append(
+            Check(
+                "draft-path",
+                "稿件路径存在且与日历一致",
+                STATUS_FAIL if problems else STATUS_OK,
+                problems or ["{} → {}".format(row.get("选题", "") or row.get("改写源（公众号主稿）", ""), registered)],
+                calendar_path,
+            )
+        )
+
+    # 4. 渠道一致
+    # 选题主稿表的渠道 = 主渠道（公众号）；改写排期表的渠道 = 该行「改写渠道」列。
+    if row is None:
+        checks.append(Check("channel-match", "稿件渠道与日历一致", STATUS_SKIP, ["没有匹配行，跳过"], calendar_path))
+    else:
+        if kind == "rewrite":
+            calendar_channel = base_channel(row.get("改写渠道", ""))
+            source = CALENDAR_REL + " / 改写排期"
+        else:
+            calendar_channel = brand_main_channel(brand_text) or calendar_main_channel(calendar_text)
+            source = os.path.join(BRAND_REL, "# 渠道口径")
+        draft_channel = base_channel(channel_override or draft.channel)
+        if not draft_channel:
+            checks.append(
+                Check(
+                    "channel-match",
+                    "稿件渠道与日历一致",
+                    STATUS_FAIL,
+                    ["稿件里找不到渠道标注（也没用 --channel 指定），无法核对"],
+                    draft.path,
+                )
+            )
+        elif draft_channel != calendar_channel:
+            checks.append(
+                Check(
+                    "channel-match",
+                    "稿件渠道与日历一致",
+                    STATUS_FAIL,
+                    ["稿件写「{}」，日历写「{}」".format(draft_channel, calendar_channel)],
+                    draft.path,
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "channel-match",
+                    "稿件渠道与日历一致",
+                    STATUS_OK,
+                    ["两侧都是「{}」".format(draft_channel)],
+                    draft.path,
+                )
+            )
+
+    # 5. 禁用表述与作者人设口径
+    hits, missed = scan_terms(draft, other_terms)
+    detail = [
+        "第 {} 行命中「{}」：{}".format(number, term, snippet) for term, number, snippet in hits
+    ]
+    checks.append(
+        Check(
+            "forbidden-term",
+            "未命中禁用表述",
+            STATUS_FAIL if hits else STATUS_OK,
+            detail or ["未命中 {} 个禁用词：{}".format(len(missed), "、".join(missed))],
+            os.path.join(BRAND_REL, "# 禁用表述 / # 作者人设"),
+        )
+    )
+
+    # 6. 术语表「不说什么」
+    table_hits, table_missed = scan_terms(draft, table_terms)
+    detail = [
+        "第 {} 行命中「{}」：{}".format(number, term, snippet)
+        for term, number, snippet in table_hits
+    ]
+    checks.append(
+        Check(
+            "term-misuse",
+            "术语表「不说什么」未被误用",
+            STATUS_FAIL if table_hits else STATUS_OK,
+            detail or ["未误用 {} 个术语：{}".format(len(table_missed), "、".join(table_missed))],
+            os.path.join(BRAND_REL, "# 术语表"),
+        )
+    )
+
+    # 7. 品牌口径是否还有未确认标记（警告，不影响退出码）
+    pending = [
+        (number, line.strip()[:50])
+        for number, line in enumerate(brand_text.splitlines(), 1)
+        if "【提案】" in line
+    ]
+    checks.append(
+        Check(
+            "brand-settled",
+            "品牌口径已去掉【提案】标记",
+            STATUS_WARN if pending else STATUS_OK,
+            ["品牌口径第 {} 行仍带【提案】：{}".format(n, s) for n, s in pending]
+            or ["品牌口径没有未确认标记"],
+            BRAND_REL,
+        )
+    )
+
+    # 8. 选题表有没有支柱列（警告）
+    topic_headers = [h for h, _ in tables if "选题" in h]
+    has_pillar = any("支柱" in cell for cell in topic_headers)
+    checks.append(
+        Check(
+            "calendar-pillar",
+            "选题日历有支柱列",
+            STATUS_OK if has_pillar else STATUS_WARN,
+            ["有支柱列"] if has_pillar else ["日历还没有「支柱」列，主轴唯一无法机器核对"],
+            CALENDAR_REL,
+        )
+    )
+
+    # 9. 字数是否在渠道口径范围内（警告；计数口径见实现文档）
+    checks.append(word_count_check(brand_text, draft, kind, row))
+
+    # 10. CTA 话术与渠道口径一致
+    checks.append(cta_check(brand_text, draft, kind, row))
+
+    return checks
+
+
+# ---------- 输出 ----------
+
+
+STATUS_LABEL = {
+    STATUS_OK: "通过",
+    STATUS_FAIL: "失败",
+    STATUS_WARN: "警告",
+    STATUS_SKIP: "跳过",
+}
+
+
+def render(checks, draft_path):
+    lines = ["preflight · 稿件 {}".format(draft_path)]
+    for check in checks:
+        lines.append("[{}] {}".format(STATUS_LABEL[check.status], check.title))
+        for item in check.detail:
+            lines.append("       - {}".format(item))
+        lines.append("       来源：{}".format(check.source))
+    passed = sum(1 for c in checks if c.status == STATUS_OK)
+    failed = sum(1 for c in checks if c.status == STATUS_FAIL)
+    warned = sum(1 for c in checks if c.status == STATUS_WARN)
+    skipped = sum(1 for c in checks if c.status == STATUS_SKIP)
+    lines.append(
+        "汇总：通过 {} 项 / 失败 {} 项 / 警告 {} 项 / 跳过 {} 项".format(passed, failed, warned, skipped)
+    )
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="发布前自检：核对稿件与品牌口径、选题日历的一致性",
+    )
+    parser.add_argument("draft", help="稿件路径（相对仓库根目录或绝对路径）")
+    parser.add_argument("--root", default=DEFAULT_ROOT, help="仓库根目录，默认取脚本所在仓库")
+    parser.add_argument("--channel", default=None, help="稿件渠道，稿件里没写渠道时手动指定")
+    parser.add_argument("--json", action="store_true", help="输出 JSON")
+    args = parser.parse_args(argv)
+
+    root = os.path.abspath(args.root)
+    draft_path = args.draft
+    if not os.path.isabs(draft_path):
+        draft_path = os.path.join(root, draft_path)
+
+    if not os.path.isfile(draft_path):
+        print("找不到稿件：{}".format(draft_path), file=sys.stderr)
+        return 2
+
+    checks = run_checks(root, draft_path, args.channel)
+    failed = any(c.status == STATUS_FAIL for c in checks)
+
+    if args.json:
+        payload = {
+            "draft": draft_path,
+            "checks": [
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "status": c.status,
+                    "detail": c.detail,
+                    "source": c.source,
+                }
+                for c in checks
+            ],
+            "failed": failed,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(render(checks, draft_path))
+
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

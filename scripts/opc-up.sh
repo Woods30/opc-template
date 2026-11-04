@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # 启动 OPC 团队：一个 Herdr space，每个角色一个 tab，每个 tab 一个 agent 终端。
-# 用法：scripts/opc-up.sh [--install] [角色...]
+# 用法：scripts/opc-up.sh [--install] [--yes] [--dry-run] [角色...]
 #   不带角色 = 启动 roles.json 里所有已启用角色
 #   --install = 模板或启动器缺失时先跑安装脚本（默认不自动执行）
+#   --yes = 已知会清空所有角色的会话上下文，owner 明确同意后才可加；非 TTY 调用必须带
+#   --dry-run = 只打印门槛判定与将要启动的角色，不执行任何启动动作
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
@@ -15,14 +17,36 @@ command -v hc        >/dev/null || { echo "找不到 hc" >&2; exit 1; }
 
 # 解析参数：--install 是显式选择，默认绝不自动执行安装脚本
 install_first=0
+assume_yes=0
+dry_run=0
 requested=()
 for arg in "$@"; do
   case "$arg" in
     --install) install_first=1 ;;
+    --yes) assume_yes=1 ;;
+    --dry-run) dry_run=1 ;;
     -*) echo "未知参数：$arg" >&2; exit 1 ;;
     *) requested+=("$arg") ;;
   esac
 done
+
+# 判定调用来源：owner 手动在自己的终端执行 = tty；agent / 管道 / CI 调用 = non-tty
+if [[ -t 0 && -t 1 ]]; then tty_flag=tty; else tty_flag=non-tty; fi
+
+# 护栏：启动 / 重启团队会清空所有角色的会话上下文，需要 owner 明确同意。
+# TTY（owner 在自己的终端手动执行）放行；非 TTY（agent / 脚本 / 管道调用）必须显式 --yes。
+# --dry-run 无副作用（只打印，不建 space、不起终端、不跑安装脚本），不受门槛限制。
+if [[ $dry_run -eq 0 && $assume_yes -eq 0 && $tty_flag == non-tty ]]; then
+  echo "拒绝执行：启动 / 重启 OPC 团队会清空所有角色的会话上下文，需要 owner 明确同意。" >&2
+  echo "当前调用没有 TTY（agent / 脚本 / 管道调用，tty_flag=${tty_flag}）。两种方式：" >&2
+  echo "  1) owner 在自己的终端手动执行本命令；" >&2
+  echo "  2) owner 明确同意后，在命令上显式加 --yes。" >&2
+  echo "依据：knowledge/decisions/2026-11-04-团队重启须owner确认.md" >&2
+  printf '%s\tscript=%s\tresult=blocked\ttty=%s\t--yes=%s\tsession=%s\tcwd=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "opc-up" "$tty_flag" "$assume_yes" \
+    "${CLAUDE_CODE_SESSION_ID:-owner-terminal}" "$PWD" >> "$ROOT/.opc/restart.log"
+  exit 2
+fi
 
 # 本次启动哪些角色
 if [[ ${#requested[@]} -eq 0 ]]; then
@@ -36,6 +60,27 @@ else
   done
 fi
 [[ ${#roles[@]} -gt 0 ]] || { echo "没有可启动的角色" >&2; exit 1; }
+
+# --dry-run：打印判定后退出，不建 space、不起终端、不跑安装脚本
+if [[ $dry_run -eq 1 ]]; then
+  echo "dry-run：门槛判定 tty_flag=${tty_flag}，--yes=${assume_yes}。"
+  if [[ $assume_yes -eq 0 && $tty_flag == non-tty ]]; then
+    echo "dry-run：去掉 --dry-run，本命令会被门槛拒绝（非 TTY 且未带 --yes）。"
+  else
+    echo "dry-run：去掉 --dry-run，本命令会被放行。"
+  fi
+  echo "dry-run：本次不执行任何启动动作。"
+  echo "将要启动：${roles[*]}"
+  printf '%s\tscript=%s\tresult=dry-run\ttty=%s\t--yes=%s\tsession=%s\tcwd=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "opc-up" "$tty_flag" "$assume_yes" \
+    "${CLAUDE_CODE_SESSION_ID:-owner-terminal}" "$PWD" >> "$ROOT/.opc/restart.log"
+  exit 0
+fi
+
+# 审计日志：真正执行启动时留痕（只记元数据，不记会话内容）
+printf '%s\tscript=%s\tresult=executed\ttty=%s\t--yes=%s\tsession=%s\tcwd=%s\n' \
+  "$(date '+%Y-%m-%d %H:%M:%S')" "opc-up" "$tty_flag" "$assume_yes" \
+  "${CLAUDE_CODE_SESSION_ID:-owner-terminal}" "$PWD" >> "$ROOT/.opc/restart.log"
 
 # 模板或启动器缺失：默认 fail-closed，只有显式 --install 才执行安装脚本
 need_install=0

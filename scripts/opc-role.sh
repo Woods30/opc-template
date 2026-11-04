@@ -31,7 +31,7 @@ case "$cmd" in
 
   add)
     name="${1:-}"; [[ -n "$name" ]] || usage; shift || true
-    cli="claude"; scope="knowledge/$name"; desc="TODO：这个角色负责什么"
+    cli="claude"; scope="knowledge/work/$name"; desc="TODO：这个角色负责什么"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --cli)   cli="${2:?}"; shift 2 ;;
@@ -99,12 +99,16 @@ EOF
         /*|*..*|*"'"*|*'"'*|*" "*)
           echo "scope 不合法：$s" >&2; exit 1 ;;
       esac
-      mkdir -p "$ROOT/$s"
+      # 文件 scope 不建目录；目录 scope 才建
+      case "$s" in
+        *.md|*.json|*.txt|*.png|*.svg|*.sh|*.py) ;;
+        *) mkdir -p "$ROOT/$s" ;;
+      esac
     done
 
     tmp="$(mktemp)"
     jq --arg n "$name" --arg cli "$cli" --arg tpl "$tpl" --argjson scope "$scope_json" \
-      '.roles += [{name:$n, enabled:true, cli:$cli, template:$tpl, scope:$scope}]' \
+      '.roles += [{name:$n, enabled:true, cli:$cli, template:$tpl, permissionMode:"default", scope:$scope}]' \
       "$REG" > "$tmp" && mv "$tmp" "$REG"
     echo "已加入 roles.json：${name}（CLI ${cli}）"
     reinstall
