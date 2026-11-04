@@ -115,7 +115,11 @@ def build_template_repo(base):
     with open(os.path.join(base, "scripts", "lib.sh"), "w", encoding="utf-8") as fh:
         fh.write('# 判断是不是模版仓库\nopc_is_template_repo() {\n  [[ -f "$1/.opc-template-repo" ]]\n}\n')
     with open(os.path.join(base, "scripts", "opc-install.sh"), "w", encoding="utf-8") as fh:
-        fh.write('#!/usr/bin/env bash\nopc_is_template_repo "$ROOT" && exit 2\n')
+        fh.write(
+            '#!/usr/bin/env bash\n'
+            'opc_is_template_repo "$ROOT" && exit 2\n'
+            'deny=(\n  "Bash(git:*)"\n  "Bash(rm:*)"\n  "Bash(sudo:*)"\n  "Bash(hc keys:*)"\n)\n'
+        )
     return base
 
 
@@ -230,12 +234,25 @@ class LintTestCase(unittest.TestCase):
 
     # ---- L8 角色 ----
 
-    def test_roles_with_bypass_permissions_fails(self):
+    def test_roles_with_bypass_permissions_is_allowed(self):
+        # bypassPermissions 是合法的权限模式：deny 规则在所有模式下都生效，
+        # allow 规则失效，所以 L8 不该再把它判成违规。
         roles = json.loads(json.dumps(ROLES))
         roles["roles"][0]["permissionMode"] = "bypassPermissions"
         self.write("roles.json", json.dumps(roles, ensure_ascii=False))
         checks = run_lint(self.repo)
-        self.assertEqual(lint.STATUS_FAIL, checks["L8"].status)
+        self.assertNotEqual(lint.STATUS_FAIL, checks["L8"].status)
+
+    def test_deny_list_missing_dangerous_command_fails(self):
+        # bypassPermissions 下 allow 规则失效，deny 清单是最后一道闸门：
+        # 少了 git / rm / sudo / hc keys 就必须报出来。
+        path = os.path.join(self.repo, "scripts", "opc-install.sh")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src.replace('"Bash(git:*)"\n', ""))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L15"].status)
 
     def test_roles_with_bad_scope_fails(self):
         roles = json.loads(json.dumps(ROLES))

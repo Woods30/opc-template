@@ -33,6 +33,10 @@ from dataclasses import dataclass, field
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY_REL = "sync-policy.json"
 MARKER_REL = ".opc-template-repo"
+
+# 这些 deny 规则在所有权限模式下都生效（bypassPermissions 也不例外），
+# 是角色权限的最后一道闸门，少一条都不能出。
+DANGEROUS_DENY = ["Bash(git:*)", "Bash(rm:*)", "Bash(sudo:*)", "Bash(hc keys:*)"]
 CACHED_POLICY_REL = os.path.join(".opc", "policy.json")
 
 STATUS_OK = "ok"
@@ -50,7 +54,8 @@ RE_LOCAL_PATH = re.compile(r"/User" + r"s/|/home/[a-z][a-z0-9_-]*/")
 RE_PLACEHOLDER = re.compile(r"TODO|<[^<>\n]{2,}>", re.IGNORECASE)
 RE_CHECKBOX = re.compile(r"^\s*-\s*\[[ xX]\]", re.MULTILINE)
 
-PERMISSION_MODES = {"default", "manual", "auto", "acceptEdits", "plan", "dontAsk"}
+PERMISSION_MODES = {"default", "manual", "auto", "acceptEdits", "plan", "dontAsk",
+                    "bypassPermissions"}
 RE_ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,19}$")
 
 
@@ -501,9 +506,6 @@ def check_l8_roles(root):
         if mode not in PERMISSION_MODES:
             c.status = STATUS_FAIL
             c.detail.append("角色 {} 的 permissionMode 不合法：{}".format(name, mode))
-        if mode == "bypassPermissions":
-            c.status = STATUS_FAIL
-            c.detail.append("角色 {} 用了 bypassPermissions".format(name))
         for scope in role.get("scope", []):
             if scope.startswith("/") or ".." in scope or " " in scope:
                 c.status = STATUS_FAIL
@@ -646,6 +648,29 @@ def check_l14_proposal_private_words(root, policy, words, words_path):
     return c
 
 
+def check_l15_deny_list(root):
+    """deny 清单是所有权限模式下唯一还在拦的东西（allow 规则在 bypass 下失效）。
+
+    少一条，角色就能在 bypass 下删改实例之外的东西；多一条裸 Skill，
+    任意技能的 allowed-tools 就能在调用那一轮临时预授权工具。
+    """
+    c = Check("L15", "危险动作仍在 deny 清单", source="scripts/opc-install.sh")
+    install = os.path.join(root, "scripts", "opc-install.sh")
+    code = code_without_comments(read_text(install))
+    if not code:
+        c.status = STATUS_FAIL
+        c.detail.append("读不到 scripts/opc-install.sh")
+        return c
+    for rule in DANGEROUS_DENY:
+        if rule not in code:
+            c.status = STATUS_FAIL
+            c.detail.append("deny 清单缺少 {}".format(rule))
+    if re.search(r'"Skill"', code):
+        c.status = STATUS_FAIL
+        c.detail.append("白名单里出现了裸 Skill 规则，只能用精确的 Skill(名字)")
+    return c
+
+
 def check_l16_instance(root, policy):
     c = Check("L16", "实例自洽", source="template.lock.json 与 roles.json")
     if os.path.isfile(os.path.join(root, MARKER_REL)):
@@ -700,6 +725,7 @@ def run_checks(root, strict=False, words_file=None):
             check_l10_policy_refs(root, policy),
             check_l11_guards(root),
             check_l12_no_local_paths(root, tracked),
+            check_l15_deny_list(root),
         ]
         if policy is not None:
             checks.append(check_l13_proposals(root, policy))
