@@ -726,7 +726,12 @@ cmd_adopt() {
   done < <(template_managed_files "$from" "$policy")
   while IFS= read -r rel; do
     [[ -n "$rel" ]] || continue
-    [[ -f "$from/$rel" ]] && opc_copy "$from/$rel" "$BASE/$rel"
+    if [[ -f "$from/$rel" ]]; then
+      opc_copy "$from/$rel" "$BASE/$rel"
+      # 老实例通常还没有 seeds/ 快照。只补缺失项，不覆盖已有快照；
+      # 后续 seed 判定才能区分「只有业务改了」与「骨架和业务都改了」。
+      [[ -f "$ROOT/$rel" ]] || opc_copy "$from/$rel" "$ROOT/$rel"
+    fi
   done < <(jq -r '.seeds[].source' "$policy")
 
   write_state "$from" "$policy" "adopted" "$commit"
@@ -734,7 +739,7 @@ cmd_adopt() {
   append_log "adopt：模版来源 ${from} @ ${commit}（未改动任何已有文件）"
   echo "已接入模版：${from}（${commit}）"
   echo "  写入了 .opc/instance.json、.opc/policy.json、基线快照与 template.lock.json"
-  echo "  没有覆盖任何已有文件。接着跑 scripts/opc-sync.sh check 看差异。"
+  echo "  补齐了缺失的 seeds/ 快照，没有覆盖任何已有文件。接着跑 scripts/opc-sync.sh check 看差异。"
 }
 
 cmd_log() {

@@ -126,7 +126,25 @@ else
 fi
 cp "$WORK/policy.bak" "$TPL/sync-policy.json"
 
-# ---- 13. 同步脚本自身：本轮暂存，下次运行生效 ----
+# ---- 13. 老实例 adopt：补齐种子快照但不覆盖业务 ----
+OLD="$WORK/old"
+mkdir -p "$OLD/scripts" "$OLD/knowledge/business"
+cp "$TPL/scripts/lib.sh" "$OLD/scripts/lib.sh"
+cp "$TEMPLATE/scripts/opc-sync.sh" "$OLD/scripts/opc-sync.sh"
+printf '老实例真实业务。\n' > "$OLD/knowledge/business/品牌口径.md"
+(
+  cd "$OLD" || exit 1
+  git init -q -b main
+  git add -A >/dev/null 2>&1
+  git -c user.name=test -c user.email=test@example.invalid commit -q -m old
+  scripts/opc-sync.sh adopt --from "$TPL" >/dev/null 2>&1
+)
+grep -q "老实例真实业务" "$OLD/knowledge/business/品牌口径.md" && ok "adopt 不覆盖老实例业务" || bad "adopt 覆盖了老实例业务"
+[[ -f "$OLD/seeds/knowledge/business/品牌口径.md" ]] && ok "adopt 补齐老实例的种子快照" || bad "adopt 没补种子快照"
+status="$(cd "$OLD" && scripts/opc-sync.sh check --from "$TPL" 2>&1 || true)"
+echo "$status" | grep -q "seed-diverged.*knowledge/business/品牌口径.md" && ok "老实例业务改动被正确识别" || bad "老实例业务被误报成无基线或双改"
+
+# ---- 14. 同步脚本自身：本轮暂存，下次运行生效 ----
 printf '\n# 模版对同步脚本的改动\n' >> "$TPL/scripts/opc-sync.sh"
 out="$(scripts/opc-sync.sh pull --from "$TPL" --no-install 2>&1)"
 echo "$out" | grep -q "deferred scripts/opc-sync.sh" && ok "同步脚本本轮不覆盖，改为暂存" || bad "同步脚本没有被识别为 deferred"
