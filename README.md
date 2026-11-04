@@ -20,23 +20,35 @@
 
 ## 快速开始
 
+**模版仓库不承载业务数据。** 它只装机制与占位骨架；业务内容一律长在**实例**里。
+所以第一步不是在本仓库里装，而是开一个实例：
+
 ```sh
-git clone <this-repo> ~/Documents/my-opc
+git clone <this-repo> ~/Projects/opc-template     # 模版
+scripts/opc-new.sh ~/Documents/my-opc             # 开实例
 cd ~/Documents/my-opc
 
-scripts/opc-install.sh        # 生成模板、权限白名单、启动器、目录骨架
 scripts/opc-up.sh             # 启动所有已启用角色
 scripts/opc-status.sh         # 看状态
 scripts/opc-down.sh           # 停止
-
-scripts/opc-up.sh --install   # 模板/启动器缺失时先装再启动
 ```
+
+`opc-new.sh` 会建好实例目录、初始化一个**独立的 git 仓库**（业务数据只进这个仓库）、
+写 `.opc/instance.json` 记录模版来源，然后跑一次安装。常用参数：
+
+```sh
+scripts/opc-new.sh ~/Documents/my-opc acme --prefix acme   # 指定前缀
+scripts/opc-new.sh ~/Documents/my-opc --dry-run            # 只看要做什么
+```
+
+**不要在模版仓库里跑 `opc-install.sh`**——安装脚本会检测到 `.opc-template-repo`
+标记并直接拒绝。模版里也不该出现任何业务文件，`scripts/opc-lint.sh` 会持续检查。
 
 `opc-up.sh` 默认 **fail-closed**：缺模板或启动器就报错退出，不自动执行安装脚本。
 脚本属于执行面，agent 不可写（`scripts/` 不在任何角色的 `scope` 内），所以启动时
 也不能悄悄把它跑起来。
 
-**推荐路径**：在该目录启动 Claude Code，输入 `/opc-init`。它会检查依赖、问前缀/角色/
+**推荐路径**：在实例目录启动 Claude Code，输入 `/opc-init`。它会检查依赖、问前缀/角色/
 CLI/频道，改好 `roles.json` 与 `channels.json`，跑安装，并跑一次端到端测试任务。
 
 ## 一个实例长什么样
@@ -47,13 +59,15 @@ channels.json        频道清单：id / 中文名 / 是否启用
 AGENTS.md            各角色共用的规约（Claude Code 自动加载）
 LESSONS.md           全局经验教训库（gm 维护；角色写各自的 work/<角色>/LESSONS.md）
 CLAUDE.md            一行：@AGENTS.md
+INSTANCE.md          本实例专属信息（前缀、频道、运行参数、待办）
 agents/              各角色的 hc 模板源（唯一事实来源）
+seeds/               占位骨架源：开实例时物化到 knowledge/business/
 knowledge/           唯一事实来源：
                      ├── business/  结果：频道成稿与物料、增长、产品、常驻口径
                      ├── work/      过程：每个角色一个子树（草稿、提案、日志）
                      ├── review/    待 owner 过审的对外发布内容
                      └── decisions/ daily/ inbox/
-scripts/             安装、启停、状态、角色管理（执行面，仅 owner 可写）
+scripts/             安装、启停、状态、角色管理、同步（执行面，仅 owner 可写）
 tools/               只读包装器与校验工具（执行面，仅 owner 可写）
 layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
 .opc/                安装脚本生成（不进版本库）
@@ -65,6 +79,65 @@ layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
 
 **结果与过程分开**：老板日常只看 `knowledge/business/`；`knowledge/work/` 里的草稿
 再多也不会干扰。命名规则：目录是结构用英文，文件是内容用中文。
+
+## 模版与实例
+
+这是本模版最重要的一条纪律：**模版仓库不承载业务数据**。
+
+```text
+~/Projects/opc-template     模版（公开仓库 Woods30/opc-template）
+                            只装机制与占位骨架；没有任何 knowledge/ 目录
+~/Documents/OPC             实例（本地 git，无远端）
+                            真实业务 + 实例配置 + 模版的机制副本
+```
+
+- 模版根目录的 `.opc-template-repo` 是标记。`opc-install.sh` 与 `opc-sync.sh`
+  检测到它就拒绝执行——模版不能变成实例。
+- 模版的占位骨架放在 `seeds/business/`，开实例时物化到实例的
+  `knowledge/business/`；物化之后那份文件就归业务所有。
+- 实例仓库建议**不推任何远端**；业务数据只在本机，另做一个本地裸库镜像备份。
+- 模版迭代后同步到实例：`scripts/opc-sync.sh check` 看差异，
+  `scripts/opc-sync.sh pull` 拉更新。冲突时业务文件不会被改动，产物在
+  `.opc/sync-conflicts/`。
+- 实例里发现模版要改，**不要直接改模版文件**：写提案到
+  `knowledge/work/<角色>/template-proposals/`，gm 汇总，owner 脱敏后搬进模版仓库。
+
+命令速查：
+
+```sh
+scripts/opc-sync.sh status     # 实例摘要：模版来源、上次同步、pinned 数
+scripts/opc-sync.sh check      # 这次的变更计划（只读）
+scripts/opc-sync.sh pull       # 拉取模版更新
+scripts/opc-sync.sh seeds      # 骨架差异；--merge <目标> 做三方合并
+scripts/opc-sync.sh mark <路径> # 固化本地定制，模版此后不覆盖
+```
+
+退出码：`0` 成功/无差异；`1` 有差异或失败；`2` 用法/环境错；`3` 有冲突
+（业务文件未被改动）。机制细节见 [`docs/同步机制.md`](docs/同步机制.md)。
+
+## 模版自检：opc-lint
+
+公开仓库必须保证没有真实业务。`scripts/opc-lint.sh` 就是这道闸：
+
+```sh
+scripts/opc-lint.sh                          # 在模版仓库根跑
+scripts/opc-lint.sh --strict                 # 警告也算违规
+scripts/opc-lint.sh --private-words ~/.config/opc/private-words.txt
+```
+
+检查的内容：模版里没有 `knowledge/**`、种子还是占位而不是真实内容、种子里没有
+具体日期/链接/大数、频道清单为空、角色注册表字段合法、策略覆盖了每个文件、
+守卫本身在位、模版里没有本机路径、提案格式完整。私词表**永远不进版本库**，
+放在实例的 `.opc/private-words.txt` 或 `~/.config/opc/private-words.txt`；
+CI 用 secret 注入，没有 secret 时该规则自动跳过而不是失败。
+
+`.github/workflows/lint.yml` 在每次 push 与 PR 上跑它，另跑两组测试：
+
+```sh
+python3 tools/tests/test_opc_lint.py    # lint 规则本身
+python3 tools/tests/test_preflight.py   # 发布前自检
+bash tools/tests/test_opc_sync.sh       # 同步机制的场景回归
+```
 
 ## 角色是配置
 
@@ -257,6 +330,10 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 前缀默认取目录名（slug 化），模板名、终端名、Herdr space 名都带前缀，互不冲突。
 实例路径**不要含空格**，否则 hc 模板的 `command` 会被拆开。
 
+一个模版可以开多个实例，每个实例有自己的前缀、自己的业务仓库、自己的
+`.opc/instance.json`（记着模版来源）。同步是**单向**的：模版 → 实例。
+实例之间互不影响——权限白名单按前缀限定，一个实例读不到另一个实例的终端。
+
 ## 排障
 
 | 现象 | 处理 |
@@ -272,6 +349,14 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 | `hc run` 报名字被占用 | 同前缀已有实例在跑，`hc ls` 查看或换前缀 |
 | `opc-up` 报「模板或启动器缺失」 | 先跑 `opc-install.sh`，或 `opc-up.sh --install` |
 | agent 执行 `opc-up.sh` / `opc-down.sh` 被拒 | 预期行为：非 TTY 且没带 `--yes` 会被脚本门槛 `exit 2`；owner 明确同意后加 `--yes` |
+| 在模版仓库里跑 `opc-install.sh` 被拒 | 预期行为：模版不承载业务。用 `scripts/opc-new.sh <实例目录> <前缀>` 开实例 |
+| `opc-lint.sh` 报「模版里出现 knowledge/ 下的文件」 | 有人把业务写进了模版仓库。把它挪回实例仓库，并删掉模版里那份 |
+| `opc-lint.sh` 报「种子没有占位了」 | 种子被填成了真实内容。恢复成占位骨架，真实内容放实例 |
+| `opc-sync.sh check` 报 `local-modified` | 实例本地改过、模版没动。要么提交本地改动，要么 `opc-sync.sh mark <路径>` 固化 |
+| `opc-sync.sh pull` 退出码 3（冲突） | 本地与模版都改了同一文件。业务文件**没被改动**；合并结果在 `.opc/sync-conflicts/`，手改后重跑 |
+| `opc-sync.sh pull` 说「将被覆盖的路径有未提交改动」 | 先提交或 stash 那些路径，或加 `--force` |
+| 同步后角色行为没变 | `agents/` 与 `AGENTS.md` 是提示词，改动要重启才生效：`scripts/opc-down.sh && scripts/opc-up.sh` |
+| `bash` 报 `xxx: unbound variable` 且变量后面跟着中文 | bash 会把中文全角字符吸进变量名。写成 `${xxx}` 再接中文 |
 
 ## License
 
