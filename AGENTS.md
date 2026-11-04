@@ -125,7 +125,10 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 
 ### 权限缺口
 
-角色跑在 `dontAsk` 下：白名单外的命令**直接失败**，不弹窗。被拒时按顺序处理：
+角色默认跑在 `bypassPermissions`：**没有弹窗，也没有 allow 规则兜底**。仍然拦得住的
+只有三层——`deny` 规则（`git` / `rm` / `sudo` / `hc keys` + 凭据路径）、
+文件工具的工作目录写入封锁（写不出实例目录）、Claude Code 自己的保护路径。
+被拒时按顺序处理：
 
 1. **先换写法**——用已放行的只读命令组合完成，或改用 `tools/` 里的包装器。
    不要反复重试同一条被拒的命令。
@@ -141,10 +144,13 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 3. gm 每天把它汇总到 `daily/<日期>.md` 的「权限缺口」小节；owner 批量处理后重跑
    `scripts/opc-install.sh`，受影响的角色重启一次即可。
 
-**Skill 被拒不算权限缺口**：`Skill` 已在 claude 角色的白名单里。若仍报
-`Permission to use Skill has been denied`，说明当前 CLI 下没有发现该技能——
-claude 查 `.claude/skills/` 与 `~/.claude/skills/`，codex 查 `.agents/skills/` 与
-`~/.agents/skills/`。改用等效的手工做法继续，不要反复请求调用。
+**技能被拒不算权限缺口**：技能只放行 `roles.json` 里该角色 `approvedSkills` 列出的
+名字（生成精确的 `Skill(<名字>)` 规则，不放行裸 `Skill`——技能的 `allowed-tools`
+会在调用那一轮临时预授权工具）。报「Permission to use Skill has been denied」时，
+让 gm 记下来、owner 把技能名加进 `approvedSkills` 后重跑安装。
+`bypassPermissions` 下 allow 规则不生效，技能本来就能调——被拒说明是技能本身没被发现
+（claude 查 `.claude/skills/` 与 `~/.claude/skills/`，codex 查 `.agents/skills/` 与
+`~/.agents/skills/`）。改用等效的手工做法继续，不要反复请求调用。
 
 **新增能力的三条固定路径**（白名单只能由 owner 改 `scripts/`）：
 
@@ -208,6 +214,10 @@ claude 查 `.claude/skills/` 与 `~/.claude/skills/`，codex 查 `.agents/skills
   来源不同（claude 看 `.claude/skills/` 与 `~/.claude/skills/`，codex 看 `.agents/skills/`
   与 `~/.agents/skills/`），你要用的技能在当前 CLI 下找不到时，改用等效的手工做法，
   不要反复请求调用权限。
+- **只动自己的地盘**：权限层锁住了「写不出实例目录」，但**没有**替你锁住「只写自己
+  那几棵子树」——那是你的责任。只写 `roles.json` 里 `scope` 列出的子树与
+  `knowledge/work/<角色>/`；`knowledge/business/` 的定稿、`scripts/`、`tools/`
+  都归 gm 与 owner，不要直接改（要改就走 gm）。
 
 ## 每日汇总
 

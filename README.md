@@ -256,9 +256,11 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 
 每个 claude 角色带一份 `.opc/settings-<角色>.json`，通过 `--settings` 加载：
 
-- **放行 `Skill`**：`dontAsk` 下任何未预先放行的 Skill 调用都会被**直接拒绝**（不弹窗），
-  所以白名单里必须有 `"Skill"` 一条，否则角色永远调不动任何技能。放行的是 Skill 调用
-  本身，技能内部再调用的文件 / Bash / 网络工具仍按各自规则判定
+- **技能逐个批准**：白名单里只放**精确**的 `Skill(<名字>)` 规则，名字来自 `roles.json`
+  里该角色的 `approvedSkills`。不放行裸 `Skill`——技能 frontmatter 里的
+  `allowed-tools` 会在调用那一轮临时预授权工具，裸 `Skill` 等于把角色的工具面
+  交给任意一个技能。`bypassPermissions` 下 allow 规则本就失效，技能照样能调，
+  但那种模式下 deny 规则是唯一还在拦的东西（见下）
 - 放行 `hc send` / `hc read` / `hc wait`，**只限本实例前缀**（`Bash(hc send opc-*)`），
   不跨实例操作终端；名字带引号时不匹配，退回人工批准（fail-closed）。**必须用终端名**
   （`hc read opc-content`），不能用 `hc ls` 里的地址（`t43`）——地址是本机全局的，
@@ -283,7 +285,14 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
   dev 的工具提案写在 `knowledge/work/dev/tools/`，owner 审过再搬进 `tools/`
 - `git` / `rm` / `sudo` / `hc keys` 整类进 `deny`，任何模式都挡——前缀匹配绕得过变体
   （`git -C`、`rm -fr`），所以按命令整类封。`hc keys` 必须封：角色能用它替自己按掉
-  审批框（按「1. Yes」），等于权限体系自废
+  审批框（按「1. Yes」），等于权限体系自废。**deny 规则在 `bypassPermissions` 下
+  依然生效**（官方原文：Deny rules block in every mode），是那种模式下唯一的闸门
+- 凭据路径进 `deny`：`Read(~/.ssh/**)`、`Read(~/.aws/**)`、`Read(~/.gnupg/**)`、
+  `Read(~/.config/gh/**)`、`Read(~/.netrc)`、`Read(~/.npmrc)`
+- **`permissions.blockWritesOutsideWorkingDirectories: true`**：文件工具在任何权限
+  模式下都拒绝写工作目录之外的路径（`bypassPermissions` 也不例外）。角色的
+  「只在实例里操作」由这条兜底，不靠 allow 规则——bypass 下 allow 无效。
+  注意它**不限制 shell 命令**：`bash` 里 `rm` 仍能写任意路径，拦它靠 deny 规则
 - **重启 / 停止团队**的操作进 `permissions.ask`（18 条规则，逐次弹审批等 owner 点头）：
   `scripts/opc-up.sh`、`scripts/opc-down.sh`（含 `bash` / `sh` / `./` / 绝对路径四种写法）、
   `hc kill`、`hc server stop`、`hc server restart`、`herdr-app do terminal.kill`，
@@ -302,19 +311,49 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 > 为什么必须有白名单：不配时，agent 执行 `hc send` 会触发 Bash 审批并进入 `blocked`，
 > 而 `hc send` 对 `blocked` 终端会拒绝投递——整个通知协议当场死锁。
 
-### 权限模式的推荐上线顺序
+### 权限模式
 
-模版默认 `permissionMode: "default"`——新实例先看得见弹窗，才能知道白名单缺什么。
+`roles.json` 里每个角色一个 `permissionMode`。OPC 只定义语义，各 CLI 用自己的参数
+表达（口径在 `scripts/lib.sh`，安装器、名册、状态脚本共用一份）：
 
-1. **`default` 跑通一轮**：初始化测试任务全程无弹窗，说明常用能力都在白名单里。
-2. **切 `dontAsk`**：把 `roles.json` 四个角色改成 `"dontAsk"`，重跑安装，重启团队。
-   语义是「不弹窗，未预先放行的一律拒绝」——不会把终端卡成 `blocked`。
-3. **观察并补白名单**：角色遇到拒绝会 `hc send` 报「权限缺口」；owner 改
-   `scripts/opc-install.sh` 的 `readonly_rules`，重跑安装，重启受影响角色。
+| 语义 | claude | codex | 还剩什么在拦 |
+|---|---|---|---|
+| `default` / `manual` | `--permission-mode default` | `--sandbox workspace-write --ask-for-approval on-request` | allow + ask + deny 全部照常 |
+| `acceptEdits` | `--permission-mode acceptEdits` | 同 `default` | 文件编辑自动放行，Bash 仍要批 |
+| `auto` | `--permission-mode auto` | `--approve-for-me --sandbox workspace-write` | 未命中规则的交给模型分类器判定 |
+| `plan` | `--permission-mode plan` | `--sandbox read-only --ask-for-approval on-request` | 只读探查 |
+| `dontAsk` | `--permission-mode dontAsk` | `--sandbox workspace-write --ask-for-approval never` | 只剩 allow / deny，不弹窗 |
+| `bypassPermissions` | `--permission-mode bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` | **只剩 deny 规则 + 目录封锁 + CLI 自己的保护路径** |
 
-**不建议 `auto`**：它把每条未命中规则的命令交给模型分类器判定，安全边界从「可审计」
-变成「不可复现」，且依赖远端服务（分类器不可用时全队停摆）。`bypassPermissions`
-会被安装脚本直接拒绝。
+其他 CLI 不接管：OPC 不认识它的审批语义，就不替它猜，按该 CLI 自己的默认跑，
+装完会提示「以下角色的权限不由 OPC 托管」。
+
+**模版默认 `bypassPermissions`**（`roles.json` 四个角色都是）。理由与代价：
+
+- 没有弹窗，角色不会卡在 `blocked`；分类器不可用时也不会全队停摆
+- **代价一**：allow 规则全部失效。角色的「只能写自己子树」不再由白名单保证，
+  只剩规约里的行为约束
+- **代价二**：官方定位是「只在容器 / VM 这类隔离环境里用」（*"Only use this mode in
+  isolated environments like containers or VMs"*）。本机直接开，角色能删改实例
+  之外的文件、能读写你的凭据目录
+- **代价三**：shell 不受目录封锁约束。`blockWritesOutsideWorkingDirectories` 只管
+  文件工具，`bash` 里的 `rm` / `curl` 仍能写任意路径
+
+因此 bypass 模式下真正生效的只有三层，全部保留：
+
+1. `deny` 规则（`git` / `rm` / `sudo` / `hc keys` + 凭据路径）——**所有模式都拦**
+2. `blockWritesOutsideWorkingDirectories`——文件工具写不出工作目录
+3. Claude Code 自己的保护路径（`.git` / `.claude`）
+
+要更严就把某个角色改回 `dontAsk`：语义是「不弹窗，未预先放行的一律拒绝」，
+allow 规则重新生效，作用域与只读白名单都回到白名单说了算。代价是白名单没覆盖的
+动作会直接失败——角色会 `hc send` 报「权限缺口」，owner 补 `readonly_rules` 后
+重跑安装、重启受影响角色。
+
+> `bypassPermissions` 首次交互启动会弹一次风险确认（owner 本人在终端确认，
+> 不要 agent 代按）；确认结果记在 `~/.claude/settings.json` 的
+> `skipDangerousModePermissionPrompt`，之后不再弹。以 root / sudo 启动会被
+> Claude Code 直接拒绝。
 
 ### 新增能力的三条路径
 
@@ -322,7 +361,7 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 |---|---|---|
 | 只读命令 | owner 改 `opc-install.sh` 的 `readonly_rules` | 重跑安装 + 重启角色 |
 | 新工具 `tools/<名字>` | dev 在 `knowledge/work/dev/tools/` 写提案，owner 审过搬进 `tools/` 并加 `Bash(./tools/<名字>:*)` | 重跑安装 + 重启角色 |
-| 新角色 | `scripts/opc-role.sh add` | 新角色默认 `default`，跑通一轮后再切 `dontAsk` |
+| 新角色 | `scripts/opc-role.sh add` | 新角色默认 `bypassPermissions`（与模版一致），scope 要自己填 |
 | 新频道 | 改 `channels.json` | 重跑安装 |
 
 **永远不要**通配放行 `Bash(./tools/*)`：那是一次性把所有工具（包括将来放进来的）
@@ -335,13 +374,15 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 
 | CLI | 技能来源 | 权限模型 | OPC 是否托管 |
 |---|---|---|---|
-| `claude` | `.claude/skills/`、`~/.claude/skills/`、插件 skills/ | `settings.json` 的 allow/ask/deny + `permission-mode`；Skill 调用需 allow 里有 `"Skill"` | ✅ 生成 `.opc/settings-<角色>.json` |
-| `codex` | `.agents/skills/`、`~/.agents/skills/`、`/etc/codex/skills/` | `--sandbox` + `--ask-for-approval`；没有 Skill 工具权限 | ❌ 只映射参数 |
+| `claude` | `.claude/skills/`、`~/.claude/skills/`、插件 skills/ | `settings.json` 的 allow/ask/deny + `--permission-mode`；Skill 调用需 allow 里有精确的 `Skill(<名字>)` | ✅ 生成 `.opc/settings-<角色>.json` |
+| `codex` | `.agents/skills/`、`~/.agents/skills/`、`/etc/codex/skills/` | `--sandbox` / `--ask-for-approval` / `--approve-for-me` / `--dangerously-bypass-approvals-and-sandbox`；没有 Skill 工具权限 | ❌ 只映射参数 |
 | 其他 | 由该 CLI 自行决定 | OPC 不接管 | ❌ 不生成设置 |
 
-Codex 角色的 `permissionMode` 会被翻译成它自己的语义：`dontAsk` → `--sandbox
-workspace-write --ask-for-approval never`，`default` / `manual` / `auto` /
-`acceptEdits` → `on-request`，`plan` → `--sandbox read-only`。
+Codex 角色的 `permissionMode` 会被翻译成它自己的语义（表见「权限模式」一节）：
+`dontAsk` → `--sandbox workspace-write --ask-for-approval never`，`default` /
+`manual` / `acceptEdits` → `on-request`，`auto` → `--approve-for-me`，
+`plan` → `--sandbox read-only`，`bypassPermissions` →
+`--dangerously-bypass-approvals-and-sandbox`。
 
 装完看 `knowledge/team.md` 的「CLI 能力差异」小节，那里按角色列明来源与模型；
 `scripts/opc-status.sh` 也会打印同一份信息。
@@ -365,7 +406,8 @@ workspace-write --ask-for-approval never`，`default` / `manual` / `auto` /
 |---|---|
 | `Executable not found in $PATH: "node"` | 重跑 `opc-install.sh` 生成启动器（走登录 shell 加载 mise） |
 | agent 命令被**直接拒绝**（不弹窗） | `dontAsk` 的正常表现：该命令不在白名单。角色应 `hc send <前缀>-gm` 报「权限缺口」，owner 改 `scripts/opc-install.sh` 后重跑安装 |
-| 角色调不动 Skill（`Permission to use Skill has been denied`） | `dontAsk` 下未放行的 Skill 直接被拒。检查 `.opc/settings-<角色>.json` 的 `permissions.allow` 里有没有 `"Skill"`；没有就重跑 `scripts/opc-install.sh`。另见：codex 角色没有 Skill 工具权限，技能只在 `.agents/skills/` 下被发现 |
+| 角色调不动 Skill（`Permission to use Skill has been denied`） | `dontAsk` 下未放行的 Skill 直接被拒。白名单只放行精确的 `Skill(<名字>)`：把技能名加进 `roles.json` 里该角色的 `approvedSkills`，重跑 `scripts/opc-install.sh` 再重启角色。`bypassPermissions` 下 allow 规则不生效，技能本来就能调。另见：codex 角色没有 Skill 工具权限，技能只在 `.agents/skills/` 下被发现 |
+| 角色能改实例之外的文件 | 检查 `.opc/settings-<角色>.json` 的 `permissions.blockWritesOutsideWorkingDirectories` 是否为 `true`。shell 里的写入不受它约束，靠 `deny` 规则拦 |
 | agent 卡在 `blocked` | 只在 `default` / `manual` 模式下出现；查 `.opc/settings-*.json` 与 `roles.json` 的 `permissionMode` |
 | 跑完命令后弹审批，像「权限没生效」 | 多半是命令尾巴上挂了第二段（`cmd; echo "exit=$?"`）——复合命令逐段判定，`echo` 不在白名单。改成一条命令只做一件事 |
 | 角色读队友屏幕时弹审批 | 用了 `hc ls` 里的地址（`hc read t43`）；白名单只放行终端名，改成 `hc read opc-content` |

@@ -36,7 +36,7 @@ command -v hc herdr-app claude jq
 如果 `.opc/` 已经存在，说明这个目录初始化过。问用户是要**重新安装**（会覆盖
 `.opc/` 与 `knowledge/team.md`，不动 `knowledge/` 业务内容）还是取消。
 
-## 3. 问四件事
+## 3. 问五件事
 
 一次问一个，等回答再问下一个：
 
@@ -45,10 +45,16 @@ command -v hc herdr-app claude jq
 3. **每个角色用哪个 CLI**：默认 `claude`。**选 `codex` 前先说清差异**——两者的
    技能来源不同（claude 看 `.claude/skills/` 与 `~/.claude/skills/`，codex 看
    `.agents/skills/` 与 `~/.agents/skills/`），权限模型也不同（claude 由 OPC 生成
-   `settings-<角色>.json` 并放行 `Skill`；codex 用 `--sandbox` 与
-   `--ask-for-approval`，OPC 只做参数映射，不生成白名单）。同一个技能要两边都能用，
-   得在两处各放一份。
-4. **内容频道清单**：默认 `channels.json` 里现有的；没有文件时问用户要哪几个频道
+   `settings-<角色>.json`；codex 用 `--sandbox` / `--ask-for-approval` /
+   `--approve-for-me` / `--dangerously-bypass-approvals-and-sandbox`，OPC 只做参数映射，
+   不生成白名单）。同一个技能要两边都能用，得在两处各放一份。
+4. **权限模式**：默认 `bypassPermissions`（模版默认）。选之前说清代价——该模式下
+   **allow 规则不生效**，仍然拦得住的只有 deny 规则（`git`/`rm`/`sudo`/`hc keys`
+   与凭据路径）、文件工具的工作目录写入封锁、CLI 自己的保护路径；官方定位是
+   「只在容器 / VM 这类隔离环境里用」。想更严就选 `dontAsk`：不弹窗，未预先放行的
+   一律拒绝，作用域与只读白名单重新说了算，代价是白名单没覆盖的动作会直接失败。
+   选完把 `permissionMode` 写进 `roles.json`。
+5. **内容频道清单**：默认 `channels.json` 里现有的；没有文件时问用户要哪几个频道
    （公众号 / X / 小红书 / 抖音 / 知乎 …）。每个频道要一个英文 id（小写 slug）和一个
    中文显示名；暂不做的频道写 `enabled: false`。
 
@@ -93,6 +99,10 @@ scripts/opc-install.sh <前缀>
 - 不得为了「验证配置是否生效」「刷新权限」而重启团队；
 - owner 同意后，**由 owner 在自己的终端执行** `scripts/opc-up.sh`，agent 不代为执行；
 - 本 skill 不得批量重启、不得把重启当作安装后的自动步骤。
+
+**`bypassPermissions` 首次启动会弹一次风险确认**：owner 要在自己终端里手动确认，
+agent 不得代按（`hc keys` 也在 deny 清单里，代按不了）。确认结果记在
+`~/.claude/settings.json`，之后不再弹。
 
 ## 边界
 
