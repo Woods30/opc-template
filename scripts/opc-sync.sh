@@ -286,6 +286,10 @@ compute_plan() {
       echo "seed-update|$trel|骨架有改进，业务没动过，直接升级"
       continue
     fi
+    if [[ "$tpl_hash" == "$snap_hash" ]]; then
+      echo "seed-diverged|$trel|业务已改，模版骨架未动（不用管）"
+      continue
+    fi
     echo "seed-diff|$trel|骨架有改进且业务已改，需要人工合并（seeds --merge）"
   done
 
@@ -396,7 +400,7 @@ apply_plan() {
         srel="$(jq -r --arg t "$rel" '.seeds[] | select(.target == $t) | .source' "$policy")"
         [[ "$dry_run" == "1" ]] || opc_copy "$src/$srel" "$ROOT/$srel"
         ;;
-      seed-diff|seed-unknown)
+      seed-diff|seed-unknown|seed-diverged)
         if [[ "$dry_run" == "1" ]]; then echo "  [计划] $status $rel"; continue; fi
         echo "  $status $rel —— $detail"
         ;;
@@ -661,6 +665,10 @@ cmd_seeds() {
     if [[ -f "$snap" && "$(opc_hash_of "$ours")" == "$(opc_hash_of "$snap")" ]]; then
       echo "[可自动升级] ${trel}（业务没动过，模版骨架有改进）"
       diff -u "$ours" "$tpl" | sed 's/^/    /' || true
+      continue
+    fi
+    if [[ -f "$snap" && "$(opc_hash_of "$tpl")" == "$(opc_hash_of "$snap")" ]]; then
+      echo "[业务已改] ${trel}（模版骨架没动，无需处理）"
       continue
     fi
     echo "[需人工合并] ${trel}（业务已改，模版骨架也有改进）"
