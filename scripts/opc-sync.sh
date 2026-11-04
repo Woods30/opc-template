@@ -532,17 +532,28 @@ cmd_check() {
   ACTIVE_SOURCE="$src"
   policy="$(load_policy "$src")"
   validate_policy "$policy" "$src"
-  local plan
+  local plan actionable="" status rel detail
   plan="$(compute_plan "$src" "$policy" "$STATE" "")"
-  if [[ -z "$plan" ]]; then
-    echo "没有差异：实例已是模版的最新状态"
+  # identical、seed-identical、seed-diverged（只有业务改了）以及本地 pin/定制
+  # 都不需要同步处理。check 只报告模版侧真的有变化或缺基线/冲突的项，
+  # 否则日常开工检查会永远退出 1。
+  while IFS='|' read -r status rel detail; do
+    case "$status" in
+      add|update|conflict|deferred|seed-add|seed-update|seed-diff|seed-unknown|config-add)
+        actionable+="${status}|${rel}|${detail}"$'\n'
+        ;;
+    esac
+  done <<< "$plan"
+  actionable="${actionable%$'\n'}"
+  if [[ -z "$actionable" ]]; then
+    echo "没有待处理差异：模版托管文件已同步；业务自有改动保持不动"
     return 0
   fi
   printf '%-16s %-40s %s\n' "状态" "路径" "说明"
   while IFS='|' read -r status rel detail; do
     [[ -n "$status" ]] || continue
     printf '%-16s %-40s %s\n' "$status" "$rel" "$detail"
-  done <<< "$plan"
+  done <<< "$actionable"
   return 1
 }
 

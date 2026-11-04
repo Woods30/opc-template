@@ -34,6 +34,12 @@ scripts/opc-sync.sh pull --from "$TPL" --no-install >/dev/null 2>&1
 
 say "opc-sync 场景测试"
 
+if scripts/opc-sync.sh check --from "$TPL" >/dev/null 2>&1; then
+  ok "完全同步后 check 退出 0，不把 identical 当差异"
+else
+  bad "完全同步后 check 仍报告差异"
+fi
+
 # ---- 1. 模版更新 → 实例被覆盖 ----
 printf '\n模版新增的一节。\n' >> "$TPL/AGENTS.md"
 out="$(scripts/opc-sync.sh check --from "$TPL" 2>&1 | grep -c 'update.*AGENTS.md')"
@@ -141,8 +147,8 @@ printf '老实例真实业务。\n' > "$OLD/knowledge/business/品牌口径.md"
 )
 grep -q "老实例真实业务" "$OLD/knowledge/business/品牌口径.md" && ok "adopt 不覆盖老实例业务" || bad "adopt 覆盖了老实例业务"
 [[ -f "$OLD/seeds/knowledge/business/品牌口径.md" ]] && ok "adopt 补齐老实例的种子快照" || bad "adopt 没补种子快照"
-status="$(cd "$OLD" && scripts/opc-sync.sh check --from "$TPL" 2>&1 || true)"
-echo "$status" | grep -q "seed-diverged.*knowledge/business/品牌口径.md" && ok "老实例业务改动被正确识别" || bad "老实例业务被误报成无基线或双改"
+status="$(cd "$OLD" && scripts/opc-sync.sh seeds --from "$TPL" 2>&1 || true)"
+echo "$status" | grep -q "业务已改.*knowledge/business/品牌口径.md" && ok "老实例业务改动被正确识别" || bad "老实例业务被误报成无基线或双改"
 
 # ---- 14. 同步脚本自身：本轮暂存，下次运行生效 ----
 printf '\n# 模版对同步脚本的改动\n' >> "$TPL/scripts/opc-sync.sh"
