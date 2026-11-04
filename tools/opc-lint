@@ -123,6 +123,35 @@ def read_text(path):
     return raw.decode("utf-8", "replace")
 
 
+def safe_join(root, rel):
+    """把策略里的相对路径接到 root 下，并保证结果仍在 root 之内。
+
+    策略是数据文件，里面的路径不该被当成可信输入：绝对路径、`..` 成分
+    都可能让读取跑到仓库之外。返回 None 表示这个路径不合法。
+    """
+    if not rel or not isinstance(rel, str):
+        return None
+    if rel.startswith("/") or os.path.isabs(rel):
+        return None
+    parts = rel.replace("\\", "/").split("/")
+    if any(p == ".." for p in parts):
+        return None
+    full = os.path.normpath(os.path.join(root, rel))
+    root_abs = os.path.abspath(root)
+    if full != root_abs and not full.startswith(root_abs + os.sep):
+        return None
+    return full
+
+
+def code_without_comments(text):
+    """去掉整行注释，只留代码。用来判断「守卫逻辑真的在」而不是「注释里提到过」。"""
+    if not text:
+        return ""
+    return "\n".join(
+        line for line in text.splitlines() if not line.strip().startswith("#")
+    )
+
+
 def load_policy(root):
     """读分类策略。模版仓库读根目录的 sync-policy.json；实例读缓存副本。"""
     for rel in (POLICY_REL, CACHED_POLICY_REL):
@@ -151,18 +180,35 @@ def load_policy(root):
     return None, "找不到 {}（或实例侧的 {}）".format(POLICY_REL, CACHED_POLICY_REL)
 
 
+def instance_metadata(root):
+    """读实例元数据。不是合法实例就返回 None。
+
+    「是不是实例」不能只看文件在不在——放一个空的 .opc/instance.json 就能
+    把模版侧的检查全部关掉。所以要求它是合法 JSON 且 kind == opc-instance。
+    """
+    path = os.path.join(root, ".opc", "instance.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != "opc-instance":
+        return None
+    return data
+
+
 def is_template_repo(root):
     """是不是模版仓库。
 
     标记文件是最强信号；但标记被误删时不能就此把模版当成实例——那会让
     「守卫在不在」这条规则自己消失。所以还有一条兜底：根目录有分类策略、
-    而没有实例元数据，就是模版。
+    而没有合法实例元数据，就是模版。
     """
     if os.path.isfile(os.path.join(root, MARKER_REL)):
         return True
-    if os.path.isfile(os.path.join(root, POLICY_REL)) and not os.path.isfile(
-        os.path.join(root, ".opc", "instance.json")
-    ):
+    if os.path.isfile(os.path.join(root, POLICY_REL)) and instance_metadata(root) is None:
         return True
     return False
 
@@ -274,6 +320,10 @@ def check_l2_seed_set(root, policy, tracked):
     for seed in policy.seeds:
         src = seed["source"]
         tgt = seed["target"]
+        if safe_join(root, src) is None or safe_join(root, tgt) is None:
+            c.status = STATUS_FAIL
+            c.detail.append("种子映射路径不合法：{} → {}".format(src, tgt))
+            continue
         if not src.startswith("seeds/"):
             c.status = STATUS_FAIL
             c.detail.append("种子源必须在 seeds/ 下：{}".format(src))
@@ -287,7 +337,11 @@ def check_l3_placeholders(root, policy):
     c = Check("L3", "种子必须留占位", source="sync-policy.json 的 seedRules")
     exempt = []
     for src, rules in sorted(policy.seed_rules.items()):
-        path = os.path.join(root, src)
+        path = safe_join(root, src)
+        if path is None:
+            c.status = STATUS_FAIL
+            c.detail.append("种子规则路径不合法：{}".format(src))
+            continue
         if not os.path.isfile(path):
             continue
         if not rules.get("requirePlaceholder", False):
@@ -305,7 +359,11 @@ def check_l3_placeholders(root, policy):
 def check_l4_no_dates(root, policy):
     c = Check("L4", "种子不得含具体日期", source="sync-policy.json 的 seedRules")
     for src in sorted(policy.seed_rules):
-        path = os.path.join(root, src)
+        path = safe_join(root, src)
+        if path is None:
+            c.status = STATUS_FAIL
+            c.detail.append("种子规则路径不合法：{}".format(src))
+            continue
         if not os.path.isfile(path):
             continue
         text = read_text(path) or ""
@@ -319,7 +377,11 @@ def check_l4_no_dates(root, policy):
 def check_l5_no_links(root, policy):
     c = Check("L5", "种子不得含链接、邮箱与大数", source="sync-policy.json 的 seedRules")
     for src, rules in sorted(policy.seed_rules.items()):
-        path = os.path.join(root, src)
+        path = safe_join(root, src)
+        if path is None:
+            c.status = STATUS_FAIL
+            c.detail.append("种子规则路径不合法：{}".format(src))
+            continue
         if not os.path.isfile(path):
             continue
         text = read_text(path) or ""
@@ -341,13 +403,36 @@ def check_l5_no_links(root, policy):
     return c
 
 
-def check_l6_private_words(root, tracked, words, words_path):
+def template_side_paths(policy, tracked):
+    """实例里「来自模版一侧」的文件路径。
+
+    实例模式下私词检查只看这些：业务文件里出现真实品牌名是正常的，
+    模版托管的文件里出现才是污染。
+    """
+    if policy is None:
+        return set()
+    prefixes = [r.match for r in policy.rules if r.mode in ("managed", "merge", "seeds")]
+    out = set()
+    for rel in tracked:
+        for m in prefixes:
+            if m.endswith("/"):
+                if rel.startswith(m):
+                    out.add(rel)
+                    break
+            elif rel == m:
+                out.add(rel)
+                break
+    return out
+
+
+def check_l6_private_words(root, tracked, words, words_path, only=None):
     c = Check("L6", "模版不得含私词", source=words_path or "未提供私词表")
     if not words:
         c.status = STATUS_SKIP
         c.detail.append("没有私词表，跳过。放一份到 .opc/private-words.txt 或 ~/.config/opc/private-words.txt")
         return c
-    for rel in tracked:
+    targets = sorted(only) if only is not None else sorted(tracked)
+    for rel in targets:
         text = read_text(os.path.join(root, rel))
         if text is None:
             continue
@@ -447,14 +532,22 @@ def check_l9_policy_covers(root, policy, tracked):
 def check_l10_policy_refs(root, policy):
     c = Check("L10", "策略引用的文件必须存在", source="sync-policy.json")
     for seed in policy.seeds:
-        if not os.path.isfile(os.path.join(root, seed["source"])):
+        path = safe_join(root, seed["source"])
+        if path is None:
+            c.status = STATUS_FAIL
+            c.detail.append("种子源路径不合法：{}".format(seed["source"]))
+        elif not os.path.isfile(path):
             c.status = STATUS_FAIL
             c.detail.append("种子源不存在：{}".format(seed["source"]))
     for rule in policy.rules:
         m = rule.match
         if m.endswith("/") or "*" in m or rule.optional:
             continue
-        if not os.path.isfile(os.path.join(root, m)):
+        path = safe_join(root, m)
+        if path is None:
+            c.status = STATUS_FAIL
+            c.detail.append("规则路径不合法：{}".format(m))
+        elif not os.path.isfile(path):
             c.status = STATUS_FAIL
             c.detail.append("规则引用的文件不存在：{}".format(m))
     return c
@@ -477,18 +570,26 @@ def check_l11_guards(root):
     if data.get("kind") != "opc-template":
         c.status = STATUS_FAIL
         c.detail.append("{} 的 kind 应为 opc-template".format(MARKER_REL))
+    # 守卫必须真的在代码里：注释里提一句「这里本来有个守卫」不算。
     install = os.path.join(root, "scripts", "opc-install.sh")
     lib = os.path.join(root, "scripts", "lib.sh")
-    if not os.path.isfile(install) or "opc_is_template_repo" not in (read_text(install) or ""):
+    install_code = code_without_comments(read_text(install))
+    lib_code = code_without_comments(read_text(lib))
+    if not install_code or "opc_is_template_repo" not in install_code:
         c.status = STATUS_FAIL
-        c.detail.append("scripts/opc-install.sh 里没有模版仓库守卫")
-    if not os.path.isfile(lib) or MARKER_REL not in (read_text(lib) or ""):
+        c.detail.append("scripts/opc-install.sh 里没有实际调用模版仓库守卫")
+    if not re.search(r"opc_is_template_repo\s*\(\)\s*\{", lib_code):
         c.status = STATUS_FAIL
-        c.detail.append("scripts/lib.sh 里没有 {} 的判定".format(MARKER_REL))
+        c.detail.append("scripts/lib.sh 里没有 opc_is_template_repo 的定义")
+    if MARKER_REL not in lib_code:
+        c.status = STATUS_FAIL
+        c.detail.append("scripts/lib.sh 的守卫里没有 {}".format(MARKER_REL))
     sync = os.path.join(root, "scripts", "opc-sync.sh")
-    if os.path.isfile(sync) and "opc_is_template_repo" not in (read_text(sync) or ""):
-        c.status = STATUS_FAIL
-        c.detail.append("scripts/opc-sync.sh 里没有模版仓库守卫")
+    if os.path.isfile(sync):
+        sync_code = code_without_comments(read_text(sync))
+        if "opc_is_template_repo" not in sync_code:
+            c.status = STATUS_FAIL
+            c.detail.append("scripts/opc-sync.sh 里没有实际调用模版仓库守卫")
     return c
 
 
@@ -547,6 +648,9 @@ def check_l14_proposal_private_words(root, policy, words, words_path):
 
 def check_l16_instance(root, policy):
     c = Check("L16", "实例自洽", source="template.lock.json 与 roles.json")
+    if os.path.isfile(os.path.join(root, MARKER_REL)):
+        c.status = STATUS_FAIL
+        c.detail.append("实例里有 {}——装了它 scripts/opc-install.sh 会拒绝运行".format(MARKER_REL))
     lock = os.path.join(root, "template.lock.json")
     if not os.path.isfile(lock):
         c.status = STATUS_WARN
@@ -560,7 +664,13 @@ def check_l16_instance(root, policy):
             data = {}
         for role in data.get("roles", []):
             tpl = role.get("template")
-            if tpl and not os.path.isfile(os.path.join(root, tpl)):
+            if not tpl:
+                continue
+            path = safe_join(root, tpl)
+            if path is None:
+                c.status = STATUS_FAIL
+                c.detail.append("角色 {} 的模板路径不合法：{}".format(role.get("name"), tpl))
+            elif not os.path.isfile(path):
                 c.status = STATUS_FAIL
                 c.detail.append("角色 {} 的模板文件不存在：{}".format(role.get("name"), tpl))
     return c
@@ -605,7 +715,12 @@ def run_checks(root, strict=False, words_file=None):
         checks.append(check_l16_instance(root, policy))
 
     if policy is not None:
-        checks.append(check_l6_private_words(root, tracked, words, words_path))
+        if template_mode:
+            checks.append(check_l6_private_words(root, tracked, words, words_path))
+        else:
+            # 实例里只有模版托管的文件该守私词；业务文件出现真实品牌名是正常的。
+            checks.append(check_l6_private_words(
+                root, tracked, words, words_path, only=template_side_paths(policy, tracked)))
 
     if strict:
         for c in checks:

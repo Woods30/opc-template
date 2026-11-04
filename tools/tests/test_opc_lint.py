@@ -210,6 +210,17 @@ class LintTestCase(unittest.TestCase):
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_SKIP, checks["L6"].status)
 
+    def test_instance_business_files_not_checked_for_private_words(self):
+        # 实例的业务文件里出现真实品牌名是正常的，只该查模版托管的那部分
+        os.remove(os.path.join(self.repo, ".opc-template-repo"))
+        self.write(".opc/instance.json", json.dumps({"kind": "opc-instance", "version": 1}))
+        self.write("knowledge/business/品牌口径.md", "我们做秘密品牌名。\n")
+        words_file = os.path.join(self.tmp, "words.txt")
+        with open(words_file, "w", encoding="utf-8") as fh:
+            fh.write("秘密品牌名\n")
+        checks = run_lint(self.repo, words_file=words_file)
+        self.assertNotEqual(lint.STATUS_FAIL, checks["L6"].status)
+
     # ---- L7 频道 ----
 
     def test_template_with_channels_fails(self):
@@ -251,6 +262,49 @@ class LintTestCase(unittest.TestCase):
         self.write("scripts/opc-install.sh", "#!/usr/bin/env bash\necho hello\n")
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L11"].status)
+
+    def test_guard_only_in_comment_fails(self):
+        # 注释里提一句不算守卫，必须是真代码
+        self.write("scripts/opc-install.sh", "#!/usr/bin/env bash\n# opc_is_template_repo 守卫\nexit 0\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L11"].status)
+
+    def test_lib_without_function_definition_fails(self):
+        self.write("scripts/lib.sh", "# opc_is_template_repo 与 .opc-template-repo\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L11"].status)
+
+    # ---- 实例自证不能被空文件绕过 ----
+
+    def test_empty_instance_json_does_not_disable_template_checks(self):
+        os.remove(os.path.join(self.repo, ".opc-template-repo"))
+        self.write(".opc/instance.json", "{}")
+        self.write("knowledge/business/x.md", "# 业务\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L1"].status)
+
+    def test_valid_instance_json_switches_to_instance_mode(self):
+        os.remove(os.path.join(self.repo, ".opc-template-repo"))
+        self.write(".opc/instance.json", json.dumps({"kind": "opc-instance", "version": 1}))
+        self.write("knowledge/business/x.md", "# 业务\n")
+        checks = run_lint(self.repo)
+        self.assertIsNone(checks.get("L1"))
+
+    # ---- 策略里的路径不得越界 ----
+
+    def test_seed_rule_path_traversal_fails(self):
+        policy = json.loads(json.dumps(POLICY))
+        policy["seedRules"]["../escape.md"] = {"requirePlaceholder": True}
+        self.write("sync-policy.json", json.dumps(policy, ensure_ascii=False))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L3"].status)
+
+    def test_seed_target_path_traversal_fails(self):
+        policy = json.loads(json.dumps(POLICY))
+        policy["seeds"].append({"source": "seeds/../../escape.md", "target": "../escape.md"})
+        self.write("sync-policy.json", json.dumps(policy, ensure_ascii=False))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L2"].status)
 
     # ---- L12 本机路径 ----
 

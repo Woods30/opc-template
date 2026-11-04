@@ -103,6 +103,38 @@ printf '私房话。\n' > "$INST/knowledge/business/private/秘密.md"
 scripts/opc-sync.sh pull --from "$TPL" --no-install >/dev/null 2>&1
 [[ -f "$INST/knowledge/business/private/秘密.md" ]] && ok "实例自有业务文件不受影响" || bad "实例业务文件被动了"
 
+# ---- 11. --accept-template：本地改过的文件按点名采用模版版本 ----
+scripts/opc-sync.sh mark AGENTS.md --unmark >/dev/null 2>&1
+printf '\n实例还想保留的一句。\n' >> AGENTS.md
+git -C "$INST" add -A >/dev/null 2>&1
+git -C "$INST" commit -q -m "本地又改" >/dev/null 2>&1
+scripts/opc-sync.sh pull --from "$TPL" --no-install >/dev/null 2>&1
+grep -q "实例还想保留的一句" AGENTS.md && ok "默认不覆盖本地改动" || bad "默认覆盖了本地改动"
+scripts/opc-sync.sh pull --from "$TPL" --no-install --accept-template AGENTS.md >/dev/null 2>&1
+grep -q "实例还想保留的一句" AGENTS.md && bad "--accept-template 没有采用模版版本" || ok "--accept-template 采用模版版本"
+
+# ---- 12. 策略里的路径越界 → 拒绝同步 ----
+cp "$TPL/sync-policy.json" "$WORK/policy.bak"
+jq '.seeds += [{"source":"seeds/../../escape.md","target":"../escape.md"}]' \
+  "$TPL/sync-policy.json" > "$TPL/sync-policy.json.tmp" && mv "$TPL/sync-policy.json.tmp" "$TPL/sync-policy.json"
+out="$(scripts/opc-sync.sh check --from "$TPL" 2>&1)"
+rc=$?
+if [[ "$rc" == "2" ]] && echo "$out" | grep -q "越界"; then
+  ok "策略里的路径越界被拒绝"
+else
+  bad "策略里的路径越界没有被拒绝（退出码 ${rc}）"
+fi
+cp "$WORK/policy.bak" "$TPL/sync-policy.json"
+
+# ---- 13. 同步脚本自身：本轮暂存，下次运行生效 ----
+printf '\n# 模版对同步脚本的改动\n' >> "$TPL/scripts/opc-sync.sh"
+out="$(scripts/opc-sync.sh pull --from "$TPL" --no-install 2>&1)"
+echo "$out" | grep -q "deferred scripts/opc-sync.sh" && ok "同步脚本本轮不覆盖，改为暂存" || bad "同步脚本没有被识别为 deferred"
+[[ -f "$INST/.opc/sync-stage/scripts/opc-sync.sh" ]] && ok "新版已落到暂存区" || bad "暂存区没有新版"
+scripts/opc-sync.sh status --from "$TPL" >/dev/null 2>&1
+grep -q "模版对同步脚本的改动" scripts/opc-sync.sh && ok "下次运行自动替换为新版" || bad "下次运行没有替换"
+[[ -f "$INST/.opc/sync-stage/scripts/opc-sync.sh" ]] && bad "暂存区没有清理" || ok "暂存区已清理"
+
 say ""
 say "通过 $PASS 项 / 失败 $FAIL 项"
 [[ "$FAIL" == "0" ]] || exit 1

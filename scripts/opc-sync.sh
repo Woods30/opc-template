@@ -62,6 +62,25 @@ opc_rel() {
   printf '%s\n' "${1#"$2"/}"
 }
 
+# 同步脚本自我更新：上一轮把新版暂存在 .opc/sync-stage/scripts/opc-sync.sh。
+# 启动时替换自身再重新执行——运行中的脚本被覆盖会读到乱码，所以不能本轮生效。
+self_update() {
+  local staged="$ROOT/.opc/sync-stage/scripts/opc-sync.sh"
+  local cur="$ROOT/scripts/opc-sync.sh"
+  [[ -f "$staged" ]] || return 0
+  if [[ -f "$cur" ]] && cmp -s "$staged" "$cur"; then
+    rm -f "$staged"
+    return 0
+  fi
+  mkdir -p "$(dirname "$cur")"
+  cp "$staged" "$cur.tmp.$$"
+  mv "$cur.tmp.$$" "$cur"
+  chmod +x "$cur"
+  rm -f "$staged"
+  echo "同步脚本已更新到新版本，重新执行…" >&2
+  exec bash "$cur" "$@"
+}
+
 # ---------------------------------------------------------------- 模版来源
 
 resolve_source() {
@@ -85,6 +104,64 @@ load_policy() {
   printf '%s' "$file"
 }
 
+# 策略里的每个路径都是「根目录内的相对路径」。三条硬约束：
+#   不是绝对路径、不含 .. 成分、路径成分不是符号链接。
+# 少了任何一条，拷贝就可能写到根目录之外。
+validate_under_root() {
+  local root="$1" rel="$2"
+  [[ -n "$rel" ]] || return 1
+  [[ "$rel" != /* ]] || return 1
+  [[ "/$rel/" != *"/../"* ]] || return 1
+  local cur="$root" part
+  local IFS='/'
+  for part in $rel; do
+    [[ -n "$part" ]] || continue
+    cur="$cur/$part"
+    if [[ -L "$cur" ]]; then return 1; fi
+  done
+  return 0
+}
+
+# 在任何拷贝动作之前把整个策略校验一遍。校验不过直接退出，不进同步。
+validate_policy() {
+  local policy="$1" src="$2" bad=0
+  while IFS= read -r m; do
+    [[ -n "$m" ]] || continue
+    if ! validate_under_root "$src" "$m"; then
+      echo "策略里的路径越界（rules）：$m" >&2
+      bad=1
+    fi
+  done < <(jq -r '.rules[]?.match // empty' "$policy")
+  while IFS=$'\t' read -r s t; do
+    [[ -n "$s" ]] || continue
+    if ! validate_under_root "$src" "$s"; then
+      echo "策略里的种子源越界：$s" >&2; bad=1
+    fi
+    if ! validate_under_root "$ROOT" "$t"; then
+      echo "策略里的种子目标越界：$t" >&2; bad=1
+    fi
+  done < <(jq -r '.seeds[]? | "\(.source)\t\(.target)"' "$policy")
+  while IFS=$'\t' read -r s t; do
+    [[ -n "$s" ]] || continue
+    if ! validate_under_root "$src" "$s"; then
+      echo "策略里的配置源越界：$s" >&2; bad=1
+    fi
+    if ! validate_under_root "$ROOT" "$t"; then
+      echo "策略里的配置目标越界：$t" >&2; bad=1
+    fi
+  done < <(jq -r '.mergeConfigs[]? | "\(.source)\t\(.target)"' "$policy")
+  while IFS= read -r k; do
+    [[ -n "$k" ]] || continue
+    if ! validate_under_root "$src" "$k"; then
+      echo "策略里的种子规则越界：$k" >&2; bad=1
+    fi
+  done < <(jq -r '.seedRules | keys[]' "$policy")
+  if [[ "$bad" != "0" ]]; then
+    echo "策略校验不通过，同步中止。" >&2
+    exit 2
+  fi
+}
+
 policy_mode() {
   # 路径 → mode。最长前缀优先。
   jq -r --arg p "$2" '
@@ -95,6 +172,18 @@ policy_mode() {
     | if length == 0 then "unclassified"
       else (sort_by(.match | length) | last | .mode) end
   ' "$1"
+}
+
+# 是否被 --accept-template 点名。accept 是一串路径，空格或逗号分隔；all 表示全部。
+opc_accepted() {
+  local rel="$1" accept="$2"
+  [[ -n "$accept" ]] || return 1
+  local a
+  for a in ${accept//,/ }; do
+    a="${a#/}"
+    [[ "$a" == "$rel" || "$a" == "all" ]] && return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------- 变更计划
@@ -118,6 +207,7 @@ template_managed_files() {
 compute_plan() {
   local src="$1" policy="$2"
   local state="$3"
+  local accept="${4:-}"
 
   # ---- managed：模版托管的机制文件
   while IFS= read -r rel; do
@@ -150,6 +240,10 @@ compute_plan() {
     fi
     if [[ "$inst_hash" == "$tpl_hash" ]]; then
       echo "identical|$rel|已一致"
+      continue
+    fi
+    if opc_accepted "$rel" "$accept"; then
+      echo "update|$rel|已点名采用模版版本"
       continue
     fi
     if [[ -n "$base_hash" && "$inst_hash" == "$base_hash" ]]; then
@@ -278,7 +372,14 @@ apply_plan() {
         ;;
       local-modified|pinned|deferred)
         if [[ "$dry_run" == "1" ]]; then echo "  [计划] $status $rel"; continue; fi
-        echo "  $status $rel —— $detail"
+        if [[ "$status" == "deferred" ]]; then
+          # 正在被执行的脚本不能在本轮覆盖（bash 会读到乱码）。
+          # 先把新版落到暂存区，下次运行启动时自我替换并重新执行。
+          opc_copy "$src/$rel" "$ROOT/.opc/sync-stage/$rel"
+          echo "  deferred $rel —— 新版已暂存，下次运行生效"
+        else
+          echo "  $status $rel —— $detail"
+        fi
         ;;
       seed-add|seed-update)
         local srel trel
@@ -396,8 +497,9 @@ cmd_check() {
   src="$(resolve_source "${from:-}")"
   [[ -n "$src" && -d "$src" ]] || { echo "找不到模版来源，用 --from <路径> 指定" >&2; exit 2; }
   policy="$(load_policy "$src")"
+  validate_policy "$policy" "$src"
   local plan
-  plan="$(compute_plan "$src" "$policy" "$STATE")"
+  plan="$(compute_plan "$src" "$policy" "$STATE" "")"
   if [[ -z "$plan" ]]; then
     echo "没有差异：实例已是模版的最新状态"
     return 0
@@ -419,7 +521,7 @@ cmd_pull() {
       --no-install) no_install=1; shift ;;
       --prune) prune=1; shift ;;
       --force) force=1; shift ;;
-      --accept-template) accept="$2"; shift 2 ;;
+      --accept-template) accept="${accept:+$accept,}$2"; shift 2 ;;
       *) echo "未知选项：$1" >&2; exit 2 ;;
     esac
   done
@@ -432,6 +534,7 @@ cmd_pull() {
   src="$(resolve_source "$from")"
   [[ -n "$src" && -d "$src" ]] || { echo "找不到模版来源，用 --from <路径> 指定" >&2; exit 2; }
   policy="$(load_policy "$src")"
+  validate_policy "$policy" "$src"
   mkdir -p "$ROOT/.opc"
   cp "$policy" "$ROOT/.opc/policy.json"
 
@@ -442,7 +545,7 @@ cmd_pull() {
   echo "实例：$ROOT"
 
   # 护栏：只有「将被覆盖的路径」脏了才拒绝。业务文件没提交不该挡住同步。
-  PLAN="$(compute_plan "$src" "$policy" "$STATE")"
+  PLAN="$(compute_plan "$src" "$policy" "$STATE" "$accept")"
   if [[ "$force" == "0" ]] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     local dirty_paths=() rel status
     while IFS='|' read -r status rel _; do
@@ -514,6 +617,7 @@ cmd_seeds() {
   src="$(resolve_source "${from:-}")"
   [[ -n "$src" && -d "$src" ]] || { echo "找不到模版来源，用 --from <路径> 指定" >&2; exit 2; }
   policy="$(load_policy "$src")"
+  validate_policy "$policy" "$src"
 
   if [[ -n "$apply_target" ]]; then
     local srel
@@ -599,6 +703,7 @@ cmd_adopt() {
   [[ -d "$from" ]] || { echo "模版路径不存在：$from" >&2; exit 2; }
   local policy commit
   policy="$(load_policy "$from")"
+  validate_policy "$policy" "$from"
   commit="$(git -C "$from" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   mkdir -p "$ROOT/.opc"
   cp "$policy" "$ROOT/.opc/policy.json"
@@ -639,7 +744,9 @@ cmd_log() {
 # ---------------------------------------------------------------- 入口
 
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
+ALL_ARGS=("$@")
 SUB="$1"; shift
+self_update "${ALL_ARGS[@]}"
 case "$SUB" in
   status) cmd_status "$@" ;;
   check) cmd_check "$@" ;;
