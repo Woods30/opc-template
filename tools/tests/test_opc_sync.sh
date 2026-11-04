@@ -48,6 +48,7 @@ check "Claude dontAsk 明确允许 Skill" "Skill" "$skill_rule"
 
 # Codex 没有 Claude 的 Skill 工具权限；它原生发现 .agents/skills 与 ~/.agents/skills。
 # 安装器要映射的是 approval/sandbox，不能把 Claude permissionMode 原样传给 Codex。
+# 假 codex 把参数逐行落盘；测试自己用 shell 内建拼回去，不依赖 paste。
 FAKE_CODEX="$WORK/bin/codex"
 mkdir -p "$(dirname "$FAKE_CODEX")"
 cat > "$FAKE_CODEX" <<EOF
@@ -55,21 +56,43 @@ cat > "$FAKE_CODEX" <<EOF
 printf '%s\n' "\$@" > "$WORK/codex-args"
 EOF
 chmod +x "$FAKE_CODEX"
+
+join_args() { # join_args <文件>：把每行一个的参数拼成一行
+  local out="" line
+  while IFS= read -r line; do out="${out:+$out }$line"; done < "$1"
+  printf '%s' "$out"
+}
+
 jq --arg cli "$FAKE_CODEX" '
   (.roles[] | select(.name == "gm") | .cli) = $cli
   | (.roles[] | select(.name == "gm") | .permissionMode) = "dontAsk"
 ' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
 XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
-"$INST/.opc/run/gm.sh"
-codex_args="$(paste -sd ' ' "$WORK/codex-args")"
+"$INST/.opc/run/gm.sh" </dev/null
+codex_args="$(join_args "$WORK/codex-args")"
 check "Codex dontAsk 映射为 never + workspace-write" \
+  "--sandbox workspace-write --ask-for-approval never" "$codex_args"
+
+# 启动器不能写死 /bin/zsh：发行版不一定装 zsh，角色会直接起不来。
+launcher="$(cat "$INST/.opc/run/gm.sh")"
+case "$launcher" in
+  */bin/zsh*) bad "启动器写死了 /bin/zsh" ;;
+  *) ok "启动器不写死 /bin/zsh" ;;
+esac
+
+# PATH 里只有 bash 时（模拟没装 zsh 的机器），启动器仍要能跑起来。
+mkdir -p "$WORK/onlybash"
+ln -s "$(command -v bash)" "$WORK/onlybash/bash"
+PATH="$WORK/onlybash" "$INST/.opc/run/gm.sh" </dev/null
+codex_args="$(join_args "$WORK/codex-args")"
+check "没有 zsh 时回退到 bash 仍能启动" \
   "--sandbox workspace-write --ask-for-approval never" "$codex_args"
 
 jq '(.roles[] | select(.name == "gm") | .permissionMode) = "default"' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
 XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
-"$INST/.opc/run/gm.sh"
-codex_args="$(paste -sd ' ' "$WORK/codex-args")"
+"$INST/.opc/run/gm.sh" </dev/null
+codex_args="$(join_args "$WORK/codex-args")"
 check "Codex default 映射为 on-request + workspace-write" \
   "--sandbox workspace-write --ask-for-approval on-request" "$codex_args"
 

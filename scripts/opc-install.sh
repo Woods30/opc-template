@@ -78,8 +78,19 @@ for role in $roles; do
 # 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
 OPC_ROOT='$ROOT'
 OPC_SETTINGS='$ROOT/.opc/settings-$role.json'
-export OPC_ROOT OPC_SETTINGS
-exec /bin/zsh -lic 'cd "\$OPC_ROOT" && exec claude --settings "\$OPC_SETTINGS" --permission-mode $mode'
+OPC_CLI='$cli'
+export OPC_ROOT OPC_SETTINGS OPC_CLI
+# 用登录 shell 启动：CLI 常由 npm 或版本管理器装，只有交互登录环境的 PATH 里可见。
+# zsh → bash → sh 依次回退——不是所有发行版都装了 zsh，写死 /bin/zsh 会让角色起不来。
+for _sh in zsh bash sh; do
+  _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
+  case "\$_sh" in
+    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --settings "\$OPC_SETTINGS" --permission-mode $mode' ;;
+    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --settings "\$OPC_SETTINGS" --permission-mode $mode' ;;
+  esac
+done
+echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
+exit 127
 EOF
   elif [[ "$cli_base" == "codex" ]]; then
     mode="$(opc_role_field "$role" permissionMode)"
@@ -98,8 +109,17 @@ EOF
 #!/bin/sh
 # 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
 OPC_ROOT='$ROOT'
-export OPC_ROOT
-exec /bin/zsh -lic 'cd "\$OPC_ROOT" && exec "$cli" --sandbox $sandbox --ask-for-approval $approval'
+OPC_CLI='$cli'
+export OPC_ROOT OPC_CLI
+for _sh in zsh bash sh; do
+  _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
+  case "\$_sh" in
+    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --sandbox $sandbox --ask-for-approval $approval' ;;
+    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" --sandbox $sandbox --ask-for-approval $approval' ;;
+  esac
+done
+echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
+exit 127
 EOF
   else
     cat > "$ROOT/.opc/run/$role.sh" <<EOF
@@ -108,7 +128,15 @@ EOF
 OPC_ROOT='$ROOT'
 OPC_CLI='$cli'
 export OPC_ROOT OPC_CLI
-exec /bin/zsh -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI"'
+for _sh in zsh bash sh; do
+  _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
+  case "\$_sh" in
+    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI"' ;;
+    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI"' ;;
+  esac
+done
+echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
+exit 127
 EOF
   fi
   chmod +x "$ROOT/.opc/run/$role.sh"
