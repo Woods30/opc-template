@@ -23,6 +23,7 @@ CONFLICTS="$ROOT/.opc/sync-conflicts"
 LOG="$ROOT/.opc/sync.log"
 LOCK="$ROOT/template.lock.json"
 INSTANCE_JSON="$ROOT/.opc/instance.json"
+ACTIVE_SOURCE=""
 
 usage() {
   sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -47,9 +48,31 @@ opc_hash_of() {
   opc_hash "$1"
 }
 
+path_is_under() {
+  local base="$1" path="$2"
+  python3 - "$base" "$path" <<'PY'
+import os, sys
+base = os.path.realpath(sys.argv[1])
+path = os.path.realpath(sys.argv[2])
+if path == base or path.startswith(base + os.sep):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 opc_copy() {
-  # 覆盖式拷贝，先写临时文件再改名，避免半截文件
+  # 覆盖式拷贝，先写临时文件再改名，避免半截文件。
+  # 在最终写入点再验一次边界，避免只在解析 policy 时检查而留下 TOCTOU 窗口。
   local src="$1" dst="$2"
+  if ! path_is_under "$ROOT" "$dst"; then
+    echo "拒绝写到实例根目录之外：$dst" >&2
+    exit 2
+  fi
+  if ! path_is_under "$ROOT" "$src" && \
+     { [[ -z "$ACTIVE_SOURCE" ]] || ! path_is_under "$ACTIVE_SOURCE" "$src"; }; then
+    echo "拒绝读取实例或模版根目录之外：$src" >&2
+    exit 2
+  fi
   mkdir -p "$(dirname "$dst")"
   cp "$src" "$dst.tmp.$$"
   mv "$dst.tmp.$$" "$dst"
@@ -110,16 +133,22 @@ load_policy() {
 validate_under_root() {
   local root="$1" rel="$2"
   [[ -n "$rel" ]] || return 1
-  [[ "$rel" != /* ]] || return 1
-  [[ "/$rel/" != *"/../"* ]] || return 1
-  local cur="$root" part
+  [[ "$rel" != /* && "$rel" != *'\\'* ]] || return 1
+  local part
   local IFS='/'
   for part in $rel; do
-    [[ -n "$part" ]] || continue
-    cur="$cur/$part"
-    if [[ -L "$cur" ]]; then return 1; fi
+    [[ "$part" != "." && "$part" != ".." ]] || return 1
   done
-  return 0
+  # realpath 会解析途中已有的符号链接，也会规范化尚不存在的尾部。结果必须
+  # 仍在 root 之内；字符串前缀判断要带路径分隔符，避免 /repo-evil 误通过。
+  python3 - "$root" "$rel" <<'PY'
+import os, sys
+root = os.path.realpath(sys.argv[1])
+candidate = os.path.realpath(os.path.join(root, sys.argv[2]))
+if candidate == root or candidate.startswith(root + os.sep):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
 }
 
 # 在任何拷贝动作之前把整个策略校验一遍。校验不过直接退出，不进同步。
@@ -134,8 +163,8 @@ validate_policy() {
   done < <(jq -r '.rules[]?.match // empty' "$policy")
   while IFS=$'\t' read -r s t; do
     [[ -n "$s" ]] || continue
-    if ! validate_under_root "$src" "$s"; then
-      echo "策略里的种子源越界：$s" >&2; bad=1
+    if [[ "$s" != seeds/* ]] || ! validate_under_root "$src" "$s"; then
+      echo "策略里的种子源越界或不在 seeds/ 下：$s" >&2; bad=1
     fi
     if ! validate_under_root "$ROOT" "$t"; then
       echo "策略里的种子目标越界：$t" >&2; bad=1
@@ -500,6 +529,7 @@ cmd_check() {
   local src policy
   src="$(resolve_source "${from:-}")"
   [[ -n "$src" && -d "$src" ]] || { echo "找不到模版来源，用 --from <路径> 指定" >&2; exit 2; }
+  ACTIVE_SOURCE="$src"
   policy="$(load_policy "$src")"
   validate_policy "$policy" "$src"
   local plan
@@ -537,6 +567,7 @@ cmd_pull() {
   local src policy
   src="$(resolve_source "$from")"
   [[ -n "$src" && -d "$src" ]] || { echo "找不到模版来源，用 --from <路径> 指定" >&2; exit 2; }
+  ACTIVE_SOURCE="$src"
   policy="$(load_policy "$src")"
   validate_policy "$policy" "$src"
   mkdir -p "$ROOT/.opc"
@@ -620,6 +651,7 @@ cmd_seeds() {
   local src policy
   src="$(resolve_source "${from:-}")"
   [[ -n "$src" && -d "$src" ]] || { echo "找不到模版来源，用 --from <路径> 指定" >&2; exit 2; }
+  ACTIVE_SOURCE="$src"
   policy="$(load_policy "$src")"
   validate_policy "$policy" "$src"
 
@@ -709,6 +741,7 @@ cmd_adopt() {
   done
   [[ -n "$from" ]] || { echo "用法：scripts/opc-sync.sh adopt --from <模版路径>" >&2; exit 2; }
   [[ -d "$from" ]] || { echo "模版路径不存在：$from" >&2; exit 2; }
+  ACTIVE_SOURCE="$from"
   local policy commit
   policy="$(load_policy "$from")"
   validate_policy "$policy" "$from"
