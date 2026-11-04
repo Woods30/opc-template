@@ -256,6 +256,9 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 
 每个 claude 角色带一份 `.opc/settings-<角色>.json`，通过 `--settings` 加载：
 
+- **放行 `Skill`**：`dontAsk` 下任何未预先放行的 Skill 调用都会被**直接拒绝**（不弹窗），
+  所以白名单里必须有 `"Skill"` 一条，否则角色永远调不动任何技能。放行的是 Skill 调用
+  本身，技能内部再调用的文件 / Bash / 网络工具仍按各自规则判定
 - 放行 `hc send` / `hc read` / `hc wait`，**只限本实例前缀**（`Bash(hc send opc-*)`），
   不跨实例操作终端；名字带引号时不匹配，退回人工批准（fail-closed）。**必须用终端名**
   （`hc read opc-content`），不能用 `hc ls` 里的地址（`t43`）——地址是本机全局的，
@@ -325,6 +328,28 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 **永远不要**通配放行 `Bash(./tools/*)`：那是一次性把所有工具（包括将来放进来的）
 的执行权都签发出去。
 
+## 不同 CLI 的能力差异
+
+`roles.json` 的 `cli` 字段决定角色用哪个 agent 跑。不同 CLI 的「技能在哪」和
+「谁来批」不是一回事，OPC 不把 Claude 的规则套给别的 CLI：
+
+| CLI | 技能来源 | 权限模型 | OPC 是否托管 |
+|---|---|---|---|
+| `claude` | `.claude/skills/`、`~/.claude/skills/`、插件 skills/ | `settings.json` 的 allow/ask/deny + `permission-mode`；Skill 调用需 allow 里有 `"Skill"` | ✅ 生成 `.opc/settings-<角色>.json` |
+| `codex` | `.agents/skills/`、`~/.agents/skills/`、`/etc/codex/skills/` | `--sandbox` + `--ask-for-approval`；没有 Skill 工具权限 | ❌ 只映射参数 |
+| 其他 | 由该 CLI 自行决定 | OPC 不接管 | ❌ 不生成设置 |
+
+Codex 角色的 `permissionMode` 会被翻译成它自己的语义：`dontAsk` → `--sandbox
+workspace-write --ask-for-approval never`，`default` / `manual` / `auto` /
+`acceptEdits` → `on-request`，`plan` → `--sandbox read-only`。
+
+装完看 `knowledge/team.md` 的「CLI 能力差异」小节，那里按角色列明来源与模型；
+`scripts/opc-status.sh` 也会打印同一份信息。
+
+**跨 CLI 共享技能**：同一个技能要同时供 claude 与 codex 角色使用，需要放两份——
+`~/.claude/skills/<名字>/` 与 `~/.agents/skills/<名字>/`。项目内技能同理，
+`.claude/skills/` 与 `.agents/skills/` 互不相通。
+
 ## 多实例
 
 前缀默认取目录名（slug 化），模板名、终端名、Herdr space 名都带前缀，互不冲突。
@@ -340,6 +365,7 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 |---|---|
 | `Executable not found in $PATH: "node"` | 重跑 `opc-install.sh` 生成启动器（走登录 shell 加载 mise） |
 | agent 命令被**直接拒绝**（不弹窗） | `dontAsk` 的正常表现：该命令不在白名单。角色应 `hc send <前缀>-gm` 报「权限缺口」，owner 改 `scripts/opc-install.sh` 后重跑安装 |
+| 角色调不动 Skill（`Permission to use Skill has been denied`） | `dontAsk` 下未放行的 Skill 直接被拒。检查 `.opc/settings-<角色>.json` 的 `permissions.allow` 里有没有 `"Skill"`；没有就重跑 `scripts/opc-install.sh`。另见：codex 角色没有 Skill 工具权限，技能只在 `.agents/skills/` 下被发现 |
 | agent 卡在 `blocked` | 只在 `default` / `manual` 模式下出现；查 `.opc/settings-*.json` 与 `roles.json` 的 `permissionMode` |
 | 跑完命令后弹审批，像「权限没生效」 | 多半是命令尾巴上挂了第二段（`cmd; echo "exit=$?"`）——复合命令逐段判定，`echo` 不在白名单。改成一条命令只做一件事 |
 | 角色读队友屏幕时弹审批 | 用了 `hc ls` 里的地址（`hc read t43`）；白名单只放行终端名，改成 `hc read opc-content` |

@@ -42,3 +42,10 @@ done
 
 echo
 echo "改角色：scripts/opc-role.sh list | enable <角色> | disable <角色> | add <角色>"
+echo
+echo "CLI 能力差异（Skill 来源与权限模型）："
+for role in $(opc_all_roles); do
+  cli="$(opc_role_cli "$role")"
+  printf '  %-10s %-8s %s\n' "$role" "$cli" "$(opc_cli_skill_source "$cli")"
+  printf '  %-10s %-8s %s\n' "" "" "$(opc_cli_permission_model "$cli")"
+done

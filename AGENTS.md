@@ -141,6 +141,11 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 3. gm 每天把它汇总到 `daily/<日期>.md` 的「权限缺口」小节；owner 批量处理后重跑
    `scripts/opc-install.sh`，受影响的角色重启一次即可。
 
+**Skill 被拒不算权限缺口**：`Skill` 已在 claude 角色的白名单里。若仍报
+`Permission to use Skill has been denied`，说明当前 CLI 下没有发现该技能——
+claude 查 `.claude/skills/` 与 `~/.claude/skills/`，codex 查 `.agents/skills/` 与
+`~/.agents/skills/`。改用等效的手工做法继续，不要反复请求调用。
+
 **新增能力的三条固定路径**（白名单只能由 owner 改 `scripts/`）：
 
 | 要加的东西 | 谁做 | 生效方式 |
@@ -199,6 +204,10 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 - **图片处理不要直接跑 `sips` / `file`**——两者都不在白名单；`sips` 还能原地改图
   （`-Z` 缩放、`-s format` 另存），比 `echo` 更危险。需要查尺寸或转格式时，先提需求给
   dev 做只读包装器，不要自己找命令绕过。
+- **可以用 Skill**：发现到的技能都在权限允许范围内，直接调用即可。技能在不同 CLI 下
+  来源不同（claude 看 `.claude/skills/` 与 `~/.claude/skills/`，codex 看 `.agents/skills/`
+  与 `~/.agents/skills/`），你要用的技能在当前 CLI 下找不到时，改用等效的手工做法，
+  不要反复请求调用权限。
 
 ## 每日汇总
 

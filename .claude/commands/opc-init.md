@@ -26,6 +26,9 @@ command -v hc herdr-app claude jq
 
 缺任何一个，告诉用户缺什么、怎么装，然后**停止**，不要继续后面的步骤。
 
+`codex` 是可选依赖——用 `command -v codex` 探测即可，缺了不影响默认流程，
+但要用 codex 角色就必须在。
+
 ## 2. 读现有配置
 
 读 `roles.json`，把角色用表格列给用户：名字、是否启用、CLI。
@@ -39,7 +42,12 @@ command -v hc herdr-app claude jq
 
 1. **项目前缀**：默认取目录名的小写 slug（`OPC` → `opc`）。前缀决定终端名与模板名。
 2. **启用哪些角色**：默认 `roles.json` 里现有的全部。
-3. **每个角色用哪个 CLI**：默认 `claude`。
+3. **每个角色用哪个 CLI**：默认 `claude`。**选 `codex` 前先说清差异**——两者的
+   技能来源不同（claude 看 `.claude/skills/` 与 `~/.claude/skills/`，codex 看
+   `.agents/skills/` 与 `~/.agents/skills/`），权限模型也不同（claude 由 OPC 生成
+   `settings-<角色>.json` 并放行 `Skill`；codex 用 `--sandbox` 与
+   `--ask-for-approval`，OPC 只做参数映射，不生成白名单）。同一个技能要两边都能用，
+   得在两处各放一份。
 4. **内容频道清单**：默认 `channels.json` 里现有的；没有文件时问用户要哪几个频道
    （公众号 / X / 小红书 / 抖音 / 知乎 …）。每个频道要一个英文 id（小写 slug）和一个
    中文显示名；暂不做的频道写 `enabled: false`。

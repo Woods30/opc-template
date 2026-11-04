@@ -39,6 +39,45 @@ scripts/opc-sync.sh pull --from "$TPL" --no-install >/dev/null 2>&1
 
 say "opc-sync 场景测试"
 
+# ---- 0. Claude dontAsk 仍可调用已发现的 Skill ----
+jq '(.roles[] | select(.name == "gm") | .permissionMode) = "dontAsk"' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+skill_rule="$(jq -r '.permissions.allow[] | select(. == "Skill")' "$INST/.opc/settings-gm.json")"
+check "Claude dontAsk 明确允许 Skill" "Skill" "$skill_rule"
+
+# Codex 没有 Claude 的 Skill 工具权限；它原生发现 .agents/skills 与 ~/.agents/skills。
+# 安装器要映射的是 approval/sandbox，不能把 Claude permissionMode 原样传给 Codex。
+FAKE_CODEX="$WORK/bin/codex"
+mkdir -p "$(dirname "$FAKE_CODEX")"
+cat > "$FAKE_CODEX" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" > "$WORK/codex-args"
+EOF
+chmod +x "$FAKE_CODEX"
+jq --arg cli "$FAKE_CODEX" '
+  (.roles[] | select(.name == "gm") | .cli) = $cli
+  | (.roles[] | select(.name == "gm") | .permissionMode) = "dontAsk"
+' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+"$INST/.opc/run/gm.sh"
+codex_args="$(paste -sd ' ' "$WORK/codex-args")"
+check "Codex dontAsk 映射为 never + workspace-write" \
+  "--sandbox workspace-write --ask-for-approval never" "$codex_args"
+
+jq '(.roles[] | select(.name == "gm") | .permissionMode) = "default"' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+"$INST/.opc/run/gm.sh"
+codex_args="$(paste -sd ' ' "$WORK/codex-args")"
+check "Codex default 映射为 on-request + workspace-write" \
+  "--sandbox workspace-write --ask-for-approval on-request" "$codex_args"
+
+jq '
+  (.roles[] | select(.name == "gm") | .cli) = "claude"
+  | (.roles[] | select(.name == "gm") | .permissionMode) = "default"
+' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+
 if scripts/opc-sync.sh check --from "$TPL" >/dev/null 2>&1; then
   ok "完全同步后 check 退出 0，不把 identical 当差异"
 else

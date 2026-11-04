@@ -71,6 +71,37 @@ opc_role_cli() {
 opc_templates_dir() { printf '%s/herdr-core/templates' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 opc_layouts_dir()   { printf '%s/herdr-app/layouts'   "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
+# ---- 各 CLI 的 Skill 与权限模型 ----
+# 不同 CLI 的「技能在哪」和「谁来批」不是一回事，OPC 不能把 Claude 的规则
+# 直接套给别的 CLI。这些函数是唯一的口径来源：安装器、名册、状态脚本共用。
+
+opc_cli_skill_source() {
+  case "$(basename "$1")" in
+    claude)
+      printf '%s' '.claude/skills/、~/.claude/skills/、插件 skills/（插件技能名为 plugin:skill）' ;;
+    codex)
+      printf '%s' '.agents/skills/、~/.agents/skills/、/etc/codex/skills/' ;;
+    *)
+      printf '%s' '由该 CLI 自行决定（OPC 不接管）' ;;
+  esac
+}
+
+opc_cli_permission_model() {
+  case "$(basename "$1")" in
+    claude)
+      printf '%s' 'settings.json 的 allow/ask/deny + permission-mode；Skill 调用需 permissions.allow 含 "Skill"' ;;
+    codex)
+      printf '%s' '--sandbox / --ask-for-approval；没有 Skill 工具权限，Skill 由原生发现机制决定' ;;
+    *)
+      printf '%s' 'OPC 不接管该 CLI 的权限与审批，请自行确认其语义' ;;
+  esac
+}
+
+# Claude 角色的权限由 OPC 生成并托管；其他 CLI 走各自原生机制。
+opc_cli_managed_permissions() {
+  [[ "$(basename "$1")" == "claude" ]]
+}
+
 # ---- 模版仓库守卫 ----
 
 # 是否是模版仓库。模版仓库只装机制与占位骨架，不承载业务数据：

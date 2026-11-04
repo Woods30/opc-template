@@ -55,8 +55,15 @@ for role in $roles; do
     exit 1
   }
 
-  # 值走环境变量，shell 字符串是常量：配置内容不会被当成命令执行
-  if [[ "$cli" == "claude" ]]; then
+  # 值走环境变量，shell 字符串是常量：配置内容不会被当成命令执行。
+  # 每个 CLI 的权限与 Skill 语义不同，这里只做它真正支持的那一套：
+  #   claude —— settings.json 的 allow/ask/deny + permission-mode；Skill 走
+  #             permissions.allow 的 "Skill" 规则
+  #   codex  —— --sandbox / --ask-for-approval；没有 Skill 工具权限，Skill 由
+  #             .agents/skills/ 与 ~/.agents/skills/ 原生发现
+  #   其他   —— 不接管权限，装完给出提示，由 owner 自己确认该 CLI 的语义
+  cli_base="$(basename "$cli")"
+  if [[ "$cli_base" == "claude" ]]; then
     mode="$(opc_role_field "$role" permissionMode)"
     mode="${mode:-default}"
     case "$mode" in
@@ -73,6 +80,26 @@ OPC_ROOT='$ROOT'
 OPC_SETTINGS='$ROOT/.opc/settings-$role.json'
 export OPC_ROOT OPC_SETTINGS
 exec /bin/zsh -lic 'cd "\$OPC_ROOT" && exec claude --settings "\$OPC_SETTINGS" --permission-mode $mode'
+EOF
+  elif [[ "$cli_base" == "codex" ]]; then
+    mode="$(opc_role_field "$role" permissionMode)"
+    mode="${mode:-default}"
+    # permissionMode 是 Claude 的概念，这里翻译成 Codex 的 sandbox + approval。
+    case "$mode" in
+      default|manual|auto|acceptEdits) sandbox="workspace-write"; approval="on-request" ;;
+      plan) sandbox="read-only"; approval="on-request" ;;
+      dontAsk) sandbox="workspace-write"; approval="never" ;;
+      bypassPermissions)
+        echo "角色 $role 的 permissionMode 不能是 bypassPermissions（会架空全部权限）" >&2
+        exit 1 ;;
+      *) echo "角色 $role 的 permissionMode 不合法：${mode}" >&2; exit 1 ;;
+    esac
+    cat > "$ROOT/.opc/run/$role.sh" <<EOF
+#!/bin/sh
+# 由 scripts/opc-install.sh 生成，勿手改。重新安装请重跑安装脚本。
+OPC_ROOT='$ROOT'
+export OPC_ROOT
+exec /bin/zsh -lic 'cd "\$OPC_ROOT" && exec "$cli" --sandbox $sandbox --ask-for-approval $approval'
 EOF
   else
     cat > "$ROOT/.opc/run/$role.sh" <<EOF
@@ -141,6 +168,7 @@ for role in $roles; do
     "permissions": {
       "defaultMode": "default",
       "allow": ([
+        "Skill",
         "Bash(hc send \($prefix)-*)",
         "Bash(hc ls:*)",
         "Bash(hc read \($prefix)-*)",
@@ -284,6 +312,20 @@ fi
   echo
   echo "\`hc send <终端名> \"<消息>\"\` 用的是上表的终端名。查当前存活终端用 \`hc ls\`。"
   echo
+  echo "## CLI 能力差异"
+  echo
+  echo "Skill 的发现路径与权限模型因 CLI 而异，OPC 只对 claude 生成权限白名单。"
+  echo
+  echo "| 角色 | CLI | 技能来源 | 权限模型 |"
+  echo "|---|---|---|---|"
+  for role in $roles; do
+    cli="$(opc_role_cli "$role")"
+    echo "| $role | \`$cli\` | $(opc_cli_skill_source "$cli") | $(opc_cli_permission_model "$cli") |"
+  done
+  echo
+  echo "非 claude 角色没有 \`.opc/settings-<角色>.json\`：它们的权限由各自 CLI 的"
+  echo "沙箱与审批策略决定，OPC 不代为生成。"
+  echo
   disabled="$(jq -r '.roles[] | select(.enabled | not) | .name' "$(opc_roles_file)" | paste -sd ', ' -)"
   [[ -z "$disabled" ]] || echo "已停用（不启动、不生成模板）：$disabled"
 } > "$ROOT/knowledge/team.md"
@@ -310,4 +352,15 @@ echo "  角色：$(echo $roles | tr ' ' ', ')"
 echo "  模板：$TEMPLATES/$PREFIX-<角色>.md"
 echo "  权限：$ROOT/.opc/settings-<角色>.json（仅 claude 角色）"
 echo "  名册：$ROOT/knowledge/team.md"
+# 非 claude 的 CLI 不托管权限，要说清楚，否则 owner 会以为白名单覆盖了它们
+unmanaged=""
+for role in $roles; do
+  cli="$(opc_role_cli "$role")"
+  opc_cli_managed_permissions "$cli" || unmanaged="${unmanaged:+$unmanaged, }$role($cli)"
+done
+if [[ -n "$unmanaged" ]]; then
+  echo
+  echo "提示：以下角色的权限不由 OPC 托管：${unmanaged}"
+  echo "      技能来源与审批语义见 knowledge/team.md「CLI 能力差异」。"
+fi
 echo "下一步：scripts/opc-up.sh [角色...]"
