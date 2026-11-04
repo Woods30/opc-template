@@ -70,3 +70,25 @@ opc_role_cli() {
 
 opc_templates_dir() { printf '%s/herdr-core/templates' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 opc_layouts_dir()   { printf '%s/herdr-app/layouts'   "${XDG_CONFIG_HOME:-$HOME/.config}"; }
+
+# ---- 模版仓库守卫 ----
+
+# 是否是模版仓库。模版仓库只装机制与占位骨架，不承载业务数据：
+# 业务内容一律长在实例仓库里（见 scripts/opc-sync.sh 与 docs/同步机制.md）。
+opc_is_template_repo() {
+  local root="${1:-$(opc_root)}"
+  [[ -f "$root/.opc-template-repo" ]]
+}
+
+# 在模版仓库里执行实例操作时的统一提示
+opc_template_repo_refusal() {
+  cat >&2 <<'EOF'
+这是模版仓库，不承载业务数据。
+请开一个实例再干活：
+
+  scripts/opc-new.sh <实例目录> <前缀>
+
+实例是独立目录、独立 git 仓库，业务内容只落在那里。模版这边只改机制。
+EOF
+}
+

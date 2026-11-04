@@ -63,7 +63,7 @@ first=$(herdr-app do tab.new "$(jq -nc \
   '{name: $name, argv: ["zsh", "-lic", $c]}')")
 first_term=$(printf '%s' "$first" | jq -r '.terminal')
 p1=$(pane_of "$first_term")
-[[ -n "$p1" ]] || { echo "没拿到新 tab 的 pane（terminal=$first_term）" >&2; exit 1; }
+[[ -n "$p1" ]] || { echo "没拿到新 tab 的 pane（terminal=${first_term}）" >&2; exit 1; }
 
 case "$n" in
   2)

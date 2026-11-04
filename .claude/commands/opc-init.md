@@ -8,6 +8,14 @@ allowed-tools: Bash(scripts/opc-install.sh:*), Bash(scripts/opc-role.sh:*), Bash
 
 把当前目录初始化为一个 OPC 实例。**先问清楚，再动手装**——不要一上来就跑脚本。
 
+## 0. 先确认这里不是模版仓库
+
+用 Read 读根目录的 `.opc-template-repo`。文件存在 → 这里是模版仓库，
+**立即停止**：告诉用户「这里是模版仓库，不承载业务数据」，并给出开实例的命令
+`scripts/opc-new.sh <实例目录> <前缀>`，然后结束本流程，不要继续后面的步骤。
+
+文件不存在 → 继续第 1 步。
+
 ## 1. 检查依赖
 
 逐个检查 `hc`、`herdr-app`、`claude`、`jq`：

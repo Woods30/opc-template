@@ -1,0 +1,5 @@
+{
+  "kind": "opc-template",
+  "version": 1,
+  "note": "这是 OPC 模版仓库，不承载业务数据。开实例请执行 scripts/opc-new.sh <实例目录> <前缀>。scripts/opc-lint.sh 会强制这一点。"
+}

@@ -9,6 +9,12 @@ PREFIX="${1:-$(opc_prefix "$ROOT")}"
 TEMPLATES="$(opc_templates_dir)"
 LAYOUTS="$(opc_layouts_dir)"
 
+# 模版仓库不承载业务数据：在这里装实例等于把业务写进模版，直接拒绝
+if opc_is_template_repo "$ROOT"; then
+  opc_template_repo_refusal
+  exit 2
+fi
+
 [[ -f "$(opc_roles_file)" ]] || { echo "缺少 roles.json" >&2; exit 1; }
 command -v jq >/dev/null || { echo "缺少 jq" >&2; exit 1; }
 
@@ -111,7 +117,8 @@ for role in $roles; do
     "Bash(basename:*)", "Bash(dirname:*)", "Bash(jq:*)",
     "Bash(cd:*)", "Bash(which:*)", "Bash(date:*)", "Bash(tr:*)",
     "Bash(./tools/preflight:*)", "Bash(tools/preflight:*)",
-    "Bash(python3 tools/tests/test_preflight.py)"
+    "Bash(python3 tools/tests/test_preflight.py)",
+    "Bash(python3 tools/tests/test_opc_lint.py)"
   ]'
   edit_rules='[]'
   for scope in $(opc_role_scope "$role"); do
@@ -200,13 +207,27 @@ for role in $roles; do
   done <<< "$(opc_role_scope "$role")"
 done
 
-# 2c. 频道目录（channels.json 驱动）：只建启用的频道；已存在的目录不删
+# 2c. 种子物化：模版的占位骨架 → 实例的知识目录
+# 映射规则：seeds/<路径> → <路径>（去掉 seeds/ 前缀）。
+# 只在目标缺失时写，绝不覆盖实例已有内容（那里可能已经是真实业务定稿）。
+if [[ -d "$ROOT/seeds" ]]; then
+  while IFS= read -r -d '' seed_file; do
+    rel="${seed_file#"$ROOT/seeds/"}"
+    target="$ROOT/$rel"
+    [[ -f "$target" ]] && continue
+    mkdir -p "$(dirname "$target")"
+    cp "$seed_file" "$target"
+    echo "  已物化种子：$rel"
+  done < <(find "$ROOT/seeds" -type f -not -path '*/.git/*' -print0)
+fi
+
+# 2d. 频道目录（channels.json 驱动）：只建启用的频道；已存在的目录不删
 CHANNELS_FILE="$ROOT/channels.json"
 if [[ -f "$CHANNELS_FILE" ]]; then
   mkdir -p "$ROOT/knowledge/business"
   for cid in $(jq -r '.channels[] | select(.enabled) | .id' "$CHANNELS_FILE"); do
     [[ "$cid" =~ ^[a-z][a-z0-9-]{0,19}$ ]] || {
-      echo "频道 id 不合法：${cid}（1-20 位 a-z 0-9 -，以字母开头）" >&2
+      echo "频道 id 不合法：${cid}（1-20 位小写字母数字 -，以字母开头）" >&2
       exit 1
     }
     mkdir -p "$ROOT/knowledge/business/$cid/assets"
@@ -225,7 +246,16 @@ if [[ -f "$CHANNELS_FILE" ]]; then
     echo "|---|---|---|"
     jq -r '.channels[] | "| \(.name) | `\(.id)/` | \(if .enabled then "启用" else "停用" end) |"' "$CHANNELS_FILE"
     echo
-    echo "常驻文档：\`品牌口径.md\`、\`选题日历.md\`（content 维护）。"
+    # 常驻文档清单从已物化的种子推导，不写死文件名
+    seed_docs=""
+    if [[ -d "$ROOT/seeds/business" ]]; then
+      while IFS= read -r -d '' f; do
+        name="$(basename "$f")"
+        [[ -f "$ROOT/knowledge/business/$name" ]] || continue
+        seed_docs="${seed_docs:+$seed_docs}"'、'"`$name`"
+      done < <(find "$ROOT/seeds/business" -maxdepth 1 -type f -name '*.md' -print0)
+    fi
+    [[ -n "$seed_docs" ]] && echo "常驻文档：${seed_docs}。"
     echo "业务线：\`growth/\`（增长）、\`product/\`（产品）。"
   } > "$ROOT/knowledge/business/README.md"
 fi
