@@ -29,6 +29,11 @@ INST="$WORK/inst"
 cp -R "$TEMPLATE" "$TPL"
 rm -rf "$TPL/.git" "$TPL/.opc"
 "$TPL/scripts/opc-new.sh" "$INST" --prefix t --source "$TPL" --no-install >/dev/null 2>&1
+# Hosted runner 没有全局 git identity；后续场景要提交本地改动，测试仓库自己
+# 提供固定身份，不依赖开发机 ~/.gitconfig 或 Git 对系统账号的猜测。
+git -C "$INST" config user.name "OPC Sync Test"
+git -C "$INST" config user.email "opc-sync-test@example.invalid"
+git -C "$INST" config user.useConfigOnly true
 cd "$INST" || exit 1
 scripts/opc-sync.sh pull --from "$TPL" --no-install >/dev/null 2>&1
 
