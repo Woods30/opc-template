@@ -1,0 +1,36 @@
+name: lint
+
+# 模版仓库自检：确保公开仓库里没有任何真实业务。
+# 规则见 docs/同步机制.md 与 scripts/opc-lint.sh。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          if command -v brew >/dev/null 2>&1; then brew install jq; else sudo apt-get update && sudo apt-get install -y jq; fi
+
+      - name: 模版自检
+        run: scripts/opc-lint.sh --strict
+
+      - name: 工具测试
+        run: |
+          python3 tools/tests/test_opc_lint.py
+          python3 tools/tests/test_preflight.py
+
+  sync:
+    # 同步机制的场景回归：模版更新、冲突、种子升级、配置并集
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 同步场景测试
+        run: bash tools/tests/test_opc_sync.sh
