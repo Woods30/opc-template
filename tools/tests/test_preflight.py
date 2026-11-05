@@ -2,11 +2,16 @@
 # -*- coding: utf-8 -*-
 """tools/preflight 的测试。标准库 unittest，不依赖外部包。
 
+测试 fixture 全部使用 canonical 内容与 publication 模型：
+内容卡 + 主稿，或发布卡 + 渠道稿。选题日历不参与，也不创建。
+
 跑法：
     python3 -m unittest discover -s tools/tests -t . -v
 """
 
+import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import sys
@@ -15,6 +20,10 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PREFLIGHT = os.path.join(ROOT, "tools", "preflight")
+
+CONTENT_ID = "content-20261104-120000000000-aaaaaaaa"
+PUBLICATION_ID = "publication-20261104-130000000000-bbbbbbbb"
+X_PUBLICATION_ID = "publication-20261104-140000000000-cccccccc"
 
 
 def load_module():
@@ -69,38 +78,6 @@ BRAND = """# 品牌口径
 - 不把「正在做」说成「已经做到」，不把单个案例说成普遍规律。
 """
 
-CALENDAR = """# 选题日历
-
-## 主渠道与节奏
-
-- **主渠道：公众号**（owner 与 gm 双确认）。
-- **发布节奏：每周 1 篇长文 + 每周 1 次改写分发**。
-
-## 选题（公众号主稿）
-
-| 写稿日 | 计划发布日 | 支柱 | 选题 | 一句话钩子 | 状态 | 稿件路径 | 备注 |
-|---|---|---|---|---|---|---|---|
-| 11-04 | 11-13 | 1 | 第一篇 | 钩子一 | 待审 | `2026-11-04-第一篇.md` | `utm_campaign=first` |
-| 11-05 | 11-20 | 2 | 还没写 | 钩子二 | 待写 | — | — |
-
-## 改写排期（不是新选题）
-
-| 改写源（公众号主稿） | 改写渠道 | 写稿日 | 计划发布日 | 状态 | 稿件路径 | 归因 |
-|---|---|---|---|---|---|---|
-| 第一篇 | 知乎（问答体） | 11-04 | 11-15 | 待审 | `2026-11-04-改写一-知乎.md` | `utm_source=zhihu` |
-| 第一篇 | X（单条 / thread） | 11-04 | 11-22 | 待审 | `2026-11-04-改写一-X.md` | `utm_source=x` |
-"""
-
-GENERATED_CALENDAR = """# 选题日历
-
-> **GENERATED FILE — READ ONLY**
-> 由 `tools/opc-workflow build` 从 `knowledge/content/*/内容卡.md` 生成。请勿手工编辑。
-
-## 待排期选题
-
-当前没有待排期的 proposed 内容。
-"""
-
 GOOD_DRAFT = """# 第一篇
 
 > **渠道**：公众号（主稿）
@@ -129,19 +106,64 @@ ZHIHU_DRAFT = """# 第一篇（知乎问答改写）
 """
 
 
+def artifact_hash(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 class PreflightTestCase(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="preflight-test-")
         business_dir = os.path.join(self.root, "knowledge", "business")
-        channel_dir = os.path.join(business_dir, "wechat")
-        os.makedirs(channel_dir)
+        os.makedirs(business_dir)
         self.business_dir = business_dir
-        self.content_dir = channel_dir
         self.write(os.path.join(business_dir, "品牌口径.md"), BRAND)
-        self.write(os.path.join(business_dir, "选题日历.md"), CALENDAR)
-        self.write(os.path.join(channel_dir, "2026-11-04-第一篇.md"), GOOD_DRAFT)
-        self.write(os.path.join(channel_dir, "2026-11-04-改写一-X.md"), X_DRAFT)
-        self.write(os.path.join(channel_dir, "2026-11-04-改写一-知乎.md"), ZHIHU_DRAFT)
+        self.write(
+            os.path.join(self.root, "channels.json"),
+            json.dumps(
+                {
+                    "channels": [
+                        {"id": "wechat", "name": "公众号", "enabled": True},
+                        {"id": "zhihu", "name": "知乎", "enabled": True},
+                        {"id": "x", "name": "X", "enabled": True},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        self.content_dir = os.path.join(
+            self.root, "knowledge", "content", CONTENT_ID
+        )
+        os.makedirs(self.content_dir)
+        self.main_draft = os.path.join(self.content_dir, "主稿.md")
+        self.content_card = os.path.join(self.content_dir, "内容卡.md")
+        self.write(self.main_draft, GOOD_DRAFT)
+        self.write_content_card()
+
+        self.publication_dir = os.path.join(
+            self.content_dir, "publications", PUBLICATION_ID
+        )
+        os.makedirs(self.publication_dir)
+        self.zhihu_draft = os.path.join(self.publication_dir, "渠道稿.md")
+        self.publication_card = os.path.join(self.publication_dir, "发布卡.md")
+        self.write(self.zhihu_draft, ZHIHU_DRAFT)
+        self.write_publication_card()
+
+        self.x_publication_dir = os.path.join(
+            self.content_dir, "publications", X_PUBLICATION_ID
+        )
+        os.makedirs(self.x_publication_dir)
+        self.x_draft = os.path.join(self.x_publication_dir, "渠道稿.md")
+        self.write(self.x_draft, X_DRAFT)
+        self.write_publication_card(
+            publication_id=X_PUBLICATION_ID,
+            channel="x",
+            title="第一篇（X 短帖改写）",
+        )
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -150,15 +172,90 @@ class PreflightTestCase(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(text)
 
+    def write_card(self, path, record, body):
+        payload = json.dumps(record, ensure_ascii=False, indent=2)
+        self.write(path, "---\n{}\n---\n{}".format(payload, body))
+
+    def approval(self, artifact, draft_path):
+        return {
+            "status": "approved",
+            "requested_at": "2026-11-04T12:00:00+08:00",
+            "requested_by": "content",
+            "artifact": artifact,
+            "artifact_hash": artifact_hash(draft_path),
+            "decided_at": "2026-11-04T12:30:00+08:00",
+            "decided_by": "gm",
+        }
+
+    def write_content_card(self):
+        record = {
+            "schema_version": 1,
+            "record_type": "content",
+            "content_id": CONTENT_ID,
+            "title": "第一篇",
+            "status": "ready",
+            "created_at": "2026-11-04T11:00:00+08:00",
+            "actor": "content",
+            "main_draft": "主稿.md",
+            "pillar": "AI 角色",
+            "approval": self.approval("主稿.md", self.main_draft),
+            "events": [
+                {
+                    "action": "create",
+                    "at": "2026-11-04T11:00:00+08:00",
+                    "actor": "content",
+                    "to_status": "proposed",
+                }
+            ],
+        }
+        self.write_card(self.content_card, record, "\n# 内容卡\n")
+
+    def write_publication_card(
+        self, publication_id=PUBLICATION_ID, channel="zhihu", title="第一篇（知乎问答改写）"
+    ):
+        package = os.path.join(self.content_dir, "publications", publication_id)
+        draft_name = "渠道稿.md"
+        card = os.path.join(package, "发布卡.md")
+        record = {
+            "schema_version": 1,
+            "record_type": "publication",
+            "publication_id": publication_id,
+            "content_id": CONTENT_ID,
+            "channel": channel,
+            "title": title,
+            "status": "reviewing",
+            "created_at": "2026-11-04T13:00:00+08:00",
+            "actor": "gm",
+            "channel_draft": draft_name,
+            "approval": self.approval(draft_name, os.path.join(package, draft_name)),
+            "events": [
+                {
+                    "action": "create",
+                    "at": "2026-11-04T13:00:00+08:00",
+                    "actor": "gm",
+                    "to_status": "adapting",
+                }
+            ],
+        }
+        self.write_card(card, record, "\n# 发布卡\n")
+
     def check_by_id(self, checks, check_id):
         for check in checks:
             if check.id == check_id:
                 return check
         self.fail("没有找到检查项 {}".format(check_id))
 
-    def run_checks(self, draft_name, channel=None):
-        path = os.path.join(self.content_dir, draft_name)
-        return pf.run_checks(self.root, path, channel)
+    def run_main(self, channel=None):
+        return pf.run_checks(self.root, self.main_draft, channel)
+
+    def run_publication(self, publication_id=PUBLICATION_ID, channel=None):
+        return pf.run_checks(
+            self.root,
+            None,
+            channel,
+            content_id=CONTENT_ID,
+            publication_id=publication_id,
+        )
 
     # ---------- 禁用词抽取 ----------
 
@@ -184,162 +281,269 @@ class PreflightTestCase(unittest.TestCase):
         self.assertNotIn("不说什么", table_terms)
         self.assertNotIn("说明", table_terms)
 
-    # ---------- 逐项检查 ----------
+    # ---------- canonical 解析 ----------
 
-    def test_clean_draft_passes_all_hard_checks(self):
-        checks = self.run_checks("2026-11-04-第一篇.md")
+    def test_clean_main_draft_passes_all_hard_checks(self):
+        checks = self.run_main()
         failed = [c.id for c in checks if c.status == pf.STATUS_FAIL]
         self.assertEqual(failed, [], "干净稿件不该有失败项：{}".format(failed))
+        self.assertEqual(
+            self.check_by_id(checks, "content-record").status, pf.STATUS_OK
+        )
+        self.assertEqual(
+            self.check_by_id(checks, "approval-valid").status, pf.STATUS_OK
+        )
+
+    def test_publication_draft_resolves_canonical_record_by_id(self):
+        checks = pf.run_checks(
+            self.root, None, None, publication_id=PUBLICATION_ID
+        )
+        failed = [c.id for c in checks if c.status == pf.STATUS_FAIL]
+        self.assertEqual(failed, [], "干净渠道稿不该有失败项：{}".format(failed))
+        record = self.check_by_id(checks, "publication-record")
+        self.assertEqual(record.status, pf.STATUS_OK)
+        self.assertTrue(any(PUBLICATION_ID in item for item in record.detail))
+        self.assertEqual(
+            self.check_by_id(checks, "channel-match").status, pf.STATUS_OK
+        )
+
+    def test_content_shortcut_points_at_main_draft(self):
+        checks = pf.run_checks(self.root, content_id=CONTENT_ID)
+        self.assertEqual(self.check_by_id(checks, "draft-exists").status, pf.STATUS_OK)
+        self.assertEqual(self.check_by_id(checks, "content-record").status, pf.STATUS_OK)
+
+    def test_legacy_channel_layout_is_rejected(self):
+        legacy = os.path.join(self.business_dir, "wechat", "2026-11-04-第一篇.md")
+        os.makedirs(os.path.dirname(legacy))
+        self.write(legacy, GOOD_DRAFT)
+        checks = pf.run_checks(self.root, legacy)
+        location = self.check_by_id(checks, "draft-location")
+        self.assertEqual(location.status, pf.STATUS_FAIL)
+        self.assertTrue(any("canonical" in item for item in location.detail))
+
+    def test_missing_content_card_is_located(self):
+        os.remove(self.content_card)
+        checks = self.run_main()
+        content = self.check_by_id(checks, "content-record")
+        self.assertEqual(content.status, pf.STATUS_FAIL)
+        self.assertTrue(any("内容卡" in item for item in content.detail))
+        self.assertEqual(
+            self.check_by_id(checks, "approval-valid").status, pf.STATUS_SKIP
+        )
+
+    def test_broken_publication_reference_is_located(self):
+        with open(self.publication_card, encoding="utf-8") as handle:
+            text = handle.read()
+        record = json.loads(text.split("---\n")[1])
+        record["content_id"] = "content-20261104-120000000000-dddddddd"
+        self.write_card(
+            self.publication_card, record, text.split("---\n")[2]
+        )
+
+        checks = self.run_publication()
+        publication = self.check_by_id(checks, "publication-record")
+        self.assertEqual(publication.status, pf.STATUS_FAIL)
+        self.assertTrue(any("引用断裂" in item for item in publication.detail))
+
+    def test_publication_missing_from_disk_is_located(self):
+        missing = "publication-20261104-130000000000-ffffffff"
+        checks = pf.run_checks(self.root, None, None, publication_id=missing)
+        publication = self.check_by_id(checks, "publication-record")
+        self.assertEqual(publication.status, pf.STATUS_FAIL)
+        self.assertTrue(any(missing in item for item in publication.detail))
+
+    # ---------- 审批 ----------
+
+    def test_stale_approval_fails(self):
+        self.write(self.main_draft, GOOD_DRAFT + "\n审批后又加了一段。\n")
+        checks = self.run_main()
+        approval = self.check_by_id(checks, "approval-valid")
+        self.assertEqual(approval.status, pf.STATUS_FAIL)
+        self.assertTrue(any("审批失效" in item for item in approval.detail))
+
+    def test_pending_approval_fails(self):
+        with open(self.content_card, encoding="utf-8") as handle:
+            text = handle.read()
+        card = json.loads(text.split("---\n")[1])
+        card["approval"]["status"] = "pending"
+        self.write_card(self.content_card, card, text.split("---\n")[2])
+
+        checks = self.run_main()
+        approval = self.check_by_id(checks, "approval-valid")
+        self.assertEqual(approval.status, pf.STATUS_FAIL)
+        self.assertTrue(any("pending" in item for item in approval.detail))
+
+    def test_publication_draft_approval_is_checked(self):
+        self.write(self.zhihu_draft, ZHIHU_DRAFT + "\n审批后改稿。\n")
+        checks = self.run_publication()
+        approval = self.check_by_id(checks, "approval-valid")
+        self.assertEqual(approval.status, pf.STATUS_FAIL)
+        self.assertTrue(any("渠道稿.md" in item for item in approval.detail))
+
+    # ---------- 渠道 ----------
+
+    def test_channel_mismatch_fails(self):
+        self.write(self.zhihu_draft, ZHIHU_DRAFT.replace("知乎（问答体）", "公众号"))
+        checks = self.run_publication()
+        check = self.check_by_id(checks, "channel-match")
+        self.assertEqual(check.status, pf.STATUS_FAIL)
+        self.assertTrue(any("知乎" in item for item in check.detail))
+
+    def test_channel_match_ignores_parenthetical(self):
+        checks = self.run_publication(X_PUBLICATION_ID)
+        self.assertEqual(self.check_by_id(checks, "channel-match").status, pf.STATUS_OK)
+
+    def test_unlabelled_draft_is_a_warning(self):
+        self.write(self.main_draft, "# 第一篇\n\n正文。\n\n关注公众号。\n")
+        checks = self.run_main()
+        check = self.check_by_id(checks, "channel-match")
+        self.assertEqual(check.status, pf.STATUS_WARN)
+        self.assertTrue(any("未标注渠道" in item for item in check.detail))
+
+    # ---------- 品牌检查 ----------
 
     def test_forbidden_word_fails(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT + "\n我们把躺赚写进正文。\n",
-        )
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        self.write(self.main_draft, GOOD_DRAFT + "\n我们把躺赚写进正文。\n")
+        checks = self.run_main()
         check = self.check_by_id(checks, "forbidden-term")
         self.assertEqual(check.status, pf.STATUS_FAIL)
         self.assertTrue(any("躺赚" in d for d in check.detail))
 
     def test_term_table_misuse_fails(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT + "\n我们是小微创业。\n",
-        )
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        self.write(self.main_draft, GOOD_DRAFT + "\n我们是小微创业。\n")
+        checks = self.run_main()
         check = self.check_by_id(checks, "term-misuse")
         self.assertEqual(check.status, pf.STATUS_FAIL)
         self.assertTrue(any("小微创业" in d for d in check.detail))
 
     def test_we_char_counts_as_forbidden(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT + "\n我们想看看。\n",
-        )
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        self.write(self.main_draft, GOOD_DRAFT + "\n我们想看看。\n")
+        checks = self.run_main()
         self.assertEqual(self.check_by_id(checks, "forbidden-term").status, pf.STATUS_FAIL)
 
     def test_fenced_code_is_skipped(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT + "\n```\n躺赚\n```\n",
-        )
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        self.write(self.main_draft, GOOD_DRAFT + "\n```\n躺赚\n```\n")
+        checks = self.run_main()
         self.assertEqual(self.check_by_id(checks, "forbidden-term").status, pf.STATUS_OK)
 
-    def test_draft_not_in_calendar_fails(self):
-        self.write(os.path.join(self.content_dir, "2026-11-04-没登记.md"), GOOD_DRAFT)
-        checks = self.run_checks("2026-11-04-没登记.md")
-        self.assertEqual(self.check_by_id(checks, "calendar-entry").status, pf.STATUS_FAIL)
-
-    def test_generated_calendar_skips_the_legacy_calendar_checks(self):
-        # 选题日历已是 generated 视图：旧日历检查没有事实可读，只能跳过，不能误报失败
-        self.write(os.path.join(self.business_dir, "选题日历.md"), GENERATED_CALENDAR)
-        checks = self.run_checks("2026-11-04-第一篇.md")
-
-        failed = [c.id for c in checks if c.status == pf.STATUS_FAIL]
-        self.assertEqual(failed, [], "generated 日历下不该有失败项：{}".format(failed))
-        entry = self.check_by_id(checks, "calendar-entry")
-        self.assertEqual(entry.status, pf.STATUS_SKIP)
-        self.assertTrue(any("generated" in d for d in entry.detail))
-        pillar = self.check_by_id(checks, "calendar-pillar")
-        self.assertEqual(pillar.status, pf.STATUS_SKIP)
-
-    def test_channel_mismatch_fails(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT.replace("公众号（主稿）", "知乎"),
-        )
-        checks = self.run_checks("2026-11-04-第一篇.md")
-        check = self.check_by_id(checks, "channel-match")
-        self.assertEqual(check.status, pf.STATUS_FAIL)
-        self.assertTrue(any("知乎" in d for d in check.detail))
-
-    def test_channel_match_ignores_parenthetical(self):
-        checks = self.run_checks("2026-11-04-改写一-X.md")
-        self.assertEqual(self.check_by_id(checks, "channel-match").status, pf.STATUS_OK)
-
-    def test_missing_registered_file_fails(self):
-        os.remove(os.path.join(self.content_dir, "2026-11-04-第一篇.md"))
-        checks = self.run_checks("2026-11-04-第一篇.md")
-        self.assertEqual(self.check_by_id(checks, "draft-exists").status, pf.STATUS_FAIL)
-
-    def test_missing_draft_is_reported_not_crashed(self):
-        checks = self.run_checks("2026-11-04-不存在.md")
-        self.assertEqual(self.check_by_id(checks, "draft-exists").status, pf.STATUS_FAIL)
-
     def test_brand_proposal_marker_is_warning_only(self):
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        checks = self.run_main()
         check = self.check_by_id(checks, "brand-settled")
         self.assertEqual(check.status, pf.STATUS_WARN)
+
+    def test_content_pillar_present(self):
+        checks = self.run_main()
+        check = self.check_by_id(checks, "content-pillar")
+        self.assertEqual(check.status, pf.STATUS_OK)
+        self.assertTrue(any("AI 角色" in item for item in check.detail))
+
+    def test_content_pillar_missing_is_warning(self):
+        with open(self.content_card, encoding="utf-8") as handle:
+            text = handle.read()
+        card = json.loads(text.split("---\n")[1])
+        card.pop("pillar", None)
+        self.write_card(self.content_card, card, text.split("---\n")[2])
+        checks = self.run_main()
+        self.assertEqual(
+            self.check_by_id(checks, "content-pillar").status, pf.STATUS_WARN
+        )
+
+    # ---------- 文件 ----------
+
+    def test_missing_draft_is_reported_not_crashed(self):
+        os.remove(self.main_draft)
+        checks = self.run_main()
+        self.assertEqual(self.check_by_id(checks, "draft-exists").status, pf.STATUS_FAIL)
+
+    def test_missing_draft_path_is_located(self):
+        missing = os.path.join(
+            self.root,
+            "knowledge",
+            "content",
+            "content-20261104-120000000000-dddddddd",
+            "主稿.md",
+        )
+        checks = pf.run_checks(self.root, missing)
+        self.assertEqual(self.check_by_id(checks, "draft-exists").status, pf.STATUS_FAIL)
+        self.assertEqual(
+            self.check_by_id(checks, "content-record").status, pf.STATUS_FAIL
+        )
+
+    def test_generated_calendar_is_ignored(self):
+        # preflight 不再读选题日历：就算它写着相反的内容也不影响结论
+        calendar = os.path.join(self.business_dir, "选题日历.md")
+        self.write(
+            calendar,
+            "# 选题日历\n\n> **GENERATED FILE — READ ONLY**\n\n| 选题 | 稿件路径 |\n|---|---|\n",
+        )
+        checks = self.run_main()
+        failed = [c.id for c in checks if c.status == pf.STATUS_FAIL]
+        self.assertEqual(failed, [])
+        self.assertIsNone(
+            next((c for c in checks if c.id == "calendar-entry"), None),
+            "canonical 模型下不应再有 calendar-entry 检查",
+        )
 
     # ---------- 退出码 ----------
 
     def test_exit_code_zero_on_clean_draft(self):
-        code = pf.main([os.path.join(self.content_dir, "2026-11-04-第一篇.md"), "--root", self.root])
+        code = pf.main([self.main_draft, "--root", self.root])
+        self.assertEqual(code, 0)
+
+    def test_exit_code_zero_with_publication_selector(self):
+        code = pf.main(
+            ["--publication", PUBLICATION_ID, "--root", self.root]
+        )
         self.assertEqual(code, 0)
 
     def test_exit_code_nonzero_on_failure(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT + "\n躺赚。\n",
-        )
-        code = pf.main([os.path.join(self.content_dir, "2026-11-04-第一篇.md"), "--root", self.root])
+        self.write(self.main_draft, GOOD_DRAFT + "\n躺赚。\n")
+        code = pf.main([self.main_draft, "--root", self.root])
         self.assertEqual(code, 1)
 
     def test_exit_code_two_on_missing_file(self):
-        code = pf.main([os.path.join(self.content_dir, "不存在.md"), "--root", self.root])
+        code = pf.main(
+            [os.path.join(self.root, "不存在.md"), "--root", self.root]
+        )
         self.assertEqual(code, 2)
 
-    # ---------- 不改源文件 ----------
+    # ---------- 字数 / CTA ----------
 
     def test_word_count_ignores_code_blocks(self):
         self.assertEqual(pf.word_count("你好\n```\n代码\n```\n世界"), 4)
 
     def test_x_draft_word_count_checked_per_block(self):
         self.write(
-            os.path.join(self.content_dir, "2026-11-04-改写一-X.md"),
+            self.x_draft,
             "# 第一篇（X 短帖改写）\n\n> **渠道**：X（改写稿）\n\n"
             "## 版本 A：单条帖（首发，≤200 字）\n\n" + "字" * 250 + "\n\n"
             "## 版本 B：thread（3 条，每条 ≤140 字）\n\n短。\n",
         )
-        checks = self.run_checks("2026-11-04-改写一-X.md")
+        checks = self.run_publication(X_PUBLICATION_ID)
         check = self.check_by_id(checks, "word-count")
         self.assertEqual(check.status, pf.STATUS_WARN)
         self.assertTrue(any("250 字" in d for d in check.detail))
 
-    def test_rewrite_channel_uses_rewrite_column(self):
-        checks = self.run_checks("2026-11-04-改写一-知乎.md")
-        check = self.check_by_id(checks, "channel-match")
-        self.assertEqual(check.status, pf.STATUS_OK)
-        self.assertTrue(any("知乎" in d for d in check.detail))
-
     def test_cta_missing_required_phrase_fails(self):
         self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
+            self.main_draft,
             "# 第一篇\n\n> **渠道**：公众号（主稿）\n\n正文。\n\n看完记得点赞。\n",
         )
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        checks = self.run_main()
         check = self.check_by_id(checks, "cta-consistency")
         self.assertEqual(check.status, pf.STATUS_FAIL)
         self.assertTrue(any("关注公众号" in d for d in check.detail))
 
     def test_cta_forbidden_word_fails(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT + "\n关注公众号，或者扫二维码。\n",
-        )
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        self.write(self.main_draft, GOOD_DRAFT + "\n关注公众号，或者扫二维码。\n")
+        checks = self.run_main()
         check = self.check_by_id(checks, "cta-consistency")
         self.assertEqual(check.status, pf.STATUS_FAIL)
         self.assertTrue(any("二维码" in d for d in check.detail))
 
     def test_cta_present_passes(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-第一篇.md"),
-            GOOD_DRAFT + "\n关注公众号，后续更新第一时间看到。\n",
-        )
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        self.write(self.main_draft, GOOD_DRAFT + "\n关注公众号，后续更新第一时间看到。\n")
+        checks = self.run_main()
         self.assertEqual(self.check_by_id(checks, "cta-consistency").status, pf.STATUS_OK)
 
     def test_cta_check_warns_when_spec_column_missing(self):
@@ -350,30 +554,23 @@ class PreflightTestCase(unittest.TestCase):
             " | 关注公众号；不得出现 链接、二维码、邮箱 |", " |"
         )
         self.write(brand_path, text)
-        checks = self.run_checks("2026-11-04-第一篇.md")
+        checks = self.run_main()
         check = self.check_by_id(checks, "cta-consistency")
         self.assertEqual(check.status, pf.STATUS_WARN)
         self.assertTrue(any("CTA 口径列" in d for d in check.detail))
 
     def test_cta_uses_channel_specific_spec(self):
-        checks = self.run_checks("2026-11-04-改写一-知乎.md")
+        checks = self.run_publication()
         check = self.check_by_id(checks, "cta-consistency")
         self.assertIn(check.status, (pf.STATUS_OK, pf.STATUS_FAIL))
-
-    def test_rewrite_channel_mismatch_fails(self):
-        self.write(
-            os.path.join(self.content_dir, "2026-11-04-改写一-知乎.md"),
-            ZHIHU_DRAFT.replace("知乎（问答体）", "X（改写稿）"),
-        )
-        checks = self.run_checks("2026-11-04-改写一-知乎.md")
-        self.assertEqual(self.check_by_id(checks, "channel-match").status, pf.STATUS_FAIL)
+        self.assertTrue(any("关注公众号" in item for item in check.detail))
 
     def test_source_files_not_modified(self):
         brand_path = os.path.join(self.business_dir, "品牌口径.md")
         before = os.stat(brand_path).st_mtime_ns
         with open(brand_path, encoding="utf-8") as handle:
             content_before = handle.read()
-        self.run_checks("2026-11-04-第一篇.md")
+        self.run_main()
         with open(brand_path, encoding="utf-8") as handle:
             content_after = handle.read()
         self.assertEqual(content_before, content_after)
@@ -381,7 +578,7 @@ class PreflightTestCase(unittest.TestCase):
 
 
 class RealRepoRegressionTests(unittest.TestCase):
-    """用仓库里真实的品牌口径与稿件跑整条 run_checks。
+    """用仓库里真实的品牌口径跑整条 run_checks。
 
     回归用例：2026-11-04 12:34 版本里 ``forbidden_terms`` 被同名函数覆盖，
     ``run_checks`` 解包失败，所有稿件直接崩溃。只测抽取函数抓不到这类问题，
@@ -390,29 +587,64 @@ class RealRepoRegressionTests(unittest.TestCase):
 
     def test_run_checks_on_real_brand_with_cta_column(self):
         brand = os.path.join(ROOT, "knowledge", "business", "品牌口径.md")
-        draft = os.path.join(
-            ROOT, "knowledge", "business", "wechat", "2026-11-04-四个AI角色的组织设计.md"
-        )
-        for path in (brand, draft):
-            if not os.path.exists(path):
-                self.skipTest("真实仓库文件不存在：{}".format(path))
+        if not os.path.exists(brand):
+            self.skipTest("真实仓库品牌口径不存在：{}".format(brand))
 
-        checks = pf.run_checks(ROOT, draft)
-        self.assertTrue(checks)
+        root = tempfile.mkdtemp(prefix="preflight-real-")
+        try:
+            business_dir = os.path.join(root, "knowledge", "business")
+            os.makedirs(business_dir)
+            shutil.copyfile(brand, os.path.join(business_dir, "品牌口径.md"))
 
-        by_id = {check.id: check for check in checks}
-        self.assertIn("cta-consistency", by_id)
-        # 品牌口径已有 CTA 列，检查必须真正参与判定，而不是回退成「口径未补齐」警告
-        self.assertIn(
-            by_id["cta-consistency"].status, (pf.STATUS_OK, pf.STATUS_FAIL)
-        )
+            content_dir = os.path.join(root, "knowledge", "content", CONTENT_ID)
+            os.makedirs(content_dir)
+            draft_path = os.path.join(content_dir, "主稿.md")
+            with open(draft_path, "w", encoding="utf-8") as handle:
+                handle.write(GOOD_DRAFT)
+            record = {
+                "schema_version": 1,
+                "record_type": "content",
+                "content_id": CONTENT_ID,
+                "title": "第一篇",
+                "status": "ready",
+                "created_at": "2026-11-04T11:00:00+08:00",
+                "actor": "content",
+                "approval": {
+                    "status": "approved",
+                    "requested_at": "2026-11-04T12:00:00+08:00",
+                    "requested_by": "content",
+                    "artifact": "主稿.md",
+                    "artifact_hash": artifact_hash(draft_path),
+                    "decided_at": "2026-11-04T12:30:00+08:00",
+                    "decided_by": "gm",
+                },
+                "events": [],
+            }
+            card = os.path.join(content_dir, "内容卡.md")
+            with open(card, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "---\n{}\n---\n\n# 内容卡\n".format(
+                        json.dumps(record, ensure_ascii=False, indent=2)
+                    )
+                )
 
-        with open(brand, encoding="utf-8") as handle:
-            brand_text = handle.read()
-        terms, table_terms, other_terms = pf.forbidden_terms(brand_text)
-        self.assertTrue(table_terms, "术语表应抽出禁用语")
-        self.assertIsInstance(terms, list)
-        self.assertIsInstance(other_terms, list)
+            checks = pf.run_checks(root, draft_path)
+            self.assertTrue(checks)
+            by_id = {check.id: check for check in checks}
+            self.assertIn("cta-consistency", by_id)
+            # 品牌口径已有 CTA 列，检查必须真正参与判定，而不是回退成「口径未补齐」警告
+            self.assertIn(
+                by_id["cta-consistency"].status, (pf.STATUS_OK, pf.STATUS_FAIL)
+            )
+
+            with open(brand, encoding="utf-8") as handle:
+                brand_text = handle.read()
+            terms, table_terms, other_terms = pf.forbidden_terms(brand_text)
+            self.assertTrue(table_terms, "术语表应抽出禁用语")
+            self.assertIsInstance(terms, list)
+            self.assertIsInstance(other_terms, list)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

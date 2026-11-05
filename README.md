@@ -293,19 +293,31 @@ publication、任务、审批、阻塞、指标摘要与复盘结论编译成一
 
 ## 发布前自检：tools/preflight
 
-`tools/preflight <稿件路径>` 在发布前核对稿件与两份源文件是否一致：
+`tools/preflight <稿件路径>` 在发布前核对 canonical 稿件与品牌口径。稿件可以按位置指定，
+也可以按稳定 ID 定位：
 
-- 稿件在 `选题日历.md` 里，登记的路径、主渠道与文件本身一致
+```sh
+tools/preflight knowledge/content/<content_id>/主稿.md
+tools/preflight knowledge/content/<content_id>/publications/<publication_id>/渠道稿.md
+tools/preflight --content <content_id>
+tools/preflight --publication <publication_id>
+```
+
+它只读 canonical 记录：
+
+- 内容卡存在且 `content_id` 与目录一致；publication 卡存在且归属正确、渠道有效
+- 稿件审批是 approved，且 SHA-256 仍覆盖当前稿件（审批后改稿会报「审批失效」）
+- 渠道稿声明的渠道与发布卡一致；主稿与品牌口径的主渠道一致
 - 没有命中 `品牌口径.md` 的禁用表述、术语表「不说什么」、作者人设的第一人称禁忌
 - 字数在渠道口径区间内；CTA 话术与渠道口径一致（必含话术 / 禁写词）
+- 内容卡声明 `pillar` 时核对内容支柱；未声明只警告
 - 退出码：`0` 无硬性失败，`1` 有失败，`2` 用法错误
 
-**规则不在脚本里**：口径改 `品牌口径.md`；选题事实改对应内容卡，再运行
-`tools/opc-workflow build` 刷新只读日历。只有新增「代码类」检查才需要改
-`tools/preflight`——那是 owner 的活。
+选题日历是 generated 只读视图，preflight 不读它；旧的 `knowledge/business/<channel>/`
+稿件布局也不再支持，遇到时会明确指向 canonical 位置。
 
-选题日历已经是 generated 视图时，日历相关的旧检查（稿件登记、支柱列）会标成「跳过」，
-不再拿旧格式当事实；canonical 内容卡级别的核对会在后续迭代里接上。
+**规则不在脚本里**：口径改 `品牌口径.md`；内容与 publication 事实改对应 canonical 记录。
+只有新增「代码类」检查才需要改 `tools/preflight`——那是 owner 的活。
 
 它是**内容线专用**工具。如果这个实例不做内容，把 `tools/preflight` 与 `tools/tests/`
 连同 `opc-install.sh` 里两条 `Bash(./tools/preflight:*)` 白名单一起删掉即可，其余角色
