@@ -205,7 +205,9 @@ growth 的四类常驻内容分开放，不互相代替：
 4. 内容关闭由 gm 执行：`transition <content_id> --to closed --actor gm`。只有 ready 内容
    可以关闭；所有必需 publication 必须已 reviewed 或已带原因 cancelled，否则命令失败并
    列出阻塞项。可选 publication 不阻塞关闭。
-5. 完成复盘与关闭内容会刷新生成的选题日历与渠道发布记录，但不修改任何历史指标快照。
+5. 选题作废由 gm 执行：`transition <content_id> --to cancelled --note "<原因>" --actor
+   gm`。只有 proposed 或 drafting 内容可以取消，取消是终态，内容卡保留取消记录与事件。
+6. 完成复盘与关闭内容会刷新生成的选题日历与渠道发布记录，但不修改任何历史指标快照。
 
 ### 内容闭环总览
 
@@ -221,6 +223,8 @@ proposed        content 用 create-content 创建内容卡
   ↓ metrics     growth 用 record-metrics / record-channel-snapshot 记录观测
   ↓ reviewed    growth 复盘（结论 + 下一项行动）；数据不可得时 gm 记例外
   ↓ closed      gm 在所有必需 publication 复盘或带原因取消后关闭内容
+
+proposed / drafting --cancelled--> gm 带原因取消选题，终态
 ```
 
 owner 负责实际对外发布；gm 负责把 approval 决定与发布事实落盘，不代替 owner 发布。

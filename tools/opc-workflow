@@ -8,6 +8,7 @@
     tools/opc-workflow create-publication <content_id> --channel <channel> [--actor gm]
     tools/opc-workflow transition <content_id> --to drafting|reviewing [--actor ...]
     tools/opc-workflow transition <content_id> --decision approved|changes_requested|rejected [--note ...]
+    tools/opc-workflow transition <content_id> --to closed|cancelled [--note ...] --actor gm
     tools/opc-workflow transition <publication_id> --to scheduled|published|cancelled [...]
     tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at ... --source ... --values ...
     tools/opc-workflow record-channel-snapshot --channel ... --observed-at ... --source ... --values ...
@@ -1130,6 +1131,28 @@ def validate_approval(
     return errors
 
 
+def validate_content_cancellation_events(source: str, cancellation: dict, events: list):
+    errors = []
+    cancel_event = next(
+        (
+            event
+            for event in reversed(events)
+            if isinstance(event, dict) and event.get("action") == "cancel"
+        ),
+        None,
+    )
+    expected = {
+        "at": cancellation.get("cancelled_at"),
+        "actor": cancellation.get("cancelled_by"),
+        "note": cancellation.get("reason"),
+    }
+    if cancel_event is None or any(
+        cancel_event.get(field) != value for field, value in expected.items()
+    ):
+        errors.append(Diagnostic(source, "cancellation 与 cancel event 不一致"))
+    return errors
+
+
 def validate_approval_events(source: str, approval: dict, events: list):
     errors = []
     review_event = next(
@@ -1250,6 +1273,25 @@ def validate_record(
     elif status in ("reviewing", "ready"):
         errors.append(Diagnostic(source, f"状态 {status} 要求 approval 元数据"))
 
+    cancellation = record.get("cancellation")
+    if status == "cancelled":
+        if not isinstance(cancellation, dict):
+            errors.append(Diagnostic(source, "cancelled 内容要求 cancellation 元数据"))
+        else:
+            if not valid_offset_time(cancellation.get("cancelled_at")):
+                errors.append(
+                    Diagnostic(
+                        source,
+                        "cancellation cancelled_at 必须是 offset-aware ISO 8601 时间",
+                    )
+                )
+            if cancellation.get("cancelled_by") != "gm":
+                errors.append(Diagnostic(source, "cancellation cancelled_by 必须是 gm"))
+            if not is_nonempty_string(cancellation.get("reason")):
+                errors.append(Diagnostic(source, "cancellation reason 不能为空"))
+    elif cancellation is not None:
+        errors.append(Diagnostic(source, "只有 cancelled 内容可以包含 cancellation"))
+
     created_at = record.get("created_at")
     if isinstance(created_at, str) and not valid_offset_time(created_at):
         errors.append(Diagnostic(source, "字段 created_at 必须是 offset-aware ISO 8601 时间"))
@@ -1300,6 +1342,10 @@ def validate_record(
                 )
             if isinstance(approval, dict):
                 errors.extend(validate_approval_events(source, approval, events))
+            if isinstance(cancellation, dict):
+                errors.extend(
+                    validate_content_cancellation_events(source, cancellation, events)
+                )
     return errors
 
 
@@ -1321,7 +1367,14 @@ def validate_event(source: str, index: int, event, known_roles: dict):
         errors.append(Diagnostic(source, f"{label} 使用非法 actor「{actor}」"))
 
     action = event.get("action")
-    known_actions = ("create", "transition", "submit_review", "approval_decision", "close")
+    known_actions = (
+        "create",
+        "transition",
+        "submit_review",
+        "approval_decision",
+        "close",
+        "cancel",
+    )
     if isinstance(action, str) and action not in known_actions:
         errors.append(Diagnostic(source, f"{label} 使用未知 action「{action}」"))
     expected_actors = {
@@ -1329,17 +1382,26 @@ def validate_event(source: str, index: int, event, known_roles: dict):
         "submit_review": "content",
         "approval_decision": "gm",
         "close": "gm",
+        "cancel": "gm",
     }
     expected_actor = expected_actors.get(action)
     if expected_actor is not None and actor != expected_actor:
         errors.append(
             Diagnostic(source, f"{label} {action} actor 必须是 {expected_actor}")
         )
-    if action in ("transition", "submit_review", "approval_decision", "close"):
+    if action in (
+        "transition",
+        "submit_review",
+        "approval_decision",
+        "close",
+        "cancel",
+    ):
         for field in ("from_status", "to_status"):
             value = event.get(field)
             if value not in CONTENT_STATUSES:
                 errors.append(Diagnostic(source, f"{label} 字段 {field} 是非法内容状态"))
+    if action == "cancel" and not is_nonempty_string(event.get("note")):
+        errors.append(Diagnostic(source, f"{label} cancel 必须记录 note 说明原因"))
     if action in ("submit_review", "approval_decision"):
         if event.get("artifact") != MAIN_DRAFT_NAME:
             errors.append(Diagnostic(source, f"{label} artifact 必须是 {MAIN_DRAFT_NAME}"))
@@ -2612,11 +2674,38 @@ def transition_content(
         record["events"].append(event)
         write_atomic(card, render_card(record, body))
         return "closed", actor
+    if to_status == "cancelled":
+        if actor != "gm":
+            raise WorkflowError("取消内容 actor 必须是 gm")
+        if current_status not in ("proposed", "drafting"):
+            raise WorkflowError("只有 proposed 或 drafting 内容可以取消")
+        if note is None:
+            raise WorkflowError("取消内容必须记录 note 说明原因")
+        record["status"] = "cancelled"
+        record["cancellation"] = {
+            "cancelled_at": now,
+            "cancelled_by": actor,
+            "reason": note,
+        }
+        record["events"].append(
+            {
+                "action": "cancel",
+                "at": now,
+                "actor": actor,
+                "from_status": current_status,
+                "to_status": "cancelled",
+                "note": note,
+            }
+        )
+        write_atomic(card, render_card(record, body))
+        return "cancelled", actor
     if actor != "content":
         raise WorkflowError("内容状态转换 actor 必须是 content")
     if to_status == "drafting":
         if current_status != "proposed":
-            raise WorkflowError("只有 proposed 内容可以进入 drafting")
+            raise WorkflowError(
+                f"只有 proposed 内容可以进入 drafting（当前 {current_status}）"
+            )
         draft = package / MAIN_DRAFT_NAME
         if draft.is_symlink():
             raise WorkflowError(f"{MAIN_DRAFT_NAME} 不能是 symlink")

@@ -2642,6 +2642,85 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(required_id, required_record["publication_id"])
         self.assertEqual(optional_id, optional_record["publication_id"])
 
+    def test_gm_cancels_proposed_content_with_reason(self):
+        content_id, content_card = self.create_content(title="要取消的选题")
+
+        cancelled = self.transition(
+            content_id,
+            "--to",
+            "cancelled",
+            "--note",
+            "选题不再做",
+            actor="gm",
+        )
+
+        self.assertEqual(0, cancelled.returncode, cancelled.stderr)
+        record, _ = parse_frontmatter(content_card)
+        self.assertEqual("cancelled", record["status"])
+        self.assertEqual("gm", record["cancellation"]["cancelled_by"])
+        self.assertEqual("选题不再做", record["cancellation"]["reason"])
+        event = record["events"][-1]
+        self.assertEqual("cancel", event["action"])
+        self.assertEqual("gm", event["actor"])
+        self.assertEqual("proposed", event["from_status"])
+        self.assertEqual("cancelled", event["to_status"])
+        self.assertEqual("选题不再做", event["note"])
+
+    def test_content_cancel_requires_gm_reason_and_an_open_content(self):
+        content_id, content_card = self.create_content(title="取消权限")
+
+        not_gm = self.transition(
+            content_id, "--to", "cancelled", "--note", "越权", actor="content"
+        )
+        self.assertEqual(1, not_gm.returncode)
+        self.assertIn("gm", not_gm.stderr)
+
+        no_reason = self.transition(content_id, "--to", "cancelled", actor="gm")
+        self.assertEqual(1, no_reason.returncode)
+        self.assertIn("note", no_reason.stderr)
+
+        record, _ = parse_frontmatter(content_card)
+        self.assertEqual("proposed", record["status"])
+
+        ready_id, _ready_card = self.create_ready_content(title="已就绪")
+        not_open = self.transition(
+            ready_id, "--to", "cancelled", "--note", "已就绪", actor="gm"
+        )
+        self.assertEqual(1, not_open.returncode)
+
+    def test_cancelled_content_is_terminal(self):
+        content_id, _content_card = self.create_content(title="终态")
+        cancelled = self.transition(
+            content_id, "--to", "cancelled", "--note", "选题不再做", actor="gm"
+        )
+        self.assertEqual(0, cancelled.returncode, cancelled.stderr)
+
+        restarted = self.transition(content_id, "--to", "drafting", actor="content")
+
+        self.assertEqual(1, restarted.returncode)
+        self.assertIn("cancelled", restarted.stderr)
+
+    def test_validate_requires_cancellation_metadata_for_cancelled_content(self):
+        content_id, content_card = self.create_content(title="缺取消记录")
+        record, _ = parse_frontmatter(content_card)
+        record["status"] = "cancelled"
+        record["events"].append(
+            {
+                "action": "cancel",
+                "at": "2026-11-21T10:00:00+08:00",
+                "actor": "gm",
+                "from_status": "proposed",
+                "to_status": "cancelled",
+                "note": "选题不再做",
+            }
+        )
+        write_frontmatter(content_card, record)
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("cancellation", result.stderr)
+
     def test_review_and_close_refresh_views_without_touching_metrics(self):
         publication_id, publication_card = self.create_published_publication()
         record, _ = parse_frontmatter(publication_card)

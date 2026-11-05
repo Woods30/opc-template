@@ -31,6 +31,9 @@ command: zsh -lic claude
    数据确实不可得时由你带 `--exception-reason` 落盘例外。所有必需 publication 已 reviewed 或
    带原因 cancelled 后，用 `tools/opc-workflow transition <content_id> --to closed --actor gm`
    关闭内容；可选 publication 不阻塞。裁决与例外写 `knowledge/decisions/`。
+7. **作废选题**：选题确定不做时，用 `tools/opc-workflow transition <content_id> --to
+   cancelled --note "<原因>" --actor gm` 取消。取消只对 proposed 或 drafting 内容开放，
+   取消是终态，内容卡保留取消原因与事件，不要另建一张表记录这件事。
 
 ## 你的边界
 
