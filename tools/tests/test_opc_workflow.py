@@ -2391,6 +2391,28 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual("渠道稿.md", approvals[0]["artifact"])
         self.assertIn(publication_id, payload["scope"]["publication_ids"])
 
+    def test_inbox_uses_stable_task_id_reference_and_skips_examples(self):
+        content_id, _content_card = self.create_ready_content()
+        self.write_inbox(
+            "gm",
+            [
+                "```",
+                "- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务：<做什么> | 验收：<怎么算完成>",
+                "```",
+                "- [2026-12-01 09:30] 发起方：gm | 任务 ID：task-abc123 | 业务引用：{} | "
+                "任务：跟进复盘 | 验收：有结论".format(content_id),
+            ],
+        )
+        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/inbox/gm.md` |"])
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        tasks = self.dashboard()["tasks"]
+        self.assertEqual(1, len(tasks), "围栏代码块里的示例不是待办")
+        self.assertEqual("task-abc123", tasks[0]["task_id"])
+        self.assertEqual(content_id, tasks[0]["reference"])
+
     def test_build_dashboard_reads_inbox_states_from_markers(self):
         self.write_inbox(
             "gm",

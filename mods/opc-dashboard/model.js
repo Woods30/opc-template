@@ -17,7 +17,7 @@ export const GENERATED_SUFFIXES = [
   "发布记录.md",
 ];
 
-// canonical 事实源：只有它们变了才需要重跑 build。work/ 与 daily/ 是过程与日志。
+// canonical 事实源：只有它们变了才需要重跑 build。work/ 是过程，decisions/ 是日志。
 export const CANONICAL_PREFIXES = [
   "knowledge/content/",
   "knowledge/inbox/",

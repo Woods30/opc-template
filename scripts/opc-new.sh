@@ -79,18 +79,20 @@ esac
 #   .opc-template-repo —— 标记「这是模版」，进了实例会让实例自认是模版
 #   .github/ docs/     —— 模版侧档案（CI、提案存档、同步说明）
 #   sync-policy.json   —— 同步策略，实例侧由 opc-sync.sh 缓存到 .opc/policy.json
+#   /knowledge    —— 模版工作区的本地业务数据（sync-policy 里的 local）；
+#                   实例的知识目录由安装器从 seeds/ 物化，不从模版复制
 #   README.md     —— 模版视角的说明书，实例用 seeds/README.md 那一份
 #                   （用 /README.md 锚定根目录，否则会连 seeds/ 下的同名文件一起排除）
 RSYNC_EXCLUDES=(
   --exclude '.git' --exclude '.opc' --exclude '.opc-template-repo'
   --exclude '.github' --exclude 'docs' --exclude 'sync-policy.json'
-  --exclude '/README.md'
+  --exclude '/knowledge' --exclude '/README.md'
 )
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "将创建实例：${TARGET}（前缀 ${PREFIX}）"
   echo "  模版来源：$SOURCE"
-  echo "  复制内容：除 .git/.opc/.opc-template-repo/.github/docs/sync-policy.json 外的全部"
+  echo "  复制内容：除 .git/.opc/.opc-template-repo/.github/docs/sync-policy.json/knowledge 外的全部"
   [[ "$DO_GIT" == "1" ]] && echo "  git：init + 首次提交"
   [[ "$DO_INSTALL" == "1" ]] && echo "  安装：scripts/opc-install.sh $PREFIX"
   exit 0

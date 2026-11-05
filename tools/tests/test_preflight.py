@@ -454,6 +454,17 @@ class PreflightTestCase(unittest.TestCase):
         self.assertEqual(check.status, pf.STATUS_WARN)
         self.assertTrue(any("未标注渠道" in item for item in check.detail))
 
+    def test_missing_brand_main_channel_is_a_warning(self):
+        brand_path = os.path.join(self.business_dir, "品牌口径.md")
+        with open(brand_path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.write(brand_path, text.replace("**主渠道：公众号**", "**主渠道：待定**")
+                   .replace("主渠道：公众号", "主渠道：待定"))
+        checks = self.run_main()
+        check = self.check_by_id(checks, "channel-match")
+        self.assertEqual(check.status, pf.STATUS_WARN)
+        self.assertTrue(any("主渠道" in item for item in check.detail))
+
     # ---------- 品牌检查 ----------
 
     def test_forbidden_word_fails(self):

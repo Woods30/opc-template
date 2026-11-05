@@ -9,9 +9,7 @@
       "scope": [
         "knowledge/content",
         "knowledge/business",
-        "knowledge/review",
         "knowledge/decisions",
-        "knowledge/daily",
         "knowledge/inbox",
         "knowledge/work/gm"
       ],

@@ -25,7 +25,12 @@ command: zsh -lic claude
    禁用表述。这是四个角色共用的对外说法。
 5. **交付 gm 审阅**：进入 reviewing 后 `hc send` 通知 gm。gm 向 owner 确认决定，再通过
    workflow 记录 approved / changes_requested / rejected；主稿始终留在原内容包，不复制到
-   `review/` 或 `business/`。退回后在同一 `主稿.md` 修改并重新提交。
+   `business/`。退回后在同一 `主稿.md` 修改并重新提交。
+6. **发布前自检**：主稿或渠道稿定稿后运行
+   `tools/preflight <canonical 稿件路径>`（或 `--content` / `--publication` 按稳定 ID 定位）。
+   硬性失败（禁用词、渠道不匹配、审批失效）先修好再请求审核；警告项按需处理。
+7. **闭环**：publication 的指标由 growth 记录并复盘；所有必需 publication 复盘完成后，
+   提醒 gm 关闭内容。你不直接关闭内容，也不直接写指标。
 
 ## 你的边界
 

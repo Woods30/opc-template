@@ -190,11 +190,24 @@ def normalize_channel(value):
     return base_channel(value or "").casefold()
 
 
+def is_placeholder_channel(value):
+    """TODO、待定、<占位> 都不算已配置的渠道。"""
+    text = base_channel(value or "")
+    return (
+        not text
+        or text in ("—", "-", "待定")
+        or text.startswith("<")
+        or text.upper().startswith("TODO")
+    )
+
+
 def brand_main_channel(brand_text):
     """从品牌口径的「渠道口径」段里取主渠道名，取不到返回空串。"""
     section_text = section(brand_text, "渠道口径")
     match = re.search(r"主渠道\s*[：:]\s*([^\s（(、，,]+)", section_text)
-    return base_channel(match.group(1)) if match else ""
+    if not match or is_placeholder_channel(match.group(1)):
+        return ""
+    return base_channel(match.group(1))
 
 
 def configured_channel_names(root):
@@ -1132,8 +1145,8 @@ def check_channel(root, target, draft, brand_text, channel_override, publication
             return Check(
                 "channel-match",
                 "稿件渠道与 canonical 记录一致",
-                STATUS_FAIL,
-                ["品牌口径没有「主渠道」，无法核对主稿渠道"],
+                STATUS_WARN,
+                ["品牌口径还没有「主渠道」，无法核对主稿渠道；补上后本项自动生效"],
                 os.path.join(BRAND_REL, "# 渠道口径"),
             )
         candidates = {canonical}

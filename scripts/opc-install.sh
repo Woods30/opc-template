@@ -273,12 +273,13 @@ for role in $roles; do
 done
 
 # 2b-2. 固定目录、收件箱与目录型 scope（只建缺失的，不覆盖已有内容）
-mkdir -p "$ROOT/knowledge/review" "$ROOT/knowledge/decisions" \
-         "$ROOT/knowledge/daily" "$ROOT/knowledge/inbox"
+# canonical 内容区与 workflow 的事实入口；review/ 与 daily/ 是旧操作模型，不再创建。
+mkdir -p "$ROOT/knowledge/content" "$ROOT/knowledge/decisions" \
+         "$ROOT/knowledge/inbox"
 for role in $roles; do
   inbox="$ROOT/knowledge/inbox/$role.md"
   if [[ ! -f "$inbox" ]]; then
-    printf '# %s 收件箱\n\n派工与上报都追加到本文件末尾，一行一条，最新的在最下面。格式：\n\n```\n- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务：<做什么> | 验收：<怎么算完成>\n```\n\n派工后 `hc send <前缀>-%s` 通知。\n\n**只执行行首既无 `✅` 也无 `⛔` 的条目。** 发起方收到「完成」回报后在该条目行首加 `✅`；撤销时在行首加 `⛔ 已撤销：<原因>`。详见 `AGENTS.md`「状态来源」一节。\n\n---\n\n## 当前队列\n\n（空）\n' \
+    printf '# %s 收件箱\n\n派工与上报都追加到本文件末尾，一行一条，最新的在最下面。`knowledge/inbox/` 只有 gm 能写。格式：\n\n```\n- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务 ID：task-<稳定 ID> | 业务引用：<content_id / publication_id / -> | 任务：<做什么> | 验收：<怎么算完成>\n```\n\n派工后 `hc send <前缀>-%s` 通知。\n\n**只执行行首既无 `✅` 也无 `⛔` 的条目。** 发起方收到「完成」回报后在该条目行首加 `✅`；撤销时在行首加 `⛔ 已撤销：<原因>`。详见 `AGENTS.md`「状态来源」一节。\n\n---\n\n## 当前队列\n\n（空）\n' \
       "$role" "$role" > "$inbox"
   fi
   # 目录型 scope 一并建出来，避免角色第一次写文件时目录不存在
@@ -314,7 +315,8 @@ if [[ -f "$CHANNELS_FILE" ]]; then
       echo "频道 id 不合法：${cid}（1-20 位小写字母数字 -，以字母开头）" >&2
       exit 1
     }
-    mkdir -p "$ROOT/knowledge/business/$cid/assets"
+    # 频道目录只放 generated 发布记录；稿件在 canonical 内容包，资产不进频道目录。
+    mkdir -p "$ROOT/knowledge/business/$cid"
     if [[ ! -f "$ROOT/knowledge/business/$cid/发布记录.md" ]]; then
       printf '# %s 发布记录\n\n> **GENERATED FILE — READ ONLY**\n> 由 `tools/opc-workflow build` 从 canonical publication cards 生成。请勿手工编辑。\n\n当前没有该渠道的 publication。\n' \
         "$cid" > "$ROOT/knowledge/business/$cid/发布记录.md"

@@ -3128,13 +3128,22 @@ def parse_inbox_entry(line: str, role: str, source: str):
     digest = hashlib.sha256(
         "|".join([role, requested_at, task]).encode("utf-8")
     ).hexdigest()
+    # 条目可以显式写「任务 ID」：同一任务改措辞或补验收时 ID 不会漂移。
+    # 没写时按角色 + 时间 + 任务文本派生，保持旧条目的稳定标识。
+    explicit = strip_code(fields.get("任务 ID", ""))
+    if re.fullmatch(r"task-[0-9a-z][0-9a-z-]{3,39}", explicit):
+        task_id = explicit
+    else:
+        task_id = f"task-{digest[:12]}"
+    reference = strip_code(fields.get("业务引用", "")) or None
     return {
-        "task_id": f"task-{digest[:12]}",
+        "task_id": task_id,
         "role": role,
         "requester": fields.get("发起方"),
         "requested_at": requested_at,
         "task": task,
         "acceptance": fields.get("验收"),
+        "reference": reference,
         "state": state,
         "reason": reason,
         "source_path": source,
@@ -3165,7 +3174,14 @@ def scan_inbox_tasks(root: Path):
         except (OSError, UnicodeError):
             continue
         source = path.relative_to(root).as_posix()
+        in_fence = False
         for line in text.splitlines():
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            # 收件箱头部有格式示例；围栏代码块里的是说明，不是派工条目。
+            if in_fence:
+                continue
             entry = parse_inbox_entry(line, path.stem, source)
             if entry is not None:
                 tasks.append(entry)

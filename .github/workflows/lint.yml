@@ -30,6 +30,7 @@ jobs:
           python3 tools/tests/test_opc_lint.py
           python3 tools/tests/test_preflight.py
           python3 tools/tests/test_opc_workflow.py
+          bash tools/tests/test_opc_instance.sh
 
       - name: 看板 mod 测试
         run: node --test tools/tests/test_opc_dashboard_mod.mjs

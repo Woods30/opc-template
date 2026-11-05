@@ -29,26 +29,26 @@ dev 负责研发。
 knowledge/
 ├── content/      # canonical 内容包：内容卡、主稿、publications/，创建后不移动
 ├── business/     # 业务结果与 generated 只读视图：老板日常只看这里
-│   ├── <频道>/   # 由 channels.json 生成，含 assets/ 与 发布记录.md
-│   │   ├── assets/       # 封面、配图
+│   ├── <频道>/   # 由 channels.json 生成，只有 发布记录.md
 │   │   └── 发布记录.md
 │   ├── growth/   # 渠道计划、指标目录、渠道快照、转化路径、实验
 │   ├── product/  # 需求、方案、实现记录、已知问题
 │   ├── 品牌口径.md
 │   ├── 选题日历.md
 │   └── dashboard.json  # generated 只读视图：看板 JSON 契约（build 生成）
-├── review/       # 非 canonical 对外物料的待审区；主稿审核不使用
 ├── decisions/    # 决策记录（gm 裁决后落盘）
-├── daily/        # 每日汇总
 ├── inbox/        # 任务投递：gm.md / content.md / growth.md / dev.md
 └── work/<角色>/  # 过程：草稿、提案、实验记录、LESSONS.md
     └── template-proposals/  # 给模版提的改进提案（见「模版与实例」）
 ```
 
 - `content/` 是**事实**：每条内容从 proposed 起固定在 `<content_id>/内容卡.md`，不靠移动目录表达状态。
-- `business/` 是**结果与视图**：成稿、物料、常驻口径，以及 generated 只读视图。老板只看这里。
+  主稿固定在 `<content_id>/主稿.md`，渠道稿固定在
+  `<content_id>/publications/<publication_id>/渠道稿.md`。
+- `business/` 是**结果与视图**：成稿、常驻口径，以及 generated 只读视图。老板只看这里。
+  频道目录只放 generated 发布记录，不放稿件或资产副本。
 - `work/` 是**过程**：草稿、提案、日志。老板不看，但进版本库。
-- `review/` 只保留非 canonical 对外物料；主稿审核状态写在内容卡，不靠复制文件表达。
+- 不再有 `review/` 与 `daily/`：审核状态写在 canonical 记录里，决策写 `decisions/`。
 
 命名规则：**目录是结构，用英文；文件是内容，用中文**。目录一律小写 ASCII slug。
 
@@ -79,8 +79,14 @@ OPC 有两层：**模版**（通用机制，公开仓库）与**实例**（这�
 发起方把任务**追加**到 `knowledge/inbox/<角色名>.md`，每条一行，格式：
 
 ```
-- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题，各含标题与一句话钩子
+- [2026-11-04 09:30] 发起方：gm | 任务 ID：task-a1b2c3d4e5f6 | 业务引用：<content_id 或 publication_id> | 任务：产出本周选题清单 | 验收：10 个选题，各含标题与一句话钩子
 ```
+
+- **`knowledge/inbox/` 只有 gm 可写**。其他角色只能通过 `hc send` 上报，由 gm 落盘。
+- `任务 ID` 形如 `task-<小写字母数字>`，由 gm 分配且全实例唯一；后续改措辞、补验收时
+  保持不变。没写时 workflow 会按「角色 + 时间 + 任务文本」派生一个稳定 ID。
+- `业务引用` 指向这条任务服务的 canonical 记录（content_id / publication_id），没有就写
+  `-`；看板用它把任务与内容、发布连起来。
 
 追加完成后通知对方：
 
@@ -111,17 +117,17 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 
 ### 状态来源（动手前先读这条）
 
-`inbox/` 是**队列**，`daily/` 与 `decisions/` 是**日志**。三者不能混着当待办读：
+`inbox/` 是**队列**，`decisions/` 是**日志**。两者不能混着当待办读：
 
 - **只有 `inbox/<角色>.md` 里未标记的条目是可执行待办。**
-- `daily/`、`decisions/`、`work/` 里的历史描述**一律不作为「现在该做什么」的依据**。
+- `decisions/`、`work/` 里的历史描述**一律不作为「现在该做什么」的依据**。
   它们记录的是当时的状态，可能早已被推翻。
 - 状态变化必须写回**派工所在的那个 inbox 条目**，不能只写进决策文档：
   - 发起方收到「完成」回报后，在该条目行首加 `✅`；
   - 任务撤销时，在该条目行首加 `⛔ 已撤销：<一句话原因>`；
   - 角色只执行行首既无 `✅` 也无 `⛔` 的条目。
 - 因此：**新 session 启动后，第一件事是读自己 inbox 里未标记的条目**，不要从
-  `daily/` 或 `decisions/` 反推任务。看到两份文件说法不一致，以 inbox 为准，并向 gm 报告。
+  `decisions/` 反推任务。看到两份文件说法不一致，以 inbox 为准，并向 gm 报告。
 
 ### 主稿审核
 
@@ -133,7 +139,7 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
    <approved|changes_requested|rejected> --actor gm` 落盘。退回或拒绝必须带 `--note`。
 4. approved 才进入 ready。审批后修改主稿会被 `validate` 判为 `stale approval`；在同一文件
    修改后重新提交、重新审批，旧决定保留在 events。
-5. 主稿不移动、不复制进 `review/` 或 `business/`；`knowledge/business/选题日历.md` 只由
+5. 主稿不移动、不复制到 `business/`；`knowledge/business/选题日历.md` 只由
    `tools/opc-workflow build` 生成当前状态与目标日期视图。
 
 ### 渠道 publication
@@ -171,6 +177,19 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 6. `build` 的频道视图区分指标缺失（未记录）、不可得（`{"available": false, "reason":
    "..."}`）与数值为零；渠道账号观测单独成节，不混入 publication 指标。
 
+### 增长常驻规则
+
+growth 的四类常驻内容分开放，不互相代替：
+
+| 内容 | 位置 | 写法 |
+|---|---|---|
+| 渠道策略 | `business/growth/渠道计划.md` | growth 直接维护：定位、节奏、内容形式偏好 |
+| 指标定义 | `business/growth/指标.md` frontmatter | growth 直接维护；只写 key、label、unit、aggregation、scope 与 channels |
+| 账号级渠道快照 | `business/growth/渠道快照.md` | 只能由 `record-channel-snapshot` 追加，不手改 |
+| 转化路径 | `business/growth/转化路径.md` | growth 与 dev 共同维护：从曝光到转化的路径与卡点 |
+
+观测值永远不进指标定义；账号级数据不归属到单个 publication。
+
 ### 复盘与关闭
 
 1. publication 创建时用 `--required-window 48h`（可重复）声明必需指标窗口；`--optional`
@@ -185,6 +204,24 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
    可以关闭；所有必需 publication 必须已 reviewed 或已带原因 cancelled，否则命令失败并
    列出阻塞项。可选 publication 不阻塞关闭。
 5. 完成复盘与关闭内容会刷新生成的选题日历与渠道发布记录，但不修改任何历史指标快照。
+
+### 内容闭环总览
+
+```text
+proposed        content 用 create-content 创建内容卡
+  ↓ drafting    content 在固定主稿写稿
+  ↓ reviewing   content 提交，workflow 记录主稿 SHA-256
+  ↓ ready       gm 记录 owner 的 approved
+  ↓ adapting    gm 用 create-publication 为渠道建 publication
+  ↓ reviewing   content 提交渠道稿，workflow 记录渠道稿 SHA-256
+  ↓ scheduled   gm 记录 owner 决定并排期
+  ↓ published   owner 实际发布，gm 用 --to published 落盘时间与 URL
+  ↓ metrics     growth 用 record-metrics / record-channel-snapshot 记录观测
+  ↓ reviewed    growth 复盘（结论 + 下一项行动）；数据不可得时 gm 记例外
+  ↓ closed      gm 在所有必需 publication 复盘或带原因取消后关闭内容
+```
+
+owner 负责实际对外发布；gm 负责把 approval 决定与发布事实落盘，不代替 owner 发布。
 
 ### 业务看板
 
@@ -218,7 +255,7 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
    **不要直接写 `knowledge/inbox/gm.md`**——`knowledge/inbox/` 只有 gm 可写，
    其他角色写它会被直接拒绝。由 gm 收到后代为落盘。
 
-3. gm 每天把它汇总到 `daily/<日期>.md` 的「权限缺口」小节；owner 批量处理后重跑
+3. gm 把它汇总到当天的 `decisions/<日期>-权限缺口.md`；owner 批量处理后重跑
    `scripts/opc-install.sh`，受影响的角色重启一次即可。
 
 **技能被拒不算权限缺口**：技能只放行 `roles.json` 里该角色 `approvedSkills` 列出的
@@ -295,21 +332,24 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
   那几棵子树」——那是你的责任。只写 `roles.json` 里 `scope` 列出的子树与
   `knowledge/work/<角色>/`；`knowledge/business/` 的定稿、`scripts/`、`tools/`
   都归 gm 与 owner，不要直接改（要改就走 gm）。
+- **内容区共享但写入受限**：所有角色都能读 `knowledge/content/`；主稿、渠道稿与状态只能
+  通过 `tools/opc-workflow` 写，`scope` 只防误写，不提供字段级授权。growth 的指标观测
+  同样走 workflow，不直接编辑内容包。
 
-## 每日汇总
+## 决策与日志
 
-gm 每天在 `knowledge/daily/<YYYY-MM-DD>.md` 汇总：昨日各角色产出、今日待办、
-阻塞项。格式：
+裁决、阻塞解除、权限缺口等写进 `knowledge/decisions/<YYYY-MM-DD>-<主题>.md`，不再有
+每日汇总目录。派工与状态仍只认 `knowledge/inbox/`：decisions 是日志，不是待办。格式：
 
 ```markdown
-# 2026-11-04
+# 2026-11-04 · <主题>
 
-## 昨日产出
-- content：<文件路径> — <一句话结论>
+## 决定
+- <一句话说清决定了什么>
 
-## 今日待办
-- <角色>：<任务>（投递至 knowledge/inbox/<角色>.md）
+## 理由
+- <为什么>
 
-## 阻塞
-- <角色>：<阻塞点> — <需要什么决策>
+## 影响
+- <受影响的角色、内容或 publication>
 ```

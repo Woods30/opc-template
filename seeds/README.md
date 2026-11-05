@@ -15,16 +15,15 @@
 ```text
 knowledge/           唯一事实来源
 ├── content/         canonical 内容包：内容卡、主稿、publications/
-├── business/        结果、常驻口径与 generated 只读视图
+├── business/        结果、常驻口径与 generated 只读视图（频道目录只放发布记录）
 ├── work/<角色>/     过程：草稿、提案、日志、template-proposals/
-├── review/          非 canonical 对外物料的待审区；主稿审核不使用
 ├── decisions/       决策记录
-├── daily/           每日汇总
-└── inbox/           任务队列（只执行行首既无 ✅ 也无 ⛔ 的条目）
+└── inbox/           任务队列（只有 gm 可写；只执行行首既无 ✅ 也无 ⛔ 的条目）
 ```
 
 `business/` 是结果，老板日常只看这里；`work/` 是过程，不干扰。
 命名规则：**目录是结构，用英文；文件是内容，用中文**。
+主稿与渠道稿从创建起就在对应内容包里，`work/` 只放非 canonical 过程材料。
 
 ## 日常
 
@@ -45,9 +44,16 @@ tools/opc-workflow transition <publication_id> --to scheduled --planned-at <ISO�
 tools/opc-workflow transition <publication_id> --to published --actual-at <ISO时间> --url <URL> --actor gm  # 记录真实发布
 tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at <ISO时间> --source <来源> --values '<JSON>' --actor growth
 tools/opc-workflow record-channel-snapshot --channel <channel> --observed-at <ISO时间> --source <来源> --values '<JSON>' --actor growth
+tools/opc-workflow transition <publication_id> --to reviewed --conclusion <continue|iterate|stop|inconclusive> --next-action "<下一项行动>" --actor growth
+tools/opc-workflow transition <content_id> --to closed --actor gm  # 必需 publication 全部复盘或带原因取消后关闭
 tools/opc-workflow validate                         # 校验内容、publication、审批 hash 与指标
 tools/opc-workflow build                            # 刷新 generated 业务视图与看板 JSON
+tools/preflight <canonical 稿件路径>                # 发布前自检（也可 --content / --publication 按 ID）
 ```
+
+owner 负责实际对外发布；gm 只把 approval 决定、发布时间与 URL 落盘。增长常驻内容分四类：
+渠道策略在 `渠道计划.md`，指标定义在 `指标.md` frontmatter，账号级观测只由
+`record-channel-snapshot` 写 `渠道快照.md`，转化路径在 `转化路径.md`。
 
 ## 业务看板
 

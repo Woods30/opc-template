@@ -63,11 +63,10 @@ INSTANCE.md          本实例专属信息（前缀、频道、运行参数、�
 agents/              各角色的 hc 模板源（唯一事实来源）
 seeds/               占位骨架源：开实例时物化到 knowledge/business/
 knowledge/           唯一事实来源：
-                     ├── content/   canonical 内容包：<content_id>/内容卡.md
+                     ├── content/   canonical 内容包：内容卡、主稿、publications/
                      ├── business/  结果、常驻口径与 generated 只读视图
                      ├── work/      过程：每个角色一个子树（草稿、提案、日志）
-                     ├── review/    待 owner 过审的对外发布内容
-                     └── decisions/ daily/ inbox/
+                     └── decisions/ inbox/
 scripts/             安装、启停、状态、角色管理、同步（执行面，仅 owner 可写）
 tools/               只读包装器与校验工具（执行面，仅 owner 可写）
 layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
@@ -95,8 +94,10 @@ layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
 
 - 模版根目录的 `.opc-template-repo` 是标记。`opc-install.sh` 与 `opc-sync.sh`
   检测到它就拒绝执行——模版不能变成实例。
-- 模版的占位骨架放在 `seeds/business/`，开实例时物化到实例的
+- 模版的占位骨架放在 `seeds/knowledge/business/`，开实例时物化到实例的
   `knowledge/business/`；物化之后那份文件就归业务所有。
+- `opc-new.sh` 不复制模版的 `knowledge/`（sync-policy 里是 `local`）。实例的内容区由安装器
+  创建，业务规则与 generated 视图入口从 `seeds/` 物化，不携带模版工作区的真实业务数据。
 - 实例仓库建议**不推任何远端**；业务数据只在本机，另做一个本地裸库镜像备份。
 - 模版迭代后同步到实例：`scripts/opc-sync.sh check` 看差异，
   `scripts/opc-sync.sh pull` 拉更新。冲突时业务文件不会被改动，产物在
@@ -378,13 +379,14 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 
 ## 协作方式：文件为主，消息只做通知
 
-1. 发起方把任务**追加**到 `knowledge/inbox/<角色>.md`，一行一条
+1. 发起方把任务**追加**到 `knowledge/inbox/<角色>.md`，一行一条；条目带稳定
+   `任务 ID`、`业务引用` 与验收标准。`knowledge/inbox/` 只有 gm 可写
 2. 然后 `hc send <前缀>-<角色> "任务已投递：见 ..."` 喊一声
 3. 对方读 inbox 执行；非 canonical 过程写进 `knowledge/work/<角色>/`。内容主稿通过
    `opc-workflow transition` 在固定内容包内进入 drafting / reviewing，gm 把 owner 决定落到
-   内容卡；不靠 `git mv` 或 `review/` 复制主稿表达状态
+   内容卡；不靠 `git mv` 或复制主稿表达状态
 
-**inbox 是队列，`daily/` 与 `decisions/` 是日志。** 角色只执行 inbox 里行首既无
+**inbox 是队列，`decisions/` 是日志。** 角色只执行 inbox 里行首既无
 `✅` 也无 `⛔` 的条目；状态变更必须写回派工条目，不能只写进决策文档。这条规则来自
 一次真实事故：撤销只写在决策文档里，重启后的两个角色各自从旧日志把任务捞回来执行。
 

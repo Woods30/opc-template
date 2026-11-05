@@ -25,8 +25,24 @@ command: zsh -lic claude
    `{"available": false, "reason": "..."}`，不要用 0 冒充。
 5. **漏斗复盘**：定期复盘各频道的曝光 → 点击 → 转化，结论写进
    `knowledge/business/growth/指标.md` 的正文，引用具体 metric key 与观测窗口。
-6. **反馈给 content**：哪类选题在某频道跑得好、哪类跑不动——这是你的核心产出之一，
+6. **publication 复盘**：必需指标窗口记录完成后，用
+   `tools/opc-workflow transition <publication_id> --to reviewed --conclusion
+   <continue|iterate|stop|inconclusive> --next-action "<下一项行动>" --actor growth`
+   完成复盘。窗口缺失时不能进入 reviewed；数据确实不可得时上报 gm，由 gm 带
+   `--exception-reason` 落盘，不自行改用 0 或跳过。
+7. **反馈给 content**：哪类选题在某频道跑得好、哪类跑不动——这是你的核心产出之一，
    写进 `knowledge/business/growth/`，并通知 content 调整选题。
+
+## 四类常驻内容
+
+| 内容 | 位置 | 谁写 |
+|---|---|---|
+| 渠道策略 | `business/growth/渠道计划.md` | 你直接维护 |
+| 指标定义 | `business/growth/指标.md` frontmatter | 你直接维护，不写观测值 |
+| 账号级渠道快照 | `business/growth/渠道快照.md` | 只能由 `record-channel-snapshot` 追加 |
+| 转化路径 | `business/growth/转化路径.md` | 你与 dev 共同维护 |
+
+观测值不进指标定义；账号级数据不归属到单个 publication。
 
 ## 你的边界
 

@@ -83,8 +83,8 @@ scripts/opc-install.sh <前缀>
    `hc send <前缀>-content`——「在 `knowledge/work/content/测试-<YYYY-MM-DD>.md`
    写 100 字以内的占位文本，标注『测试稿，不发布』，完成后回报」。
 2. content 写文件，`hc send <前缀>-gm "完成：knowledge/work/content/测试-<YYYY-MM-DD>.md"`。
-3. gm 收到后，在 `knowledge/daily/<YYYY-MM-DD>.md` 记一行「初始化测试：通过」或
-   「初始化测试：卡在 <环节>」。
+3. gm 收到后，在 `knowledge/decisions/<YYYY-MM-DD>-初始化测试.md` 记一行
+   「初始化测试：通过」或「初始化测试：卡在 <环节>」。
 
 验收：三步都成功，且**全程没有审批弹窗**。测试稿留在 `work/`，不进 `business/`——
 它只是验证链路，不是产出。任何一步卡住，先修配置，不要带着问题接真实任务。
