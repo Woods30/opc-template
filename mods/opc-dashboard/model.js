@@ -24,6 +24,21 @@ export const CANONICAL_PREFIXES = [
   "knowledge/business/growth/",
 ];
 
+// 看板只读这些子树里的 canonical 记录；别的路径一律不读。
+export const SOURCE_PREFIXES = [
+  "knowledge/content/",
+  "knowledge/inbox/",
+  "knowledge/business/growth/",
+];
+
+// 源文件路径来自生成的契约，仍要先按字面量挡住越界写法。
+export function isAllowedSourcePath(relativePath) {
+  if (typeof relativePath !== "string" || relativePath === "") return false;
+  if (relativePath.startsWith("/")) return false;
+  if (relativePath.split("/").includes("..")) return false;
+  return SOURCE_PREFIXES.some(prefix => relativePath.startsWith(prefix));
+}
+
 export function emptyFilters() {
   return {
     time: "",
