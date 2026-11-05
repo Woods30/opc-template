@@ -2797,6 +2797,74 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("block", result.stderr)
 
+    def test_blocked_content_refuses_forward_state_changes(self):
+        content_id, content_card = self.create_content(title="受阻的选题")
+        blocked = self.run_workflow(
+            "block", content_id, "--reason", "等素材", "--actor", "content"
+        )
+        self.assertEqual(0, blocked.returncode, blocked.stderr)
+
+        drafting = self.transition(content_id, "--to", "drafting", actor="content")
+
+        self.assertEqual(1, drafting.returncode)
+        self.assertIn("blocked", drafting.stderr)
+        record, _ = parse_frontmatter(content_card)
+        self.assertEqual("proposed", record["status"])
+
+    def test_blocked_content_refuses_new_publication_and_scheduling(self):
+        content_id, _card = self.create_ready_content(title="受阻后发布")
+        publication_id, _publication_card = self.create_publication(content_id)
+        blocked = self.run_workflow(
+            "block", content_id, "--reason", "等素材", "--actor", "content"
+        )
+        self.assertEqual(0, blocked.returncode, blocked.stderr)
+
+        created = self.run_workflow(
+            "create-publication", content_id, "--channel", "wechat", "--actor", "gm"
+        )
+        self.assertEqual(1, created.returncode)
+        self.assertIn("blocked", created.stderr)
+
+        scheduled = self.transition(
+            publication_id,
+            "--to",
+            "scheduled",
+            "--planned-at",
+            "2026-12-05T09:00:00+08:00",
+            "--timezone",
+            "Asia/Shanghai",
+            actor="gm",
+        )
+        self.assertEqual(1, scheduled.returncode)
+        self.assertIn("blocked", scheduled.stderr)
+
+    def test_blocked_content_still_allows_recording_published_facts(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        record, _ = parse_frontmatter(publication_card)
+        content_id = record["content_id"]
+        blocked = self.run_workflow(
+            "block", content_id, "--reason", "数据待核", "--actor", "content"
+        )
+        self.assertEqual(0, blocked.returncode, blocked.stderr)
+
+        published = self.publish(publication_id)
+
+        self.assertEqual(0, published.returncode, published.stderr)
+
+    def test_gm_block_can_only_be_removed_by_gm(self):
+        content_id, _card = self.create_content(title="gm 阻塞")
+        blocked = self.run_workflow(
+            "block", content_id, "--reason", "等 owner 确认", "--actor", "gm"
+        )
+        self.assertEqual(0, blocked.returncode, blocked.stderr)
+
+        by_content = self.run_workflow("unblock", content_id, "--actor", "content")
+        self.assertEqual(1, by_content.returncode)
+        self.assertIn("gm", by_content.stderr)
+
+        by_gm = self.run_workflow("unblock", content_id, "--actor", "gm")
+        self.assertEqual(0, by_gm.returncode, by_gm.stderr)
+
     def test_review_and_close_refresh_views_without_touching_metrics(self):
         publication_id, publication_card = self.create_published_publication()
         record, _ = parse_frontmatter(publication_card)

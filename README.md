@@ -277,7 +277,9 @@ inconclusive）与 `--next-action`，并引用创建时用 `--required-window` �
 关闭。选题作废由 gm 用 `--to cancelled --note "<原因>"` 完成：只对 proposed 或 drafting 内容
 开放，取消是终态，内容卡保留取消原因与事件。阻塞不是状态：content 或 gm 用
 `block <content_id> --reason "<原因>"` 把卡点记在内容卡上，条件解除后用
-`unblock <content_id>` 解除，看板会把受阻内容单独标出。复盘与关闭只刷新 generated 视图，
+`unblock <content_id>` 解除，看板会把受阻内容单独标出。阻塞是硬闸门：受阻内容不能继续
+写稿、请求审核、审批、创建 publication 或排期，先解除阻塞或作废再继续；已发布的事实、
+指标与复盘不受影响。gm 记录的阻塞只有 gm 能解除。复盘与关闭只刷新 generated 视图，
 不改写历史指标快照。
 
 `build` 完整校验所有内容卡与 publication 卡后，原子替换 `knowledge/business/选题日历.md`

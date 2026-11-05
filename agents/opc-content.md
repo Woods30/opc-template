@@ -36,7 +36,8 @@ command: zsh -lic claude
 8. **标记阻塞**：等素材、等口径、选题待定这类卡点，用
    `tools/opc-workflow block <content_id> --reason "<原因>" --actor content` 记在内容卡上，
    看板会把这条内容标成受阻。阻塞不是状态，内容本身不因此停下；条件解除后用
-   `tools/opc-workflow unblock <content_id> --actor content` 解除。
+   `tools/opc-workflow unblock <content_id> --actor content` 解除。受阻期间这条内容不能
+   继续写稿、请求审核或排期，条件没解决就先别推进。
 
 ## 你的边界
 

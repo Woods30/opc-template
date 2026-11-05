@@ -426,6 +426,8 @@ def create_publication(
     )
     if content.get("status") != "ready":
         raise WorkflowError("只有 ready 内容可以创建 publication")
+    if isinstance(content.get("block"), dict):
+        raise WorkflowError("内容处于 blocked 状态，请先解除阻塞")
 
     publications = ensure_local_directory(
         root,
@@ -2312,6 +2314,15 @@ def transition_publication(
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     draft = package / CHANNEL_DRAFT_NAME
 
+    # 阻塞是硬闸门：受阻内容不再往前走。记录既成事实（已发布、复盘）与取消仍然放行，
+    # 否则外部发布的事实会因为漏记阻塞而丢在系统外。
+    if isinstance(content.get("block"), dict) and to_status not in (
+        "published",
+        "reviewed",
+        "cancelled",
+    ):
+        raise WorkflowError("内容处于 blocked 状态，请先解除阻塞")
+
     if decision is not None:
         if actor != "gm":
             raise WorkflowError("渠道稿审批决定 actor 必须是 gm")
@@ -2693,6 +2704,8 @@ def unblock_content(
     root, _package, card, record, body = load_content_for_transition(root, content_id)
     if not isinstance(record.get("block"), dict):
         raise WorkflowError("内容没有被阻塞，无需解除")
+    if record["block"].get("by") == "gm" and actor != "gm":
+        raise WorkflowError("gm 记录的阻塞只能由 gm 解除")
     status = record["status"]
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     record.pop("block", None)
@@ -2726,6 +2739,10 @@ def transition_content(
     )
     current_status = record["status"]
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+    # 阻塞是硬闸门：受阻内容不再往前走，只能解除阻塞或作废。
+    if isinstance(record.get("block"), dict) and to_status != "cancelled":
+        raise WorkflowError("内容处于 blocked 状态，请先解除阻塞")
 
     if decision is not None:
         if actor != "gm":

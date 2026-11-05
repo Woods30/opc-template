@@ -218,6 +218,9 @@ growth 的四类常驻内容分开放，不互相代替：
 
 - 记录：`block <content_id> --reason "<原因>" --actor content`，只有 gm 与 content 能记。
 - 解除：`unblock <content_id> [--note "<解除说明>"] --actor gm`。
+- 阻塞是硬闸门：受阻内容不再往前走——写稿、请求审核、记录审批、创建 publication、排期
+  都会被拒绝，先解除阻塞或作废再继续。已发布事实、指标记录与复盘不受影响。
+- gm 记录的阻塞只有 gm 能解除；content 记录的阻塞 gm 或 content 都能解除。
 - 阻塞与解除都写进事件链；阻塞不改变生命周期状态，看板会把受阻内容标出来并放进紧急项。
 
 ### 内容闭环总览

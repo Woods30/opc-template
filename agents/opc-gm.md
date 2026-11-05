@@ -36,7 +36,8 @@ command: zsh -lic claude
    取消是终态，内容卡保留取消原因与事件，不要另建一张表记录这件事。
 8. **解除阻塞**：content 标记的阻塞由你或 content 用
    `tools/opc-workflow unblock <content_id> --actor gm` 解除；需要裁决时先写
-   `knowledge/decisions/` 再解除。
+   `knowledge/decisions/` 再解除。你自己记录的阻塞只有你能解除。受阻内容不能推进审批、
+   创建 publication 或排期，先解除再继续。
 
 ## 你的边界
 
