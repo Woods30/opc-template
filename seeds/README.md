@@ -14,7 +14,7 @@
 
 ```text
 knowledge/           唯一事实来源
-├── content/         canonical 内容包：<content_id>/内容卡.md
+├── content/         canonical 内容包：内容卡、主稿、publications/
 ├── business/        结果、常驻口径与 generated 只读视图
 ├── work/<角色>/     过程：草稿、提案、日志、template-proposals/
 ├── review/          非 canonical 对外物料的待审区；主稿审核不使用
@@ -38,8 +38,12 @@ tools/opc-workflow create-content --title "<标题>"  # 创建 canonical propose
 tools/opc-workflow transition <content_id> --to drafting   # 创建固定主稿并进入写稿
 tools/opc-workflow transition <content_id> --to reviewing  # 按主稿 hash 请求审核
 tools/opc-workflow transition <content_id> --decision approved --actor gm  # 记录 owner 决定
-tools/opc-workflow validate                         # 校验内容卡与审批 hash
-tools/opc-workflow build                            # 刷新 generated 选题日历
+tools/opc-workflow create-publication <content_id> --channel <channel> --actor gm  # 新建渠道发布
+tools/opc-workflow transition <publication_id> --to reviewing --actor content     # 提交渠道稿审核
+tools/opc-workflow transition <publication_id> --decision approved --actor gm     # 记录渠道稿决定
+tools/opc-workflow transition <publication_id> --to scheduled --planned-at <ISO时间> --timezone <IANA时区> --actor gm
+tools/opc-workflow validate                         # 校验内容、publication 与审批 hash
+tools/opc-workflow build                            # 刷新 generated 业务视图
 ```
 
 ## 与模版的关系

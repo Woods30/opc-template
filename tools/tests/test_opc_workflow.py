@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTENT_ID_RE = re.compile(r"^content-\d{8}-\d{12}-[0-9a-f]{8}$")
+PUBLICATION_ID_RE = re.compile(r"^publication-\d{8}-\d{12}-[0-9a-f]{8}$")
 
 
 def parse_frontmatter(path):
@@ -48,6 +49,17 @@ class WorkflowTestCase(unittest.TestCase):
                         {"name": "gm", "enabled": True},
                         {"name": "content", "enabled": True},
                         {"name": "disabled", "enabled": False},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.instance / "channels.json").write_text(
+            json.dumps(
+                {
+                    "channels": [
+                        {"id": "wechat", "name": "公众号", "enabled": True},
+                        {"id": "x", "name": "X", "enabled": False},
                     ]
                 }
             ),
@@ -123,6 +135,20 @@ class WorkflowTestCase(unittest.TestCase):
     def main_draft(self, content_id):
         return self.instance / "knowledge" / "content" / content_id / "主稿.md"
 
+    def publication_cards(self):
+        return sorted(
+            (self.instance / "knowledge" / "content").glob(
+                "*/publications/*/发布卡.md"
+            )
+        )
+
+    def publication_draft(self, publication_id):
+        cards = [
+            card for card in self.publication_cards() if card.parent.name == publication_id
+        ]
+        self.assertEqual(1, len(cards))
+        return cards[0].parent / "渠道稿.md"
+
     def transition(self, content_id, *args, actor):
         return self.run_workflow(
             "transition",
@@ -140,6 +166,66 @@ class WorkflowTestCase(unittest.TestCase):
         reviewing = self.transition(content_id, "--to", "reviewing", actor="content")
         self.assertEqual(0, reviewing.returncode, reviewing.stderr)
         return draft
+
+    def create_ready_content(self, title="可发布主稿"):
+        content_id, card = self.create_content(title=title)
+        self.advance_to_reviewing(content_id)
+        approved = self.transition(
+            content_id,
+            "--decision",
+            "approved",
+            actor="gm",
+        )
+        self.assertEqual(0, approved.returncode, approved.stderr)
+        return content_id, card
+
+    def create_publication(self, content_id, channel="wechat"):
+        result = self.run_workflow(
+            "create-publication",
+            content_id,
+            "--channel",
+            channel,
+            "--actor",
+            "gm",
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        card = self.publication_cards()[-1]
+        record, _ = parse_frontmatter(card)
+        return record["publication_id"], card
+
+    def create_scheduled_publication(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, publication_card = self.create_publication(content_id)
+        self.publication_draft(publication_id).write_text(
+            "# 渠道稿\n\n已完成适配。\n",
+            encoding="utf-8",
+        )
+        reviewed = self.transition(
+            publication_id,
+            "--to",
+            "reviewing",
+            actor="content",
+        )
+        self.assertEqual(0, reviewed.returncode, reviewed.stderr)
+        approved = self.transition(
+            publication_id,
+            "--decision",
+            "approved",
+            actor="gm",
+        )
+        self.assertEqual(0, approved.returncode, approved.stderr)
+        scheduled = self.transition(
+            publication_id,
+            "--to",
+            "scheduled",
+            "--planned-at",
+            "2026-11-20T09:00:00+08:00",
+            "--timezone",
+            "Asia/Shanghai",
+            actor="gm",
+        )
+        self.assertEqual(0, scheduled.returncode, scheduled.stderr)
+        return publication_id, publication_card
 
     # ---------- create-content ----------
 
@@ -327,7 +413,547 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertIn("停用", result.stderr)
         self.assertEqual([], self.content_cards())
 
-    # ---------- transition / approval ----------
+    # ---------- create-publication ----------
+
+    def test_gm_creates_publication_for_ready_content_at_fixed_path(self):
+        content_id, _content_card = self.create_ready_content()
+
+        result = self.run_workflow(
+            "create-publication",
+            content_id,
+            "--channel",
+            "wechat",
+            "--actor",
+            "gm",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        cards = self.publication_cards()
+        self.assertEqual(1, len(cards))
+        record, text = parse_frontmatter(cards[0])
+        publication_id = record["publication_id"]
+        self.assertRegex(publication_id, PUBLICATION_ID_RE)
+        self.assertEqual(publication_id, cards[0].parent.name)
+        self.assertEqual(
+            self.instance
+            / "knowledge"
+            / "content"
+            / content_id
+            / "publications"
+            / publication_id,
+            cards[0].parent,
+        )
+        self.assertEqual("publication", record["record_type"])
+        self.assertEqual(content_id, record["content_id"])
+        self.assertEqual("wechat", record["channel"])
+        self.assertEqual("adapting", record["status"])
+        self.assertEqual("gm", record["actor"])
+        self.assertEqual("渠道稿.md", record["channel_draft"])
+        self.assertRegex(record["created_at"], r"\+00:00$")
+        self.assertEqual(
+            {
+                "action": "create",
+                "at": record["created_at"],
+                "actor": "gm",
+                "to_status": "adapting",
+            },
+            record["events"][0],
+        )
+        self.assertTrue((cards[0].parent / "渠道稿.md").is_file())
+        self.assertIn("# 发布卡", text)
+        self.assertIn(publication_id, result.stdout)
+        self.assertIn("actor=gm", result.stdout)
+
+    def test_create_publication_requires_ready_content_enabled_channel_and_gm(self):
+        content_id, _card = self.create_content()
+        cases = (
+            (["--channel", "wechat", "--actor", "gm"], "ready"),
+            (["--channel", "missing", "--actor", "gm"], "未知 channel"),
+            (["--channel", "x", "--actor", "gm"], "停用"),
+            (["--channel", "wechat", "--actor", "content"], "gm"),
+        )
+        for arguments, message in cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_workflow(
+                    "create-publication",
+                    content_id,
+                    *arguments,
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertIn(message, result.stderr)
+                self.assertEqual([], self.publication_cards())
+
+    def test_two_fast_publications_never_reuse_an_id(self):
+        content_id, _card = self.create_ready_content()
+
+        first_id, _first_card = self.create_publication(content_id)
+        second_id, _second_card = self.create_publication(content_id)
+
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(2, len(self.publication_cards()))
+
+    def test_validate_rejects_broken_publication_reference_and_unknown_channel(self):
+        content_id, _content_card = self.create_ready_content()
+        _publication_id, publication_card = self.create_publication(content_id)
+        record, text = parse_frontmatter(publication_card)
+        record["content_id"] = "content-20261105-120000000000-deadbeef"
+        record["channel"] = "missing"
+        body = text.split("---", 2)[2]
+        publication_card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                body,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("断裂 content_id", result.stderr)
+        self.assertIn("未知 channel", result.stderr)
+        self.assertIn("发布卡.md", result.stderr)
+
+    def test_validate_rejects_publication_when_parent_content_card_is_missing(self):
+        content_id, content_card = self.create_ready_content()
+        self.create_publication(content_id)
+        content_card.unlink()
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("publication 引用缺失内容卡", result.stderr)
+
+    def test_create_publication_rejects_invalid_configured_channel_key(self):
+        content_id, _content_card = self.create_ready_content()
+        (self.instance / "channels.json").write_text(
+            json.dumps(
+                {
+                    "channels": [
+                        {"id": "../escape", "name": "错误频道", "enabled": True}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow(
+            "create-publication",
+            content_id,
+            "--channel",
+            "../escape",
+            "--actor",
+            "gm",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("channel id", result.stderr)
+        self.assertEqual([], self.publication_cards())
+
+    def test_validate_rejects_duplicate_publication_ids(self):
+        first_content_id, _card = self.create_ready_content(title="第一篇")
+        publication_id, first_publication = self.create_publication(first_content_id)
+        second_content_id, _card = self.create_ready_content(title="第二篇")
+        second_package = (
+            self.instance
+            / "knowledge"
+            / "content"
+            / second_content_id
+            / "publications"
+            / publication_id
+        )
+        second_package.mkdir(parents=True)
+        record, text = parse_frontmatter(first_publication)
+        record["content_id"] = second_content_id
+        body = text.split("---", 2)[2]
+        (second_package / "发布卡.md").write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                body,
+            ),
+            encoding="utf-8",
+        )
+        (second_package / "渠道稿.md").write_text("# 第二篇\n", encoding="utf-8")
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("重复 publication_id", result.stderr)
+        self.assertIn(first_content_id, result.stderr)
+        self.assertIn(second_content_id, result.stderr)
+
+    # ---------- publication transition / approval ----------
+
+    def test_publication_review_and_schedule_flow_binds_channel_draft_hash(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, publication_card = self.create_publication(content_id)
+        draft = self.publication_draft(publication_id)
+        body = "# 渠道稿\n\n渠道适配正文。\n"
+        draft.write_text(body, encoding="utf-8")
+
+        reviewing = self.transition(
+            publication_id,
+            "--to",
+            "reviewing",
+            actor="content",
+        )
+        self.assertEqual(0, reviewing.returncode, reviewing.stderr)
+        record, _ = parse_frontmatter(publication_card)
+        expected_hash = "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+        self.assertEqual("reviewing", record["status"])
+        self.assertEqual(
+            {
+                "status": "pending",
+                "requested_at": record["approval"]["requested_at"],
+                "requested_by": "content",
+                "artifact": "渠道稿.md",
+                "artifact_hash": expected_hash,
+            },
+            record["approval"],
+        )
+
+        approved = self.transition(
+            publication_id,
+            "--decision",
+            "approved",
+            actor="gm",
+        )
+        self.assertEqual(0, approved.returncode, approved.stderr)
+        record, _ = parse_frontmatter(publication_card)
+        self.assertEqual("reviewing", record["status"])
+        self.assertEqual("approved", record["approval"]["status"])
+
+        scheduled = self.transition(
+            publication_id,
+            "--to",
+            "scheduled",
+            "--planned-at",
+            "2026-11-20T09:00:00+08:00",
+            "--timezone",
+            "Asia/Shanghai",
+            actor="gm",
+        )
+        self.assertEqual(0, scheduled.returncode, scheduled.stderr)
+        record, _ = parse_frontmatter(publication_card)
+        self.assertEqual("scheduled", record["status"])
+        self.assertEqual("2026-11-20T09:00:00+08:00", record["schedule"]["planned_at"])
+        self.assertEqual("Asia/Shanghai", record["schedule"]["timezone"])
+        self.assertNotIn("published_at", record)
+        self.assertEqual("schedule", record["events"][-1]["action"])
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_publication_cannot_schedule_without_valid_approved_draft(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, _publication_card = self.create_publication(content_id)
+
+        result = self.transition(
+            publication_id,
+            "--to",
+            "scheduled",
+            "--planned-at",
+            "2026-11-20T09:00:00+08:00",
+            "--timezone",
+            "Asia/Shanghai",
+            actor="gm",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("approved", result.stderr)
+
+    def test_publication_edit_after_approval_is_stale_and_can_be_reapproved(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, publication_card = self.create_publication(content_id)
+        draft = self.publication_draft(publication_id)
+        draft.write_text("# 渠道稿\n\n第一版。\n", encoding="utf-8")
+        self.assertEqual(
+            0,
+            self.transition(
+                publication_id,
+                "--to",
+                "reviewing",
+                actor="content",
+            ).returncode,
+        )
+        self.assertEqual(
+            0,
+            self.transition(
+                publication_id,
+                "--decision",
+                "approved",
+                actor="gm",
+            ).returncode,
+        )
+        before, _ = parse_frontmatter(publication_card)
+        first_hash = before["approval"]["artifact_hash"]
+
+        draft.write_text("# 渠道稿\n\n审批后修改。\n", encoding="utf-8")
+
+        stale = self.run_workflow("validate")
+        self.assertEqual(1, stale.returncode)
+        self.assertIn("stale approval", stale.stderr)
+        blocked = self.transition(
+            publication_id,
+            "--to",
+            "scheduled",
+            "--planned-at",
+            "2026-11-20T09:00:00+08:00",
+            "--timezone",
+            "Asia/Shanghai",
+            actor="gm",
+        )
+        self.assertEqual(1, blocked.returncode)
+        self.assertIn("stale approval", blocked.stderr)
+
+        resubmitted = self.transition(
+            publication_id,
+            "--to",
+            "reviewing",
+            actor="content",
+        )
+        self.assertEqual(0, resubmitted.returncode, resubmitted.stderr)
+        reapproved = self.transition(
+            publication_id,
+            "--decision",
+            "approved",
+            actor="gm",
+        )
+        self.assertEqual(0, reapproved.returncode, reapproved.stderr)
+        final, _ = parse_frontmatter(publication_card)
+        self.assertNotEqual(first_hash, final["approval"]["artifact_hash"])
+        decisions = [
+            event
+            for event in final["events"]
+            if event["action"] == "approval_decision"
+        ]
+        self.assertEqual(2, len(decisions))
+        self.assertEqual(first_hash, decisions[0]["artifact_hash"])
+
+    def test_gm_reschedules_with_reason_and_preserves_previous_plan(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+
+        result = self.transition(
+            publication_id,
+            "--to",
+            "scheduled",
+            "--planned-at",
+            "2026-11-22T10:30:00+08:00",
+            "--timezone",
+            "Asia/Shanghai",
+            "--note",
+            "配合活动窗口。",
+            actor="gm",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        record, _ = parse_frontmatter(publication_card)
+        self.assertEqual("scheduled", record["status"])
+        self.assertEqual("2026-11-22T10:30:00+08:00", record["schedule"]["planned_at"])
+        event = record["events"][-1]
+        self.assertEqual("reschedule", event["action"])
+        self.assertEqual("2026-11-20T09:00:00+08:00", event["previous_planned_at"])
+        self.assertEqual("Asia/Shanghai", event["previous_timezone"])
+        self.assertEqual("配合活动窗口。", event["note"])
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_reschedule_requires_parent_content_to_remain_ready(self):
+        publication_id, _publication_card = self.create_scheduled_publication()
+        publication_record, _ = parse_frontmatter(self.publication_cards()[0])
+        content_id = publication_record["content_id"]
+        self.main_draft(content_id).write_text(
+            "# 主稿\n\n重新进入审核。\n",
+            encoding="utf-8",
+        )
+        resubmitted = self.transition(
+            content_id,
+            "--to",
+            "reviewing",
+            actor="content",
+        )
+        self.assertEqual(0, resubmitted.returncode, resubmitted.stderr)
+        invalid = self.run_workflow("validate")
+        self.assertEqual(1, invalid.returncode)
+        self.assertIn("ready", invalid.stderr)
+
+        result = self.transition(
+            publication_id,
+            "--to",
+            "scheduled",
+            "--planned-at",
+            "2026-11-22T10:30:00+08:00",
+            "--timezone",
+            "Asia/Shanghai",
+            "--note",
+            "配合活动窗口。",
+            actor="gm",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("ready", result.stderr)
+
+    def test_gm_cancels_before_publication_and_retains_record(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+
+        result = self.transition(
+            publication_id,
+            "--to",
+            "cancelled",
+            "--note",
+            "渠道计划调整。",
+            actor="gm",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(publication_card.is_file())
+        record, _ = parse_frontmatter(publication_card)
+        self.assertEqual("cancelled", record["status"])
+        self.assertEqual("2026-11-20T09:00:00+08:00", record["schedule"]["planned_at"])
+        self.assertEqual("渠道计划调整。", record["cancellation"]["reason"])
+        self.assertEqual("gm", record["cancellation"]["cancelled_by"])
+        self.assertEqual("cancel", record["events"][-1]["action"])
+        self.assertEqual("渠道计划调整。", record["events"][-1]["note"])
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_validate_rejects_cancelled_record_without_cancellation_metadata(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        cancelled = self.transition(
+            publication_id,
+            "--to",
+            "cancelled",
+            "--note",
+            "渠道计划调整。",
+            actor="gm",
+        )
+        self.assertEqual(0, cancelled.returncode, cancelled.stderr)
+        record, text = parse_frontmatter(publication_card)
+        del record["cancellation"]
+        body = text.split("---", 2)[2]
+        publication_card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                body,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("cancellation", result.stderr)
+
+    def test_validate_rejects_schedule_that_disagrees_with_latest_event(self):
+        _publication_id, publication_card = self.create_scheduled_publication()
+        record, text = parse_frontmatter(publication_card)
+        record["schedule"]["planned_at"] = "2026-11-21T09:00:00+08:00"
+        body = text.split("---", 2)[2]
+        publication_card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                body,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("schedule 与排期 event 不一致", result.stderr)
+
+    def test_reschedule_and_cancel_require_a_reason(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        before = publication_card.read_bytes()
+
+        for arguments in (
+            (
+                "--to",
+                "scheduled",
+                "--planned-at",
+                "2026-11-22T10:30:00+08:00",
+                "--timezone",
+                "Asia/Shanghai",
+            ),
+            ("--to", "cancelled"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.transition(publication_id, *arguments, actor="gm")
+                self.assertEqual(1, result.returncode)
+                self.assertIn("note", result.stderr)
+                self.assertEqual(before, publication_card.read_bytes())
+
+    def test_schedule_rejects_invalid_or_mismatched_timezone(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, _publication_card = self.create_publication(content_id)
+        self.publication_draft(publication_id).write_text("# 渠道稿\n", encoding="utf-8")
+        self.assertEqual(
+            0,
+            self.transition(
+                publication_id,
+                "--to",
+                "reviewing",
+                actor="content",
+            ).returncode,
+        )
+        self.assertEqual(
+            0,
+            self.transition(
+                publication_id,
+                "--decision",
+                "approved",
+                actor="gm",
+            ).returncode,
+        )
+
+        for planned_at, timezone_name in (
+            ("2026-11-20T09:00:00", "Asia/Shanghai"),
+            ("2026-11-20T09:00:00+00:00", "Asia/Shanghai"),
+            ("2026-11-20T09:00:00+08:00", "Mars/Olympus"),
+        ):
+            with self.subTest(planned_at=planned_at, timezone=timezone_name):
+                result = self.transition(
+                    publication_id,
+                    "--to",
+                    "scheduled",
+                    "--planned-at",
+                    planned_at,
+                    "--timezone",
+                    timezone_name,
+                    actor="gm",
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertIn("timezone", result.stderr)
+
+    def test_publication_changes_requested_returns_to_adapting(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, publication_card = self.create_publication(content_id)
+        self.assertEqual(
+            0,
+            self.transition(
+                publication_id,
+                "--to",
+                "reviewing",
+                actor="content",
+            ).returncode,
+        )
+
+        result = self.transition(
+            publication_id,
+            "--decision",
+            "changes_requested",
+            "--note",
+            "补齐渠道 CTA。",
+            actor="gm",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        record, _ = parse_frontmatter(publication_card)
+        self.assertEqual("adapting", record["status"])
+        self.assertEqual("changes_requested", record["approval"]["status"])
+        self.publication_draft(publication_id).write_text(
+            "# 渠道稿\n\n补齐 CTA。\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    # ---------- content transition / approval ----------
 
     def test_transition_rejects_symlink_content_root_without_writing_target(self):
         content_id = "content-20261105-120000000000-a1b2c3d4"
@@ -872,6 +1498,77 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertIn("第一行<br>第二行", text)
         self.assertIn(f"[打开](../content/{earlier_id}/内容卡.md)", text)
         self.assertIn("| 内容 ID | 标题 | 目标日期 | 来源 | 摘要 | 状态 | 内容卡 |", text)
+
+    def test_build_generates_channel_publication_record_without_copying_bodies(self):
+        content_id, _content_card = self.create_ready_content(title="新增渠道发布")
+        publication_id, publication_card = self.create_publication(content_id)
+        draft = self.publication_draft(publication_id)
+        secret_body = "绝不能复制到发布记录的渠道正文"
+        draft.write_text(f"# 渠道稿\n\n{secret_body}\n", encoding="utf-8")
+        reviewing = self.transition(
+            publication_id,
+            "--to",
+            "reviewing",
+            actor="content",
+        )
+        self.assertEqual(0, reviewing.returncode, reviewing.stderr)
+        approved = self.transition(
+            publication_id,
+            "--decision",
+            "approved",
+            "--note",
+            "不应复制的审批说明",
+            actor="gm",
+        )
+        self.assertEqual(0, approved.returncode, approved.stderr)
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        publication_view = (
+            self.instance
+            / "knowledge"
+            / "business"
+            / "wechat"
+            / "发布记录.md"
+        )
+        text = publication_view.read_text(encoding="utf-8")
+        self.assertIn("GENERATED FILE — READ ONLY", text)
+        self.assertIn(publication_id, text)
+        self.assertIn(content_id, text)
+        self.assertIn("新增渠道发布", text)
+        self.assertIn("reviewing", text)
+        self.assertIn(
+            f"../../content/{content_id}/publications/{publication_id}/发布卡.md",
+            text,
+        )
+        self.assertIn(
+            f"../../content/{content_id}/publications/{publication_id}/渠道稿.md",
+            text,
+        )
+        self.assertNotIn(secret_body, text)
+        self.assertNotIn("不应复制的审批说明", text)
+        self.assertNotIn("artifact_hash", text)
+        self.assertTrue(publication_card.is_file())
+
+    def test_build_refuses_to_overwrite_manual_channel_record(self):
+        content_id, _content_card = self.create_ready_content()
+        self.create_publication(content_id)
+        channel_dir = self.instance / "knowledge" / "business" / "wechat"
+        channel_dir.mkdir()
+        publication_view = channel_dir / "发布记录.md"
+        legacy = "# 人工维护的发布记录\n".encode()
+        publication_view.write_bytes(legacy)
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("不是生成文件", result.stderr)
+        self.assertEqual(legacy, publication_view.read_bytes())
+        self.assertFalse(
+            (self.instance / "knowledge" / "business" / "选题日历.md").exists(),
+            "任一生成目标冲突时不得部分更新其他视图",
+        )
 
     def test_build_reflects_current_status_and_target_date_without_copying_draft(self):
         content_id, _card = self.create_content(

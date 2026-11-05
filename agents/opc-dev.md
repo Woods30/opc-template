@@ -31,7 +31,7 @@ command: zsh -lic claude
 - **不对外承诺**交付能力、交付时间、稳定性。发布说明由 gm 过目。
 - 不写内容正文、不做投放决策。
 - **不擅自发布到生产**。发布前走 gm 确认。
-- 不能写 `knowledge/business/<频道>/`（成稿、物料、发布记录是 gm 的）；你的直接写权
+- 不能写 `knowledge/business/<频道>/`（发布记录是 workflow 生成的只读视图）；你的直接写权
   是 `knowledge/work/dev/`，以及 `business/product/README.md`、`已知问题.md`。
 - **不能写 `tools/` 与 `scripts/`**。两者都是执行面：能改一个已被白名单放行的文件，
   就等于拿到了该文件的全部权限。工具提案写在 `knowledge/work/dev/tools/`，由 owner 落盘。

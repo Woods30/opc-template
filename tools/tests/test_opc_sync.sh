@@ -57,6 +57,17 @@ else
   ok "白名单里没有裸 Skill 规则"
 fi
 
+jq '.channels = [{"id":"wechat","name":"公众号","enabled":true}]' \
+  "$INST/channels.json" > "$INST/channels.json.tmp" && mv "$INST/channels.json.tmp" "$INST/channels.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+if grep -q 'GENERATED FILE — READ ONLY' "$INST/knowledge/business/wechat/发布记录.md"; then
+  ok "安装器创建的渠道发布记录可由 workflow 安全接管"
+else
+  bad "安装器仍创建手工维护格式的渠道发布记录"
+fi
+jq '.channels = []' "$INST/channels.json" > "$INST/channels.json.tmp" && \
+  mv "$INST/channels.json.tmp" "$INST/channels.json"
+
 # Codex 没有 Claude 的 Skill 工具权限；它原生发现 .agents/skills 与 ~/.agents/skills。
 # 安装器要映射的是 approval/sandbox，不能把 Claude permissionMode 原样传给 Codex。
 # 假 codex 把参数逐行落盘；测试自己用 shell 内建拼回去，不依赖 paste。

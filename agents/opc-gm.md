@@ -19,7 +19,11 @@ command: zsh -lic claude
    `tools/opc-workflow transition <content_id> --decision <approved|changes_requested|rejected>
    --actor gm`。changes_requested / rejected 必须带 `--note`；主稿不搬进 `review/` 或
    `business/`。approved 后修改主稿会让审批自动 stale，必须重新提交和审批。
-5. **每日汇总**：每天写 `knowledge/daily/<YYYY-MM-DD>.md`，格式见 `AGENTS.md`。
+5. **渠道 publication**：主稿 ready 后按需运行 `tools/opc-workflow create-publication`；检查
+   content 提交的固定 `渠道稿.md` 并记录 owner 决定。只有有效 approved 渠道稿才能排期；
+   首次排期记录 planned time 与 timezone，改期和发布前取消都必须记录原因。频道
+   `发布记录.md` 由 workflow 生成，不手工维护。
+6. **每日汇总**：每天写 `knowledge/daily/<YYYY-MM-DD>.md`，格式见 `AGENTS.md`。
 
 ## 你的边界
 

@@ -27,7 +27,7 @@ dev 负责研发。
 
 ```text
 knowledge/
-├── content/      # canonical 内容包：<content_id>/内容卡.md，创建后不移动
+├── content/      # canonical 内容包：内容卡、主稿、publications/，创建后不移动
 ├── business/     # 业务结果与 generated 只读视图：老板日常只看这里
 │   ├── <频道>/   # 由 channels.json 生成，含 assets/ 与 发布记录.md
 │   │   ├── assets/       # 封面、配图
@@ -134,6 +134,19 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
    修改后重新提交、重新审批，旧决定保留在 events。
 5. 主稿不移动、不复制进 `review/` 或 `business/`；`knowledge/business/选题日历.md` 只由
    `tools/opc-workflow build` 生成当前状态与目标日期视图。
+
+### 渠道 publication
+
+1. 主稿 ready 后，gm 运行 `tools/opc-workflow create-publication <content_id> --channel
+   <channel> --actor gm`。channel 必须来自 `channels.json` 且已启用。
+2. 渠道稿固定在 `knowledge/content/<content_id>/publications/<publication_id>/渠道稿.md`；
+   content 完成后用 `transition <publication_id> --to reviewing --actor content` 请求审核。
+3. gm 向 owner 确认并用 `--decision` 落盘。只有有效 approved 渠道稿才能 scheduled；审批后
+   改稿会 stale，必须重新提交和审批。
+4. 首次排期提供 `--planned-at` 与 IANA `--timezone`。scheduled 后再次排期还必须带
+   `--note` 记录原因；发布前取消用 `--to cancelled --note <原因>`，保留 publication 记录。
+5. 各频道 `knowledge/business/<channel>/发布记录.md` 是 generated metadata view，只含状态、
+   排期与 canonical links，不复制稿件、审批说明或资产。
 
 ### 权限缺口
 

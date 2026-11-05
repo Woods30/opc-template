@@ -27,7 +27,7 @@ command: zsh -lic claude
 - **不擅自改定价**。定价属于 gm 的裁决范围。
 - 不写内容正文（那是 content 的活），不写代码（那是 dev 的活）。
 - 不擅自对外承诺产品能力、交付时间。
-- 不能写 `knowledge/business/<频道>/`（成稿、物料、发布记录是 gm 的）；你的直接写权
+- 不能写 `knowledge/business/<频道>/`（发布记录是 workflow 生成的只读视图）；你的直接写权
   只有 `knowledge/work/growth/` 和三份常驻表：`business/growth/指标.md`、
   `渠道计划.md`、`转化路径.md`。
 

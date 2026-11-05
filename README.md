@@ -208,6 +208,12 @@ tools/opc-workflow transition <content_id> --to drafting
 tools/opc-workflow transition <content_id> --to reviewing
 tools/opc-workflow transition <content_id> --decision approved --actor gm
 tools/opc-workflow transition <content_id> --decision changes_requested --note "<修改说明>" --actor gm
+tools/opc-workflow create-publication <content_id> --channel <channel> --actor gm
+tools/opc-workflow transition <publication_id> --to reviewing --actor content
+tools/opc-workflow transition <publication_id> --decision approved --actor gm
+tools/opc-workflow transition <publication_id> --to scheduled --planned-at "<ISO 8601>" --timezone "<IANA timezone>" --actor gm
+tools/opc-workflow transition <publication_id> --to scheduled --planned-at "<ISO 8601>" --timezone "<IANA timezone>" --note "<改期原因>" --actor gm
+tools/opc-workflow transition <publication_id> --to cancelled --note "<取消原因>" --actor gm
 tools/opc-workflow validate
 tools/opc-workflow build
 ```
@@ -231,11 +237,20 @@ tools/opc-workflow build
 改稿不会把负面决定误判为 stale；重新提交、重新审批后新 hash 生效，旧决定留在 `events`
 中。普通文案编辑由 Git 留痕，不产生业务事件。
 
-`build` 完整校验所有内容卡后，原子替换 `knowledge/business/选题日历.md`。日历显示
-目标日期和当前内容状态，但不复制主稿正文；空实例也会生成有意义的空视图。日历标有
-`GENERATED FILE — READ ONLY`，不得手工维护；生成失败会保留上一份有效日历。已有日历
-若不是生成文件（缺 generated 标记），`build` 会拒绝覆盖并报错——旧格式日历需要人工
-迁移，不能被静默冲掉。
+内容 ready 后，gm 用 `create-publication` 按需创建渠道 publication。每次尝试拥有不可复用的
+`publication_id`，固定放在
+`knowledge/content/<content_id>/publications/<publication_id>/`，其中 `发布卡.md` 是状态事实，
+`渠道稿.md` 是 content 编辑的 canonical 渠道稿。content 提交 reviewing 后，gm 记录 owner
+决定；只有 hash 仍有效的 approved 渠道稿才能 scheduled。首次排期把 `planned_at` 与 IANA
+`timezone` 分开记录；scheduled 状态再次排期必须带原因并追加 reschedule event。发布前取消
+必须带原因，记录保留为 cancelled，不删除 publication package。
+
+`build` 完整校验所有内容卡与 publication 卡后，原子替换 `knowledge/business/选题日历.md`
+和各启用频道的 `发布记录.md`。日历显示目标日期和当前内容状态；频道记录只显示 metadata
+与 canonical links，不复制主稿、渠道稿、审批说明或资产。generated views 均标有
+`GENERATED FILE — READ ONLY`，不得手工维护；生成失败会保留上一份有效视图。已有目标若
+不是生成文件（缺 generated 标记），`build` 会拒绝覆盖并报错——旧格式需要人工确认，不能
+被静默冲掉。
 
 ## 发布前自检：tools/preflight
 

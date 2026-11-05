@@ -316,7 +316,7 @@ if [[ -f "$CHANNELS_FILE" ]]; then
     }
     mkdir -p "$ROOT/knowledge/business/$cid/assets"
     if [[ ! -f "$ROOT/knowledge/business/$cid/发布记录.md" ]]; then
-      printf '# %s 发布记录\n\n| 日期 | 标题 | 版本 | 状态 | 链接 / 备注 |\n|---|---|---|---|---|\n' \
+      printf '# %s 发布记录\n\n> **GENERATED FILE — READ ONLY**\n> 由 `tools/opc-workflow build` 从 canonical publication cards 生成。请勿手工编辑。\n\n当前没有该渠道的 publication。\n' \
         "$cid" > "$ROOT/knowledge/business/$cid/发布记录.md"
     fi
   done
