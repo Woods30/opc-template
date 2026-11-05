@@ -39,6 +39,9 @@ scripts/opc-sync.sh pull --from "$TPL" --no-install >/dev/null 2>&1
 
 say "opc-sync 场景测试"
 
+check "模版内所有 agent 默认 bypassPermissions" "bypassPermissions" \
+  "$(jq -r '[.roles[] | select(.enabled) | .permissionMode] | unique | join(",")' "$INST/roles.json")"
+
 # ---- 0. 技能只放行 owner 逐个批准的，不放行裸 Skill ----
 # 技能 frontmatter 的 allowed-tools 会在调用那一轮临时预授权工具，
 # 裸 Skill 等于把角色的工具面交给任意技能，所以只放行精确的 Skill(名字)。
@@ -80,6 +83,38 @@ XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
 codex_args="$(join_args "$WORK/codex-args")"
 check "Codex dontAsk 映射为 never + workspace-write" \
   "--sandbox workspace-write --ask-for-approval never" "$codex_args"
+check "Codex 启动器导出业务归属角色" "OPC_ROLE='gm'" \
+  "$(grep '^OPC_ROLE=' "$INST/.opc/run/gm.sh")"
+if [[ -e "$INST/.codex/hooks.json" ]]; then
+  bad "Codex 角色仍被生成实例级 hooks.json"
+else
+  ok "Codex 权限完全交给用户与原生 CLI，不生成 hooks.json"
+fi
+if compgen -G "$INST/.opc/hooks/scope-*.sh" >/dev/null; then
+  bad "Codex 角色仍被生成 scope 守卫脚本"
+else
+  ok "Codex 权限完全交给用户与原生 CLI，不生成 scope 守卫"
+fi
+
+# 迁移老实例：只清掉 OPC 旧版生成的 hook，用户自己的项目 hook 必须保留。
+mkdir -p "$INST/.codex" "$INST/.opc/hooks"
+jq -n --arg cmd "/bin/sh '$INST/.opc/hooks/scope-gm.sh'" \
+  '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$cmd,timeout:10}]}]}}' \
+  > "$INST/.codex/hooks.json"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$INST/.opc/hooks/scope-gm.sh"
+chmod +x "$INST/.opc/hooks/scope-gm.sh"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+if [[ -e "$INST/.codex/hooks.json" || -e "$INST/.opc/hooks/scope-gm.sh" ]]; then
+  bad "安装器没有清理 OPC 旧版生成的 codex hook"
+else
+  ok "安装器清理 OPC 旧版生成的 codex hook"
+fi
+
+custom_hooks='{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"my-user-hook"}]}]}}'
+printf '%s\n' "$custom_hooks" > "$INST/.codex/hooks.json"
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+check "安装器保留用户自己的 codex hook" "$custom_hooks" \
+  "$(jq -c . "$INST/.codex/hooks.json")"
 
 # 启动器不能写死 /bin/zsh：发行版不一定装 zsh，角色会直接起不来。
 launcher="$(cat "$INST/.opc/run/gm.sh")"

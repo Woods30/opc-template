@@ -12,8 +12,8 @@
 不接受外部传入的根目录，避免把实例外的目录当成事实来源。
 
 actor 是内容卡的**归属记录**，不是授权：OPC_ROLE 由角色启动器导出，但调用方
-自己也能设置它，工具无法自证调用者是谁。因此 actor 检查只防误用；真正的写入
-边界在权限层（Claude 的 settings scope、codex 的 scope 守卫）。
+自己也能设置它，工具无法自证调用者是谁。因此 actor 检查只防误用；权限由 owner
+为每个角色选择的 CLI 原生模式与用户级配置控制。
 """
 
 from __future__ import annotations
@@ -151,8 +151,8 @@ def resolve_actor(root: Path, actor: str | None):
 
     注意信任边界：OPC_ROLE 由角色启动器导出，但调用方自己也能设置它，
     所以这条检查防的是「误用」（拿 --actor 写别人），不是「伪造」。
-    actor 是内容卡的归属记录，不是授权；真正的写入边界在权限层
-    （Claude 的 settings scope 与 codex 的 scope 守卫）。
+    actor 是内容卡的归属记录，不是授权；权限由 owner 为每个角色选择的
+    CLI 原生模式与用户级配置控制。
     """
     environment_role = (os.environ.get("OPC_ROLE") or "").strip()
     requested = require_text("actor", actor)

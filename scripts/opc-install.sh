@@ -36,6 +36,26 @@ esac
 mkdir -p "$TEMPLATES" "$ROOT/.opc/run"
 printf '%s' "$PREFIX" > "$ROOT/.opc/prefix"
 
+# 旧版曾为 codex 生成项目级 scope hook；它依赖调用方可控的 OPC_ROLE，不能作为
+# 权限边界。新版把权限完全交给 roles.json → CLI 原生参数。只删除结构完全匹配
+# 旧生成物的 hooks.json，用户自己的项目 hook 原样保留。
+legacy_codex_hooks="$ROOT/.codex/hooks.json"
+if [[ -f "$legacy_codex_hooks" ]] && jq -e --arg root "$ROOT" '
+  (keys == ["hooks"]) and
+  (.hooks | keys == ["PreToolUse"]) and
+  (.hooks.PreToolUse | type == "array" and length > 0) and
+  all(.hooks.PreToolUse[];
+    ((.matcher == "Bash") or (.matcher == "apply_patch")) and
+    (.hooks | type == "array" and length == 1) and
+    (.hooks[0].type == "command") and
+    (.hooks[0].command | type == "string") and
+    (.hooks[0].command | startswith("/bin/sh ") and contains($root + "/.opc/hooks/scope-"))
+  )
+' "$legacy_codex_hooks" >/dev/null 2>&1; then
+  rm -f "$legacy_codex_hooks"
+fi
+rm -f "$ROOT/.opc/hooks"/scope-*.sh
+
 roles="$(opc_roles)"
 [[ -n "$roles" ]] || { echo "roles.json 里没有启用的角色" >&2; exit 1; }
 
@@ -94,7 +114,9 @@ for role in $roles; do
 OPC_ROOT='$ROOT'
 OPC_SETTINGS='$ROOT/.opc/settings-$role.json'
 OPC_CLI='$cli'
-export OPC_ROOT OPC_SETTINGS OPC_CLI
+# 仅供 workflow 记录业务 actor，不参与权限判断；权限由各 CLI 原生机制决定。
+OPC_ROLE='$role'
+export OPC_ROOT OPC_SETTINGS OPC_CLI OPC_ROLE
 # 用登录 shell 启动：CLI 常由 npm 或版本管理器装，只有交互登录环境的 PATH 里可见。
 # zsh → bash → sh 依次回退——不是所有发行版都装了 zsh，写死它的绝对路径会让角色起不来。
 for _sh in zsh bash sh; do

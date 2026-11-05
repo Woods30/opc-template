@@ -217,7 +217,7 @@ tools/opc-workflow build
 
 **actor 是归属记录，不是授权**：`OPC_ROLE` 由角色启动器导出，但调用方自己也能设置它，
 工具无法自证调用者是谁。所以这条检查防的是误用（顺手写了别人的角色名），不是伪造；
-真正的写入边界在权限层（Claude 的 `settings-<角色>.json` scope、codex 的 scope 守卫）。
+权限由 owner 为每个角色选择的 CLI 原生模式与用户级配置控制。
 `create-content` 每次都会把记下的 actor 打在输出里（`actor=content`），归属写错能当场发现。
 
 `build` 完整校验所有内容卡后，原子替换 `knowledge/business/选题日历.md`。无日期的
@@ -419,6 +419,11 @@ Codex 角色的 `permissionMode` 会被翻译成它自己的语义（表见「�
 `manual` / `acceptEdits` → `on-request`，`auto` → `--approve-for-me`，
 `plan` → `--sandbox read-only`，`bypassPermissions` →
 `--dangerously-bypass-approvals-and-sandbox`。
+
+OPC **不为 codex 生成项目级权限 hook 或角色 scope 守卫**。模版只把每个角色在
+`roles.json.permissionMode` 里的选择翻译成该 CLI 的原生启动参数；owner 可逐角色调整，
+也可以用 CLI 自己的用户级配置继续收紧。`scope` 是协作边界与文档约定，不冒充身份认证
+或 OS 级安全边界。
 
 装完看 `knowledge/team.md` 的「CLI 能力差异」小节，那里按角色列明来源与模型；
 `scripts/opc-status.sh` 也会打印同一份信息。
