@@ -17,7 +17,7 @@ knowledge/           唯一事实来源
 ├── content/         canonical 内容包：<content_id>/内容卡.md
 ├── business/        结果、常驻口径与 generated 只读视图
 ├── work/<角色>/     过程：草稿、提案、日志、template-proposals/
-├── review/          待 owner 过审的对外发布内容
+├── review/          非 canonical 对外物料的待审区；主稿审核不使用
 ├── decisions/       决策记录
 ├── daily/           每日汇总
 └── inbox/           任务队列（只执行行首既无 ✅ 也无 ⛔ 的条目）
@@ -35,7 +35,10 @@ scripts/opc-down.sh      # 停止
 scripts/opc-sync.sh check   # 看模版有没有更新
 scripts/opc-sync.sh pull    # 拉取模版更新
 tools/opc-workflow create-content --title "<标题>"  # 创建 canonical proposed 内容
-tools/opc-workflow validate                         # 校验内容卡
+tools/opc-workflow transition <content_id> --to drafting   # 创建固定主稿并进入写稿
+tools/opc-workflow transition <content_id> --to reviewing  # 按主稿 hash 请求审核
+tools/opc-workflow transition <content_id> --decision approved --actor gm  # 记录 owner 决定
+tools/opc-workflow validate                         # 校验内容卡与审批 hash
 tools/opc-workflow build                            # 刷新 generated 选题日历
 ```
 

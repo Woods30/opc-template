@@ -36,7 +36,7 @@ knowledge/
 │   ├── product/  # 需求、方案、实现记录、已知问题
 │   ├── 品牌口径.md
 │   └── 选题日历.md
-├── review/       # 待 owner 过审的对外发布内容
+├── review/       # 非 canonical 对外物料的待审区；主稿审核不使用
 ├── decisions/    # 决策记录（gm 裁决后落盘）
 ├── daily/        # 每日汇总
 ├── inbox/        # 任务投递：gm.md / content.md / growth.md / dev.md
@@ -47,7 +47,7 @@ knowledge/
 - `content/` 是**事实**：每条内容从 proposed 起固定在 `<content_id>/内容卡.md`，不靠移动目录表达状态。
 - `business/` 是**结果与视图**：成稿、物料、常驻口径，以及 generated 只读视图。老板只看这里。
 - `work/` 是**过程**：草稿、提案、日志。老板不看，但进版本库。
-- `review/` 是**状态**：gm 已过、等 owner 点头的对外发布内容。
+- `review/` 只保留非 canonical 对外物料；主稿审核状态写在内容卡，不靠复制文件表达。
 
 命名规则：**目录是结构，用英文；文件是内容，用中文**。目录一律小写 ASCII slug。
 
@@ -122,14 +122,18 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 - 因此：**新 session 启动后，第一件事是读自己 inbox 里未标记的条目**，不要从
   `daily/` 或 `decisions/` 反推任务。看到两份文件说法不一致，以 inbox 为准，并向 gm 报告。
 
-### 定稿与发布
+### 主稿审核
 
-1. 角色把草稿放在 `knowledge/work/<角色>/`，`hc send` 通知 gm。
-2. gm 审过：内部产出用 `git mv` 搬进 `knowledge/business/<频道或业务线>/`；
-   对外发布内容先放 `knowledge/review/<频道>/`。
-3. owner 过审后，gm 再搬进 `knowledge/business/<频道>/`，并更新该频道的
-   `发布记录.md`。
-4. 角色**不直接写 `knowledge/business/<频道>/`**——那是 gm 的地盘。
+1. content 用 `tools/opc-workflow transition <content_id> --to drafting` 进入写稿，主稿固定在
+   `knowledge/content/<content_id>/主稿.md`；`work/` 只放非 canonical 过程材料。
+2. 写完运行 `transition <content_id> --to reviewing`，workflow 把主稿 SHA-256 写进
+   pending approval；随后 `hc send` 通知 gm。
+3. gm 向 owner 确认决定，并用 `transition <content_id> --decision
+   <approved|changes_requested|rejected> --actor gm` 落盘。退回或拒绝必须带 `--note`。
+4. approved 才进入 ready。审批后修改主稿会被 `validate` 判为 `stale approval`；在同一文件
+   修改后重新提交、重新审批，旧决定保留在 events。
+5. 主稿不移动、不复制进 `review/` 或 `business/`；`knowledge/business/选题日历.md` 只由
+   `tools/opc-workflow build` 生成当前状态与目标日期视图。
 
 ### 权限缺口
 

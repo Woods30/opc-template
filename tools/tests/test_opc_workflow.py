@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """opc-workflow 的隔离实例集成测试。"""
 
+import hashlib
 import json
 import os
 import re
@@ -109,6 +110,37 @@ class WorkflowTestCase(unittest.TestCase):
         )
         return card
 
+    def create_content(self, title="审核链路", target_date=None):
+        args = ["create-content", "--title", title]
+        if target_date is not None:
+            args.extend(["--target-date", target_date])
+        result = self.run_workflow(*args)
+        self.assertEqual(0, result.returncode, result.stderr)
+        card = self.content_cards()[-1]
+        record, _ = parse_frontmatter(card)
+        return record["content_id"], card
+
+    def main_draft(self, content_id):
+        return self.instance / "knowledge" / "content" / content_id / "主稿.md"
+
+    def transition(self, content_id, *args, actor):
+        return self.run_workflow(
+            "transition",
+            content_id,
+            *args,
+            "--actor",
+            actor,
+        )
+
+    def advance_to_reviewing(self, content_id, text="# 主稿\n\n第一版正文。\n"):
+        drafting = self.transition(content_id, "--to", "drafting", actor="content")
+        self.assertEqual(0, drafting.returncode, drafting.stderr)
+        draft = self.main_draft(content_id)
+        draft.write_text(text, encoding="utf-8")
+        reviewing = self.transition(content_id, "--to", "reviewing", actor="content")
+        self.assertEqual(0, reviewing.returncode, reviewing.stderr)
+        return draft
+
     # ---------- create-content ----------
 
     def test_create_content_writes_minimal_proposed_card_at_fixed_path(self):
@@ -163,6 +195,21 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual("关注一个具体问题。", record["summary"])
         self.assertEqual("gm", record["actor"])
         self.assertEqual("gm", record["events"][0]["actor"])
+
+    def test_create_content_rejects_invalid_target_date(self):
+        for value in ("2026-02-30", "20261120"):
+            with self.subTest(value=value):
+                result = self.run_workflow(
+                    "create-content",
+                    "--title",
+                    "错误日期",
+                    "--target-date",
+                    value,
+                )
+
+                self.assertEqual(1, result.returncode)
+                self.assertIn("YYYY-MM-DD", result.stderr)
+                self.assertEqual([], self.content_cards())
 
     def test_create_content_uses_opc_role_when_actor_is_omitted(self):
         result = self.run_workflow(
@@ -279,6 +326,236 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("停用", result.stderr)
         self.assertEqual([], self.content_cards())
+
+    # ---------- transition / approval ----------
+
+    def test_transition_rejects_symlink_content_root_without_writing_target(self):
+        content_id = "content-20261105-120000000000-a1b2c3d4"
+        outside = Path(self.temp.name + "-outside-transition")
+        package = outside / content_id
+        package.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, outside, True)
+        record = self.valid_record(content_id)
+        card = package / "内容卡.md"
+        card.write_text(
+            "---\n{}\n---\n\n# 内容卡\n".format(
+                json.dumps(record, ensure_ascii=False, indent=2)
+            ),
+            encoding="utf-8",
+        )
+        content_root = self.instance / "knowledge" / "content"
+        try:
+            content_root.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"当前平台无法创建 symlink：{error}")
+        before = card.read_bytes()
+
+        result = self.transition(content_id, "--to", "drafting", actor="content")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(before, card.read_bytes())
+        self.assertFalse((package / "主稿.md").exists())
+
+    def test_normal_review_flow_keeps_main_draft_fixed_and_reaches_ready(self):
+        content_id, card = self.create_content(target_date="2026-11-20")
+
+        drafting = self.transition(content_id, "--to", "drafting", actor="content")
+        self.assertEqual(0, drafting.returncode, drafting.stderr)
+        draft = self.main_draft(content_id)
+        self.assertTrue(draft.is_file())
+        self.assertEqual(card.parent, draft.parent)
+        record, _ = parse_frontmatter(card)
+        self.assertEqual("drafting", record["status"])
+        self.assertEqual("主稿.md", record["main_draft"])
+        self.assertNotIn("approval", record)
+        self.assertEqual("transition", record["events"][-1]["action"])
+
+        body = "# 第一版主稿\n\n正文内容。\n"
+        draft.write_text(body, encoding="utf-8")
+        reviewing = self.transition(content_id, "--to", "reviewing", actor="content")
+        self.assertEqual(0, reviewing.returncode, reviewing.stderr)
+        record, _ = parse_frontmatter(card)
+        expected_hash = "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+        self.assertEqual("reviewing", record["status"])
+        self.assertEqual(
+            {
+                "status": "pending",
+                "requested_at": record["approval"]["requested_at"],
+                "requested_by": "content",
+                "artifact": "主稿.md",
+                "artifact_hash": expected_hash,
+            },
+            record["approval"],
+        )
+        self.assertEqual("submit_review", record["events"][-1]["action"])
+
+        approved = self.transition(
+            content_id,
+            "--decision",
+            "approved",
+            "--note",
+            "owner 已确认。",
+            actor="gm",
+        )
+        self.assertEqual(0, approved.returncode, approved.stderr)
+        record, _ = parse_frontmatter(card)
+        self.assertEqual("ready", record["status"])
+        self.assertEqual("approved", record["approval"]["status"])
+        self.assertEqual("gm", record["approval"]["decided_by"])
+        self.assertEqual(expected_hash, record["approval"]["artifact_hash"])
+        self.assertEqual("approval_decision", record["events"][-1]["action"])
+        self.assertEqual("approved", record["events"][-1]["decision"])
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_content_requests_review_and_gm_records_decisions(self):
+        content_id, _card = self.create_content()
+        wrong_drafter = self.transition(content_id, "--to", "drafting", actor="gm")
+        self.assertEqual(1, wrong_drafter.returncode)
+        self.assertIn("content", wrong_drafter.stderr)
+
+        self.assertEqual(
+            0,
+            self.transition(content_id, "--to", "drafting", actor="content").returncode,
+        )
+        wrong_reviewer = self.transition(content_id, "--to", "reviewing", actor="gm")
+        self.assertEqual(1, wrong_reviewer.returncode)
+        self.assertIn("content", wrong_reviewer.stderr)
+
+        self.main_draft(content_id).write_text("# 主稿\n", encoding="utf-8")
+        self.assertEqual(
+            0,
+            self.transition(content_id, "--to", "reviewing", actor="content").returncode,
+        )
+        wrong_decider = self.transition(
+            content_id,
+            "--decision",
+            "approved",
+            actor="content",
+        )
+        self.assertEqual(1, wrong_decider.returncode)
+        self.assertIn("gm", wrong_decider.stderr)
+
+    def test_ready_cannot_be_entered_without_approved_review(self):
+        content_id, _card = self.create_content()
+        self.assertEqual(
+            0,
+            self.transition(content_id, "--to", "drafting", actor="content").returncode,
+        )
+
+        result = self.transition(content_id, "--to", "ready", actor="content")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("approved", result.stderr)
+
+    def test_changes_requested_and_rejected_return_to_drafting_with_note(self):
+        for decision in ("changes_requested", "rejected"):
+            with self.subTest(decision=decision):
+                content_id, card = self.create_content(title=decision)
+                self.advance_to_reviewing(content_id)
+
+                result = self.transition(
+                    content_id,
+                    "--decision",
+                    decision,
+                    "--note",
+                    "请补充证据。",
+                    actor="gm",
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                record, _ = parse_frontmatter(card)
+                self.assertEqual("drafting", record["status"])
+                self.assertEqual(decision, record["approval"]["status"])
+                self.assertEqual("请补充证据。", record["approval"]["note"])
+                self.assertEqual(decision, record["events"][-1]["decision"])
+
+    def test_non_approved_decision_requires_a_note(self):
+        content_id, _card = self.create_content()
+        self.advance_to_reviewing(content_id)
+
+        result = self.transition(
+            content_id,
+            "--decision",
+            "changes_requested",
+            actor="gm",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("note", result.stderr)
+
+    def test_edit_after_changes_requested_is_valid_drafting_work(self):
+        content_id, _card = self.create_content()
+        draft = self.advance_to_reviewing(content_id)
+        returned = self.transition(
+            content_id,
+            "--decision",
+            "changes_requested",
+            "--note",
+            "请补充证据。",
+            actor="gm",
+        )
+        self.assertEqual(0, returned.returncode, returned.stderr)
+
+        draft.write_text("# 主稿\n\n按反馈修改。\n", encoding="utf-8")
+
+        validated = self.run_workflow("validate")
+        built = self.run_workflow("build")
+        self.assertEqual(0, validated.returncode, validated.stderr)
+        self.assertEqual(0, built.returncode, built.stderr)
+
+    def test_edit_after_approval_is_stale_and_reapproval_keeps_history(self):
+        content_id, card = self.create_content()
+        draft = self.advance_to_reviewing(content_id)
+        approved = self.transition(content_id, "--decision", "approved", actor="gm")
+        self.assertEqual(0, approved.returncode, approved.stderr)
+        before_edit, _ = parse_frontmatter(card)
+        event_count = len(before_edit["events"])
+        first_hash = before_edit["approval"]["artifact_hash"]
+        built = self.run_workflow("build")
+        self.assertEqual(0, built.returncode, built.stderr)
+        calendar = self.instance / "knowledge" / "business" / "选题日历.md"
+        previous_calendar = calendar.read_bytes()
+
+        draft.write_text("# 主稿\n\n审批后的修改。\n", encoding="utf-8")
+        stale = self.run_workflow("validate")
+        self.assertEqual(1, stale.returncode)
+        self.assertIn("stale approval", stale.stderr)
+        stale_build = self.run_workflow("build")
+        self.assertEqual(1, stale_build.returncode)
+        self.assertIn("stale approval", stale_build.stderr)
+        self.assertEqual(previous_calendar, calendar.read_bytes())
+        after_edit, _ = parse_frontmatter(card)
+        self.assertEqual(event_count, len(after_edit["events"]), "普通文案编辑不产生业务事件")
+
+        resubmit = self.transition(content_id, "--to", "reviewing", actor="content")
+        self.assertEqual(0, resubmit.returncode, resubmit.stderr)
+        reapproved = self.transition(content_id, "--decision", "approved", actor="gm")
+        self.assertEqual(0, reapproved.returncode, reapproved.stderr)
+        final, _ = parse_frontmatter(card)
+        self.assertEqual("ready", final["status"])
+        self.assertNotEqual(first_hash, final["approval"]["artifact_hash"])
+        decisions = [
+            event
+            for event in final["events"]
+            if event["action"] == "approval_decision"
+        ]
+        self.assertEqual(2, len(decisions))
+        self.assertEqual(first_hash, decisions[0]["artifact_hash"])
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_decision_refuses_a_draft_changed_after_review_request(self):
+        content_id, card = self.create_content()
+        draft = self.advance_to_reviewing(content_id)
+        before, _ = parse_frontmatter(card)
+        draft.write_text("# 主稿\n\n请求审核后又改了。\n", encoding="utf-8")
+
+        result = self.transition(content_id, "--decision", "approved", actor="gm")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("stale approval", result.stderr)
+        after, _ = parse_frontmatter(card)
+        self.assertEqual(before, after)
 
     # ---------- validate ----------
 
@@ -403,20 +680,82 @@ class WorkflowTestCase(unittest.TestCase):
         content_id = "content-20261105-120000000000-a1b2c3d4"
         record = self.valid_record(content_id)
         record["status"] = "drafting"
+        record["main_draft"] = "主稿.md"
         record["events"].append(
             {
-                "action": "accept",
+                "action": "transition",
                 "at": "2026-11-06T09:00:00+00:00",
-                "actor": "gm",
+                "actor": "content",
                 "from_status": "proposed",
                 "to_status": "drafting",
             }
         )
-        self.write_card(content_id, record)
+        card = self.write_card(content_id, record)
+        (card.parent / "主稿.md").write_text("# 主稿\n", encoding="utf-8")
 
         result = self.run_workflow("validate")
 
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_validate_rejects_a_broken_event_state_chain(self):
+        content_id = "content-20261105-120000000000-a1b2c3d4"
+        record = self.valid_record(content_id)
+        record["status"] = "drafting"
+        record["main_draft"] = "主稿.md"
+        record["events"].append(
+            {
+                "action": "transition",
+                "at": "2026-11-06T09:00:00+00:00",
+                "actor": "content",
+                "from_status": "ready",
+                "to_status": "drafting",
+            }
+        )
+        card = self.write_card(content_id, record)
+        (card.parent / "主稿.md").write_text("# 主稿\n", encoding="utf-8")
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("事件状态链", result.stderr)
+
+    def test_validate_rejects_wrong_business_actor_in_review_event(self):
+        content_id, card = self.create_content()
+        self.advance_to_reviewing(content_id)
+        record, text = parse_frontmatter(card)
+        record["events"][-1]["actor"] = "gm"
+        body = text.split("---", 2)[2]
+        card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                body,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("submit_review actor 必须是 content", result.stderr)
+
+    def test_validate_rejects_approval_that_disagrees_with_review_event(self):
+        content_id, card = self.create_content()
+        self.advance_to_reviewing(content_id)
+        record, text = parse_frontmatter(card)
+        record["events"][-1]["artifact_hash"] = "sha256:" + "0" * 64
+        body = text.split("---", 2)[2]
+        card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                body,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("approval 与 submit_review event 不一致", result.stderr)
 
     def test_validate_rejects_an_unknown_status(self):
         content_id = "content-20261105-120000000000-a1b2c3d4"
@@ -532,7 +871,31 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertIn("访谈 \\| 现场", text)
         self.assertIn("第一行<br>第二行", text)
         self.assertIn(f"[打开](../content/{earlier_id}/内容卡.md)", text)
-        self.assertIn("| 内容 ID | 标题 | 来源 | 摘要 | 状态 | 内容卡 |", text)
+        self.assertIn("| 内容 ID | 标题 | 目标日期 | 来源 | 摘要 | 状态 | 内容卡 |", text)
+
+    def test_build_reflects_current_status_and_target_date_without_copying_draft(self):
+        content_id, _card = self.create_content(
+            title="有排期的主稿",
+            target_date="2026-11-20",
+        )
+        self.assertEqual(
+            0,
+            self.transition(content_id, "--to", "drafting", actor="content").returncode,
+        )
+        self.main_draft(content_id).write_text(
+            "# 不能复制进日历的正文\n\n这是稿件正文。\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        text = (self.instance / "knowledge" / "business" / "选题日历.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("2026-11-20", text)
+        self.assertIn("drafting", text)
+        self.assertNotIn("这是稿件正文", text)
 
     def test_build_preserves_previous_calendar_and_removes_temp_on_validation_failure(self):
         calendar = self.instance / "knowledge" / "business" / "选题日历.md"

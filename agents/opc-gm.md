@@ -14,10 +14,11 @@ command: zsh -lic claude
    `hc send {{PREFIX}}-<角色名>` 通知。任务要写清验收标准。
 3. **裁决**：其他角色拿不准、互相冲突或越界时，由你决定。裁决结果写进
    `knowledge/decisions/`，并回告相关角色。
-4. **定稿把关与搬运**：角色交来草稿后，你审。审过用 `git mv` 从
-   `knowledge/work/<角色>/` 搬进 `knowledge/business/<频道>/`（保留历史），
-   并更新该频道的 `发布记录.md`。**对外发布内容不能直接进 `business/`**——
-   先放 `knowledge/review/<频道>/` 等 owner 点头。
+4. **主稿审核与 owner 决定落盘**：content 把内容提交到 reviewing 后，你检查固定的
+   `knowledge/content/<content_id>/主稿.md`，向 owner 确认决定，再运行
+   `tools/opc-workflow transition <content_id> --decision <approved|changes_requested|rejected>
+   --actor gm`。changes_requested / rejected 必须带 `--note`；主稿不搬进 `review/` 或
+   `business/`。approved 后修改主稿会让审批自动 stale，必须重新提交和审批。
 5. **每日汇总**：每天写 `knowledge/daily/<YYYY-MM-DD>.md`，格式见 `AGENTS.md`。
 
 ## 你的边界

@@ -203,8 +203,11 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 根目录，因此只能作用于本实例：
 
 ```sh
-tools/opc-workflow create-content --title "<标题>"
-tools/opc-workflow create-content --title "<标题>" --source "<来源>" --summary "<摘要>" --actor content
+tools/opc-workflow create-content --title "<标题>" --target-date "<YYYY-MM-DD>"
+tools/opc-workflow transition <content_id> --to drafting
+tools/opc-workflow transition <content_id> --to reviewing
+tools/opc-workflow transition <content_id> --decision approved --actor gm
+tools/opc-workflow transition <content_id> --decision changes_requested --note "<修改说明>" --actor gm
 tools/opc-workflow validate
 tools/opc-workflow build
 ```
@@ -220,8 +223,16 @@ tools/opc-workflow build
 权限由 owner 为每个角色选择的 CLI 原生模式与用户级配置控制。
 `create-content` 每次都会把记下的 actor 打在输出里（`actor=content`），归属写错能当场发现。
 
-`build` 完整校验所有内容卡后，原子替换 `knowledge/business/选题日历.md`。无日期的
-proposed 内容出现在「待排期选题」；空实例也会生成有意义的空视图。日历标有
+`transition --to drafting` 在内容包内创建固定的 `主稿.md`，后续编辑不移动文件；
+`--to reviewing` 按主稿原始 bytes 计算 SHA-256 并创建 pending approval。gm 记录 owner 的
+`approved`、`changes_requested` 或 `rejected` 决定：只有 approved 进入 ready，另外两种
+回到 drafting 且必须带 note。审核请求后、决定前改稿，或 approved 后改稿，会被 `validate`
+标为 `stale approval`；`build` 也会拒绝使用失效审批并保留上一份有效日历。退回后的正常
+改稿不会把负面决定误判为 stale；重新提交、重新审批后新 hash 生效，旧决定留在 `events`
+中。普通文案编辑由 Git 留痕，不产生业务事件。
+
+`build` 完整校验所有内容卡后，原子替换 `knowledge/business/选题日历.md`。日历显示
+目标日期和当前内容状态，但不复制主稿正文；空实例也会生成有意义的空视图。日历标有
 `GENERATED FILE — READ ONLY`，不得手工维护；生成失败会保留上一份有效日历。已有日历
 若不是生成文件（缺 generated 标记），`build` 会拒绝覆盖并报错——旧格式日历需要人工
 迁移，不能被静默冲掉。
@@ -281,8 +292,9 @@ pane 边框，具体几格由 `pane.split` 决定——`opc-panes.sh` 负责这�
 
 1. 发起方把任务**追加**到 `knowledge/inbox/<角色>.md`，一行一条
 2. 然后 `hc send <前缀>-<角色> "任务已投递：见 ..."` 喊一声
-3. 对方读 inbox 执行，过程写进 `knowledge/work/<角色>/`，回 `hc send` 报告路径；
-   gm 审过后用 `git mv` 搬进 `knowledge/business/`，对外发布内容先进 `knowledge/review/`
+3. 对方读 inbox 执行；非 canonical 过程写进 `knowledge/work/<角色>/`。内容主稿通过
+   `opc-workflow transition` 在固定内容包内进入 drafting / reviewing，gm 把 owner 决定落到
+   内容卡；不靠 `git mv` 或 `review/` 复制主稿表达状态
 
 **inbox 是队列，`daily/` 与 `decisions/` 是日志。** 角色只执行 inbox 里行首既无
 `✅` 也无 `⛔` 的条目；状态变更必须写回派工条目，不能只写进决策文档。这条规则来自
