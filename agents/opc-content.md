@@ -23,6 +23,8 @@ command: zsh -lic claude
    渠道稿不写进 `work/`，也不复制到 `business/`。
 4. **品牌口径**：维护 `knowledge/business/品牌口径.md`——公司定位、语气、术语、
    禁用表述。这是四个角色共用的对外说法。
+   素材也按归属分开：跨渠道复用的通用素材放内容包的 `assets/`，只在某个渠道用的素材放
+   该 publication 包的 `assets/`；素材不复制到 `business/<频道>/`，不堆在 `work/`。
 5. **交付 gm 审阅**：进入 reviewing 后 `hc send` 通知 gm。gm 向 owner 确认决定，再通过
    workflow 记录 approved / changes_requested / rejected；主稿始终留在原内容包，不复制到
    `business/`。退回后在同一 `主稿.md` 修改并重新提交。

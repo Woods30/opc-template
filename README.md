@@ -249,7 +249,9 @@ tools/opc-workflow build
 内容 ready 后，gm 用 `create-publication` 按需创建渠道 publication。每次尝试拥有不可复用的
 `publication_id`，固定放在
 `knowledge/content/<content_id>/publications/<publication_id>/`，其中 `发布卡.md` 是状态事实，
-`渠道稿.md` 是 content 编辑的 canonical 渠道稿。content 提交 reviewing 后，gm 记录 owner
+`渠道稿.md` 是 content 编辑的 canonical 渠道稿。素材按归属分开：跨渠道复用的通用素材放
+内容包的 `knowledge/content/<content_id>/assets/`，只在某个渠道用的素材放该 publication 包的
+`assets/`；素材不复制到 `knowledge/business/<频道>/`，也不堆在 `knowledge/work/`。content 提交 reviewing 后，gm 记录 owner
 决定；只有 hash 仍有效的 approved 渠道稿才能 scheduled。首次排期把 `planned_at` 与 IANA
 `timezone` 分开记录；scheduled 状态再次排期必须带原因并追加 reschedule event。发布前取消
 必须带原因，记录保留为 cancelled，不删除 publication package。

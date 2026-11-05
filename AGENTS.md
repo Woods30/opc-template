@@ -45,6 +45,9 @@ knowledge/
 - `content/` 是**事实**：每条内容从 proposed 起固定在 `<content_id>/内容卡.md`，不靠移动目录表达状态。
   主稿固定在 `<content_id>/主稿.md`，渠道稿固定在
   `<content_id>/publications/<publication_id>/渠道稿.md`。
+- **素材归属**：跨渠道复用的通用素材放内容包的 `<content_id>/assets/`；只在某个渠道用的
+  素材放该 publication 包的 `publications/<publication_id>/assets/`。素材跟着内容走，
+  不复制到 `business/<频道>/`（那里是 generated 视图），也不堆在 `work/`（那里是过程材料）。
 - `business/` 是**结果与视图**：成稿、常驻口径，以及 generated 只读视图。老板只看这里。
   频道目录只放 generated 发布记录，不放稿件或资产副本。
 - `work/` 是**过程**：草稿、提案、日志。老板不看，但进版本库。
