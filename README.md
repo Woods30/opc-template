@@ -214,6 +214,9 @@ tools/opc-workflow transition <publication_id> --decision approved --actor gm
 tools/opc-workflow transition <publication_id> --to scheduled --planned-at "<ISO 8601>" --timezone "<IANA timezone>" --actor gm
 tools/opc-workflow transition <publication_id> --to scheduled --planned-at "<ISO 8601>" --timezone "<IANA timezone>" --note "<改期原因>" --actor gm
 tools/opc-workflow transition <publication_id> --to cancelled --note "<取消原因>" --actor gm
+tools/opc-workflow transition <publication_id> --to published --actual-at "<offset-aware ISO 8601>" --url "<HTTP(S) URL>" [--external-id "<平台 ID>"] --actor gm
+tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at "<offset-aware ISO 8601>" --source "<来源>" --values '{"<metric_key>": 数值}' --actor growth
+tools/opc-workflow record-channel-snapshot --channel <channel> --observed-at "<offset-aware ISO 8601>" --source "<来源>" --values '{"<metric_key>": 数值}' --actor growth
 tools/opc-workflow validate
 tools/opc-workflow build
 ```
@@ -244,6 +247,19 @@ tools/opc-workflow build
 决定；只有 hash 仍有效的 approved 渠道稿才能 scheduled。首次排期把 `planned_at` 与 IANA
 `timezone` 分开记录；scheduled 状态再次排期必须带原因并追加 reschedule event。发布前取消
 必须带原因，记录保留为 cancelled，不删除 publication package。
+
+owner 完成外部发布后，gm 用 `--to published` 记录实际发布时间与 URL。只有 scheduled
+publication 可以确认发布；`schedule.planned_at` 保留为计划事实，实际事实写入独立的
+`publication` 对象，并由 publish event 留痕。published 不能退回发布前状态，同一内容的再次
+发布必须创建新的 publication。
+
+growth 把指标定义维护在 `knowledge/business/growth/指标.md` 的 frontmatter：每个 metric
+声明 key、label、unit、aggregation、scope 与适用 channels。观测值不写入定义：
+publication 指标通过 `record-metrics` 追加到该 publication package 的 `指标.md`，同一窗口
+不可覆盖；账号级数据通过 `record-channel-snapshot` 追加到独立的
+`knowledge/business/growth/渠道快照.md`，不会归属到单个 publication。未注册 key、scope 或
+channel 不匹配、缺失来源、重复窗口都会被拒绝。频道视图的指标摘要区分 `缺失`、`不可得`
+（`{"available": false, "reason": "..."}`）与数值 `0`。
 
 `build` 完整校验所有内容卡与 publication 卡后，原子替换 `knowledge/business/选题日历.md`
 和各启用频道的 `发布记录.md`。日历显示目标日期和当前内容状态；频道记录只显示 metadata

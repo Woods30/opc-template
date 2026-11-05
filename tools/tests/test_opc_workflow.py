@@ -48,6 +48,8 @@ class WorkflowTestCase(unittest.TestCase):
                     "roles": [
                         {"name": "gm", "enabled": True},
                         {"name": "content", "enabled": True},
+                        {"name": "growth", "enabled": True},
+                        {"name": "dev", "enabled": True},
                         {"name": "disabled", "enabled": False},
                     ]
                 }
@@ -226,6 +228,121 @@ class WorkflowTestCase(unittest.TestCase):
         )
         self.assertEqual(0, scheduled.returncode, scheduled.stderr)
         return publication_id, publication_card
+
+    def publish(self, publication_id, *args, actor="gm"):
+        return self.transition(
+            publication_id,
+            "--to",
+            "published",
+            "--actual-at",
+            "2026-11-20T09:07:00+08:00",
+            "--url",
+            "https://example.com/posts/launch",
+            *args,
+            actor=actor,
+        )
+
+    def growth_dir(self):
+        return self.instance / "knowledge" / "business" / "growth"
+
+    def write_metric_catalog(self, metrics):
+        self.growth_dir().mkdir(parents=True, exist_ok=True)
+        record = {
+            "schema_version": 1,
+            "record_type": "metric_catalog",
+            "metrics": metrics,
+        }
+        (self.growth_dir() / "指标.md").write_text(
+            "---\n{}\n---\n\n# 指标目录\n".format(
+                json.dumps(record, ensure_ascii=False, indent=2)
+            ),
+            encoding="utf-8",
+        )
+
+    def metric_catalog(self):
+        self.write_metric_catalog(
+            [
+                {
+                    "key": "views",
+                    "label": "阅读量",
+                    "unit": "count",
+                    "aggregation": "sum",
+                    "scope": "publication",
+                    "channels": ["wechat"],
+                },
+                {
+                    "key": "likes",
+                    "label": "点赞数",
+                    "unit": "count",
+                    "aggregation": "sum",
+                    "scope": "publication",
+                    "channels": ["wechat"],
+                },
+                {
+                    "key": "clicks",
+                    "label": "点击量",
+                    "unit": "count",
+                    "aggregation": "sum",
+                    "scope": "publication",
+                    "channels": ["wechat"],
+                },
+                {
+                    "key": "followers",
+                    "label": "粉丝数",
+                    "unit": "count",
+                    "aggregation": "latest",
+                    "scope": "channel",
+                    "channels": ["wechat"],
+                },
+            ]
+        )
+
+    def publication_metrics_path(self, publication_id):
+        cards = [
+            card for card in self.publication_cards() if card.parent.name == publication_id
+        ]
+        self.assertEqual(1, len(cards))
+        return cards[0].parent / "指标.md"
+
+    def channel_snapshots_path(self):
+        return self.growth_dir() / "渠道快照.md"
+
+    def record_metrics(self, publication_id, window="48h", values=None, *args, actor="growth"):
+        if values is None:
+            values = {"views": 1234}
+        return self.run_workflow(
+            "record-metrics",
+            publication_id,
+            "--window",
+            window,
+            "--observed-at",
+            "2026-11-21T09:00:00+08:00",
+            "--source",
+            "平台后台",
+            "--values",
+            json.dumps(values, ensure_ascii=False),
+            *args,
+            "--actor",
+            actor,
+        )
+
+    def record_channel_snapshot(self, values=None, *args, actor="growth"):
+        if values is None:
+            values = {"followers": 5000}
+        return self.run_workflow(
+            "record-channel-snapshot",
+            "--channel",
+            "wechat",
+            "--observed-at",
+            "2026-11-21T09:00:00+08:00",
+            "--source",
+            "平台后台",
+            "--values",
+            json.dumps(values, ensure_ascii=False),
+            *args,
+            "--actor",
+            actor,
+        )
 
     # ---------- create-content ----------
 
@@ -754,6 +871,578 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual("Asia/Shanghai", event["previous_timezone"])
         self.assertEqual("配合活动窗口。", event["note"])
         self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_gm_confirms_scheduled_publication_with_actual_facts(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+
+        result = self.publish(
+            publication_id,
+            "--external-id",
+            "platform-post-42",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        record, _ = parse_frontmatter(publication_card)
+        self.assertEqual("published", record["status"])
+        self.assertEqual(
+            {
+                "published_at": "2026-11-20T09:07:00+08:00",
+                "url": "https://example.com/posts/launch",
+                "external_id": "platform-post-42",
+                "recorded_at": record["publication"]["recorded_at"],
+                "recorded_by": "gm",
+            },
+            record["publication"],
+        )
+        self.assertEqual("2026-11-20T09:00:00+08:00", record["schedule"]["planned_at"])
+        event = record["events"][-1]
+        self.assertEqual("publish", event["action"])
+        self.assertEqual("scheduled", event["from_status"])
+        self.assertEqual("published", event["to_status"])
+        self.assertEqual("2026-11-20T09:07:00+08:00", event["published_at"])
+        self.assertEqual("https://example.com/posts/launch", event["url"])
+        self.assertEqual("platform-post-42", event["external_id"])
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_publish_without_external_id_keeps_it_absent(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+
+        result = self.publish(publication_id)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        record, _ = parse_frontmatter(publication_card)
+        self.assertNotIn("external_id", record["publication"])
+        self.assertNotIn("external_id", record["events"][-1])
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_publish_requires_scheduled_state_and_gm(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, publication_card = self.create_publication(content_id)
+        before = publication_card.read_bytes()
+        arguments = (
+            "--to",
+            "published",
+            "--actual-at",
+            "2026-11-20T09:07:00+08:00",
+            "--url",
+            "https://example.com/post",
+        )
+
+        not_scheduled = self.transition(publication_id, *arguments, actor="gm")
+        self.assertEqual(1, not_scheduled.returncode)
+        self.assertIn("scheduled", not_scheduled.stderr)
+        self.assertEqual(before, publication_card.read_bytes())
+
+    def test_publish_requires_actual_time_and_http_url(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        before = publication_card.read_bytes()
+
+        for arguments, message in (
+            (
+                (
+                    "--to",
+                    "published",
+                    "--actual-at",
+                    "2026-11-20T09:07:00",
+                    "--url",
+                    "https://example.com/post",
+                ),
+                "offset-aware",
+            ),
+            (
+                (
+                    "--to",
+                    "published",
+                    "--actual-at",
+                    "2026-11-20T09:07:00+08:00",
+                    "--url",
+                    "javascript:alert(1)",
+                ),
+                "URL",
+            ),
+        ):
+            with self.subTest(message=message):
+                result = self.transition(publication_id, *arguments, actor="gm")
+                self.assertEqual(1, result.returncode)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(before, publication_card.read_bytes())
+
+    def test_publish_rejects_non_gm_actor(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        before = publication_card.read_bytes()
+
+        result = self.publish(publication_id, actor="content")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("gm", result.stderr)
+        self.assertEqual(before, publication_card.read_bytes())
+
+    def test_published_publication_cannot_return_to_prepublication_state(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        published = self.publish(publication_id)
+        self.assertEqual(0, published.returncode, published.stderr)
+        before = publication_card.read_bytes()
+
+        for arguments in (
+            (
+                "--to",
+                "scheduled",
+                "--planned-at",
+                "2026-11-22T10:30:00+08:00",
+                "--timezone",
+                "Asia/Shanghai",
+                "--note",
+                "再次排期",
+            ),
+            ("--to", "cancelled", "--note", "撤回"),
+            (
+                "--to",
+                "published",
+                "--actual-at",
+                "2026-11-20T09:08:00+08:00",
+                "--url",
+                "https://example.com/posts/retry",
+            ),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.transition(publication_id, *arguments, actor="gm")
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(before, publication_card.read_bytes())
+
+    # ---------- growth metrics ----------
+
+    def test_growth_records_immutable_publication_metric_windows(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        published = self.publish(publication_id)
+        self.assertEqual(0, published.returncode, published.stderr)
+        self.metric_catalog()
+        publication_before, _ = parse_frontmatter(publication_card)
+
+        first = self.record_metrics(
+            publication_id,
+            "48h",
+            {"views": 1234, "likes": 0},
+        )
+
+        self.assertEqual(0, first.returncode, first.stderr)
+        metrics = self.publication_metrics_path(publication_id)
+        record, _ = parse_frontmatter(metrics)
+        self.assertEqual("publication_metrics", record["record_type"])
+        self.assertEqual(publication_id, record["publication_id"])
+        self.assertEqual(
+            [
+                {
+                    "window": "48h",
+                    "observed_at": "2026-11-21T09:00:00+08:00",
+                    "source": "平台后台",
+                    "recorded_at": record["snapshots"][0]["recorded_at"],
+                    "recorded_by": "growth",
+                    "values": {"views": 1234, "likes": 0},
+                }
+            ],
+            record["snapshots"],
+        )
+
+        second = self.record_metrics(publication_id, "7d", {"views": 2000})
+        self.assertEqual(0, second.returncode, second.stderr)
+        record["snapshots"].append(
+            {
+                "window": "7d",
+                "observed_at": "2026-11-27T09:00:00+08:00",
+                "source": "平台后台",
+                "recorded_at": record["snapshots"][0]["recorded_at"],
+                "recorded_by": "growth",
+                "values": {"views": 2000},
+            }
+        )
+        after, _ = parse_frontmatter(metrics)
+        self.assertEqual(2, len(after["snapshots"]))
+        self.assertEqual("48h", after["snapshots"][0]["window"])
+        self.assertEqual("7d", after["snapshots"][1]["window"])
+
+        before_duplicate = metrics.read_bytes()
+        duplicate = self.record_metrics(publication_id, "48h", {"views": 9999})
+        self.assertEqual(1, duplicate.returncode)
+        self.assertIn("重复窗口", duplicate.stderr)
+        self.assertEqual(before_duplicate, metrics.read_bytes())
+
+        publication_after, _ = parse_frontmatter(publication_card)
+        self.assertEqual(
+            publication_before["schedule"],
+            publication_after["schedule"],
+        )
+        self.assertEqual(
+            publication_before["publication"],
+            publication_after["publication"],
+        )
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_publication_metric_diagnostics_cover_unknown_key_scope_unit_and_source(self):
+        publication_id, _publication_card = self.create_scheduled_publication()
+        self.assertEqual(0, self.publish(publication_id).returncode)
+        self.metric_catalog()
+
+        cases = (
+            (
+                self.record_metrics(publication_id, "1d", {"unknown": 1}),
+                "未注册",
+            ),
+            (
+                self.record_metrics(publication_id, "1d", {"followers": 100}),
+                "scope",
+            ),
+            (
+                self.record_metrics(publication_id, "1d", {"views": 1}, "--source", ""),
+                "source",
+            ),
+            (
+                self.record_metrics(publication_id, "1d", {"views": "一千"}),
+                "数值",
+            ),
+            (
+                self.record_metrics(
+                    publication_id,
+                    "1d",
+                    {"views": {"available": False, "reason": "平台不提供", "unit": "percent"}},
+                ),
+                "unit",
+            ),
+        )
+        for result, message in cases:
+            with self.subTest(message=message):
+                self.assertEqual(1, result.returncode)
+                self.assertIn(message, result.stderr)
+        self.assertFalse(self.publication_metrics_path(publication_id).exists())
+
+        self.write_metric_catalog(
+            [
+                {
+                    "key": "views",
+                    "label": "阅读量",
+                    "unit": "count",
+                    "aggregation": "sum",
+                    "scope": "publication",
+                    "channels": ["x"],
+                }
+            ]
+        )
+        unsupported = self.record_metrics(publication_id, "1d", {"views": 1})
+        self.assertEqual(1, unsupported.returncode)
+        self.assertIn("channel", unsupported.stderr)
+
+    def test_channel_snapshot_stays_out_of_publication_metrics(self):
+        publication_id, _publication_card = self.create_scheduled_publication()
+        self.assertEqual(0, self.publish(publication_id).returncode)
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
+        )
+
+        result = self.record_channel_snapshot({"followers": 5000})
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        record, _ = parse_frontmatter(self.channel_snapshots_path())
+        self.assertEqual("channel_snapshots", record["record_type"])
+        self.assertEqual(
+            [
+                {
+                    "channel": "wechat",
+                    "observed_at": "2026-11-21T09:00:00+08:00",
+                    "source": "平台后台",
+                    "recorded_at": record["observations"][0]["recorded_at"],
+                    "recorded_by": "growth",
+                    "values": {"followers": 5000},
+                }
+            ],
+            record["observations"],
+        )
+        metrics_text = self.publication_metrics_path(publication_id).read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("followers", metrics_text)
+        self.assertNotIn(publication_id, self.channel_snapshots_path().read_text(encoding="utf-8"))
+
+        wrong_scope = self.record_channel_snapshot({"views": 10})
+        self.assertEqual(1, wrong_scope.returncode)
+        self.assertIn("scope", wrong_scope.stderr)
+
+        duplicate = self.record_channel_snapshot({"followers": 5001})
+        self.assertEqual(1, duplicate.returncode)
+        self.assertIn("重复观测", duplicate.stderr)
+
+        equivalent_instant = self.record_channel_snapshot(
+            {"followers": 5001},
+            "--observed-at",
+            "2026-11-21T01:00:00+00:00",
+        )
+        self.assertEqual(1, equivalent_instant.returncode)
+        self.assertIn("重复观测", equivalent_instant.stderr)
+
+        bad_actor = self.record_channel_snapshot({"followers": 5002}, actor="content")
+        self.assertEqual(1, bad_actor.returncode)
+        self.assertIn("growth", bad_actor.stderr)
+        self.assertEqual(0, self.run_workflow("validate").returncode)
+
+    def test_build_publication_summary_distinguishes_missing_unavailable_and_zero(self):
+        publication_id, _publication_card = self.create_scheduled_publication()
+        self.assertEqual(0, self.publish(publication_id).returncode)
+        self.metric_catalog()
+        recorded = self.record_metrics(
+            publication_id,
+            "48h",
+            {
+                "views": 0,
+                "clicks": {"available": False, "reason": "平台不提供"},
+            },
+        )
+        self.assertEqual(0, recorded.returncode, recorded.stderr)
+        self.assertEqual(0, self.record_channel_snapshot({"followers": 5000}).returncode)
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        view = (
+            self.instance
+            / "knowledge"
+            / "business"
+            / "wechat"
+            / "发布记录.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("2026-11-20T09:07:00+08:00", view)
+        self.assertIn("https://example.com/posts/launch", view)
+        publication_record, _ = parse_frontmatter(
+            next(
+                card
+                for card in self.publication_cards()
+                if card.parent.name == publication_id
+            )
+        )
+        content_id = publication_record["content_id"]
+        self.assertIn(
+            f"../../content/{content_id}/publications/{publication_id}/指标.md",
+            view,
+        )
+        self.assertIn("0", view)
+        self.assertIn("不可得", view)
+        self.assertIn("缺失", view)
+        self.assertIn("## 渠道账号观测", view)
+        self.assertIn("5000", view)
+        publication_rows = [
+            line for line in view.splitlines() if publication_id in line
+        ]
+        self.assertEqual(1, len(publication_rows))
+        self.assertNotIn("5000", publication_rows[0])
+
+    def test_validate_rejects_directly_edited_publication_facts(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        self.assertEqual(0, self.publish(publication_id).returncode)
+
+        record, text = parse_frontmatter(publication_card)
+        record["publication"]["url"] = "https://example.com/other"
+        publication_card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                text.split("---", 2)[2],
+            ),
+            encoding="utf-8",
+        )
+        mismatched = self.run_workflow("validate")
+        self.assertEqual(1, mismatched.returncode)
+        self.assertIn("publish event 不一致", mismatched.stderr)
+
+        record["publication"]["url"] = "https://example.com/posts/launch"
+        record["status"] = "scheduled"
+        publication_card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                text.split("---", 2)[2],
+            ),
+            encoding="utf-8",
+        )
+        wrong_status = self.run_workflow("validate")
+        self.assertEqual(1, wrong_status.returncode)
+        self.assertIn("只有 published", wrong_status.stderr)
+
+        record["status"] = "published"
+        del record["publication"]
+        publication_card.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                text.split("---", 2)[2],
+            ),
+            encoding="utf-8",
+        )
+        missing_fact = self.run_workflow("validate")
+        self.assertEqual(1, missing_fact.returncode)
+        self.assertIn("publication 发布事实", missing_fact.stderr)
+
+    def test_validate_rejects_inconsistent_metric_catalog_and_windows(self):
+        publication_id, _publication_card = self.create_scheduled_publication()
+        self.assertEqual(0, self.publish(publication_id).returncode)
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1}).returncode,
+        )
+        metrics = self.publication_metrics_path(publication_id)
+        record, text = parse_frontmatter(metrics)
+        record["snapshots"].append(dict(record["snapshots"][0]))
+        metrics.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                text.split("---", 2)[2],
+            ),
+            encoding="utf-8",
+        )
+
+        duplicate = self.run_workflow("validate")
+        self.assertEqual(1, duplicate.returncode)
+        self.assertIn("重复窗口", duplicate.stderr)
+
+        self.write_metric_catalog(
+            [
+                {
+                    "key": "views",
+                    "label": "阅读量",
+                    "unit": "count",
+                    "aggregation": "sum",
+                    "scope": "publication",
+                    "channels": ["wechat"],
+                },
+                {
+                    "key": "views",
+                    "label": "阅读率",
+                    "unit": "percent",
+                    "aggregation": "sum",
+                    "scope": "publication",
+                    "channels": ["wechat"],
+                },
+            ]
+        )
+        catalog_error = self.run_workflow("validate")
+        self.assertEqual(1, catalog_error.returncode)
+        self.assertIn("unit", catalog_error.stderr)
+
+    def test_growth_metrics_require_published_publication(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, _publication_card = self.create_publication(content_id)
+        self.metric_catalog()
+
+        result = self.record_metrics(publication_id, "48h", {"views": 1})
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("published", result.stderr)
+        self.assertFalse(self.publication_metrics_path(publication_id).exists())
+
+    def test_published_publication_allows_a_new_publication_for_retry(self):
+        first_id, _first_card = self.create_scheduled_publication()
+        first_record, _ = parse_frontmatter(
+            next(
+                card
+                for card in self.publication_cards()
+                if card.parent.name == first_id
+            )
+        )
+        content_id = first_record["content_id"]
+        self.assertEqual(0, self.publish(first_id).returncode)
+
+        second_id, _second_card = self.create_publication(content_id)
+
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(2, len(self.publication_cards()))
+        first_record, _ = parse_frontmatter(
+            next(
+                card
+                for card in self.publication_cards()
+                if card.parent.name == first_id
+            )
+        )
+        second_record, _ = parse_frontmatter(
+            next(
+                card
+                for card in self.publication_cards()
+                if card.parent.name == second_id
+            )
+        )
+        self.assertEqual("published", first_record["status"])
+        self.assertEqual("adapting", second_record["status"])
+
+    def test_channel_snapshots_stay_in_their_channel_view(self):
+        self.metric_catalog()
+        self.assertEqual(0, self.record_channel_snapshot({"followers": 5000}).returncode)
+        (self.instance / "channels.json").write_text(
+            json.dumps(
+                {
+                    "channels": [
+                        {"id": "wechat", "name": "公众号", "enabled": True},
+                        {"id": "x", "name": "X", "enabled": True},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        wechat_view = (
+            self.instance / "knowledge" / "business" / "wechat" / "发布记录.md"
+        ).read_text(encoding="utf-8")
+        x_view = (
+            self.instance / "knowledge" / "business" / "x" / "发布记录.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("5000", wechat_view)
+        self.assertNotIn("5000", x_view)
+        self.assertIn("当前没有该渠道的账号级观测。", x_view)
+
+    def test_validate_rejects_symlinked_growth_directory(self):
+        outside = self.instance / "outside-growth"
+        outside.mkdir()
+        self.growth_dir().symlink_to(outside)
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("growth 目录不能是 symlink", result.stderr)
+
+    def test_validate_rejects_directly_edited_metric_records(self):
+        publication_id, _publication_card = self.create_scheduled_publication()
+        self.assertEqual(0, self.publish(publication_id).returncode)
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1}).returncode,
+        )
+        metrics = self.publication_metrics_path(publication_id)
+        record, text = parse_frontmatter(metrics)
+        record["publication_id"] = "publication-20261105-120000000000-deadbeef"
+        metrics.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                text.split("---", 2)[2],
+            ),
+            encoding="utf-8",
+        )
+
+        wrong_id = self.run_workflow("validate")
+
+        self.assertEqual(1, wrong_id.returncode)
+        self.assertIn("publication_id 与固定目录名不一致", wrong_id.stderr)
+
+        record["publication_id"] = publication_id
+        record["snapshots"][0]["values"] = {"unknown": 1}
+        metrics.write_text(
+            "---\n{}\n---{}".format(
+                json.dumps(record, ensure_ascii=False, indent=2),
+                text.split("---", 2)[2],
+            ),
+            encoding="utf-8",
+        )
+        unknown = self.run_workflow("validate")
+
+        self.assertEqual(1, unknown.returncode)
+        self.assertIn("未注册", unknown.stderr)
 
     def test_reschedule_requires_parent_content_to_remain_ready(self):
         publication_id, _publication_card = self.create_scheduled_publication()

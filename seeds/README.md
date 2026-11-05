@@ -42,7 +42,10 @@ tools/opc-workflow create-publication <content_id> --channel <channel> --actor g
 tools/opc-workflow transition <publication_id> --to reviewing --actor content     # 提交渠道稿审核
 tools/opc-workflow transition <publication_id> --decision approved --actor gm     # 记录渠道稿决定
 tools/opc-workflow transition <publication_id> --to scheduled --planned-at <ISO时间> --timezone <IANA时区> --actor gm
-tools/opc-workflow validate                         # 校验内容、publication 与审批 hash
+tools/opc-workflow transition <publication_id> --to published --actual-at <ISO时间> --url <URL> --actor gm  # 记录真实发布
+tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at <ISO时间> --source <来源> --values '<JSON>' --actor growth
+tools/opc-workflow record-channel-snapshot --channel <channel> --observed-at <ISO时间> --source <来源> --values '<JSON>' --actor growth
+tools/opc-workflow validate                         # 校验内容、publication、审批 hash 与指标
 tools/opc-workflow build                            # 刷新 generated 业务视图
 ```
 

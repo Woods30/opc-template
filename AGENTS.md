@@ -32,7 +32,7 @@ knowledge/
 │   ├── <频道>/   # 由 channels.json 生成，含 assets/ 与 发布记录.md
 │   │   ├── assets/       # 封面、配图
 │   │   └── 发布记录.md
-│   ├── growth/   # 渠道计划、指标、转化路径、实验
+│   ├── growth/   # 渠道计划、指标目录、渠道快照、转化路径、实验
 │   ├── product/  # 需求、方案、实现记录、已知问题
 │   ├── 品牌口径.md
 │   └── 选题日历.md
@@ -147,6 +147,28 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
    `--note` 记录原因；发布前取消用 `--to cancelled --note <原因>`，保留 publication 记录。
 5. 各频道 `knowledge/business/<channel>/发布记录.md` 是 generated metadata view，只含状态、
    排期与 canonical links，不复制稿件、审批说明或资产。
+
+### 发布确认与增长观测
+
+1. owner 完成外部发布后，gm 用 `transition <publication_id> --to published --actual-at
+   "<offset-aware ISO 8601>" --url "<HTTP(S) URL>" [--external-id "<平台 ID>"] --actor gm`
+   确认。只有 scheduled publication 可以确认；计划时间保留在 `schedule`，实际发布时间、
+   URL 与记录时间写入 `publication`，两者不互相覆盖。
+2. published publication 不能退回发布前状态。同一内容再次发布必须新建 publication，
+   旧记录保持 published，历史与指标归属不丢。
+3. growth 维护 `knowledge/business/growth/指标.md` 的 frontmatter，作为指标定义的唯一来源：
+   每个 metric 声明 key、label、unit、aggregation、scope（publication / channel）与
+   适用 channels。观测值不写进指标定义。
+4. growth 用 `record-metrics <publication_id> --window 48h --observed-at "<offset-aware ISO
+   8601>" --source "<来源>" --values '{"<metric_key>": 数值}' --actor growth` 为 published
+   publication 追加窗口。同一 publication 的同一窗口不可覆盖；未知 key、scope/unit 不匹配、
+   缺失来源与重复窗口都会被拒绝。
+5. 账号级观测（粉丝总量、账号流量等）用 `record-channel-snapshot --channel <channel>
+   --observed-at "<offset-aware ISO 8601>" --source "<来源>" --values '{"<metric_key>": 数值}'
+   --actor growth` 写入独立 `knowledge/business/growth/渠道快照.md`，不得归属到单个
+   publication。
+6. `build` 的频道视图区分指标缺失（未记录）、不可得（`{"available": false, "reason":
+   "..."}`）与数值为零；渠道账号观测单独成节，不混入 publication 指标。
 
 ### 权限缺口
 
