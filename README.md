@@ -208,13 +208,15 @@ tools/opc-workflow transition <content_id> --to drafting
 tools/opc-workflow transition <content_id> --to reviewing
 tools/opc-workflow transition <content_id> --decision approved --actor gm
 tools/opc-workflow transition <content_id> --decision changes_requested --note "<修改说明>" --actor gm
-tools/opc-workflow create-publication <content_id> --channel <channel> --actor gm
+tools/opc-workflow create-publication <content_id> --channel <channel> [--required-window 48h ...] [--optional] --actor gm
 tools/opc-workflow transition <publication_id> --to reviewing --actor content
 tools/opc-workflow transition <publication_id> --decision approved --actor gm
 tools/opc-workflow transition <publication_id> --to scheduled --planned-at "<ISO 8601>" --timezone "<IANA timezone>" --actor gm
 tools/opc-workflow transition <publication_id> --to scheduled --planned-at "<ISO 8601>" --timezone "<IANA timezone>" --note "<改期原因>" --actor gm
 tools/opc-workflow transition <publication_id> --to cancelled --note "<取消原因>" --actor gm
 tools/opc-workflow transition <publication_id> --to published --actual-at "<offset-aware ISO 8601>" --url "<HTTP(S) URL>" [--external-id "<平台 ID>"] --actor gm
+tools/opc-workflow transition <publication_id> --to reviewed --conclusion <continue|iterate|stop|inconclusive> --next-action "<下一项行动>" --actor growth
+tools/opc-workflow transition <content_id> --to closed --actor gm
 tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at "<offset-aware ISO 8601>" --source "<来源>" --values '{"<metric_key>": 数值}' --actor growth
 tools/opc-workflow record-channel-snapshot --channel <channel> --observed-at "<offset-aware ISO 8601>" --source "<来源>" --values '{"<metric_key>": 数值}' --actor growth
 tools/opc-workflow validate
@@ -260,6 +262,13 @@ publication 指标通过 `record-metrics` 追加到该 publication package 的 `
 `knowledge/business/growth/渠道快照.md`，不会归属到单个 publication。未注册 key、scope 或
 channel 不匹配、缺失来源、重复窗口都会被拒绝。频道视图的指标摘要区分 `缺失`、`不可得`
 （`{"available": false, "reason": "..."}`）与数值 `0`。
+
+发布后 growth 用 `--to reviewed` 完成复盘：带 `--conclusion`（continue / iterate / stop /
+inconclusive）与 `--next-action`，并引用创建时用 `--required-window` 声明的必需指标窗口；
+必需窗口缺失就不能进入 reviewed。数据确实不可得时由 gm 带 `--exception-reason` 记录例外，
+例外写入 review 与事件链。内容关闭由 gm 用 `--to closed` 完成：所有必需 publication 必须
+已 reviewed 或已带原因 cancelled，否则失败并列出阻塞项；`--optional` 的 publication 不阻塞
+关闭。复盘与关闭只刷新 generated 视图，不改写历史指标快照。
 
 `build` 完整校验所有内容卡与 publication 卡后，原子替换 `knowledge/business/选题日历.md`
 和各启用频道的 `发布记录.md`。日历显示目标日期和当前内容状态；频道记录只显示 metadata

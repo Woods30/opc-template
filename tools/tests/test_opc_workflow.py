@@ -31,6 +31,18 @@ def parse_frontmatter(path):
     return json.loads("\n".join(lines[1:end])), text
 
 
+def write_frontmatter(path, record):
+    text = path.read_text(encoding="utf-8")
+    marker = text.find("\n---\n", 4)
+    if marker < 0:
+        raise AssertionError("测试记录缺少 frontmatter 结束标记")
+    body = text[marker + len("\n---\n") :]
+    path.write_text(
+        "---\n" + json.dumps(record, ensure_ascii=False, indent=2) + "\n---\n" + body,
+        encoding="utf-8",
+    )
+
+
 class WorkflowTestCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="opc-workflow-test-")
@@ -2332,21 +2344,18 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(5000, channels[0]["account_metrics"]["followers"])
 
     def test_build_dashboard_surfaces_recorded_review_conclusion(self):
-        publication_id, publication_card = self.create_published_publication()
-        card = self.instance / publication_card
-        raw = card.read_text(encoding="utf-8")
-        start = raw.index("---\n") + len("---\n")
-        end = raw.index("\n---\n", start)
-        data = json.loads(raw[start:end])
-        data["review"] = {
-            "status": "done",
-            "conclusion": "钩子有效，转化达标",
-            "recorded_at": "2026-11-21T10:00:00+08:00",
-        }
-        card.write_text(
-            "---\n" + json.dumps(data, ensure_ascii=False, indent=2) + raw[end:],
-            encoding="utf-8",
+        publication_id, _publication_card = self.create_published_publication()
+        reviewed = self.transition(
+            publication_id,
+            "--to",
+            "reviewed",
+            "--conclusion",
+            "continue",
+            "--next-action",
+            "按同一形式扩量",
+            actor="growth",
         )
+        self.assertEqual(0, reviewed.returncode, reviewed.stderr)
 
         result = self.run_workflow("build")
         self.assertEqual(0, result.returncode, result.stderr)
@@ -2355,11 +2364,8 @@ class WorkflowTestCase(unittest.TestCase):
         publication = payload["publications"][0]
         self.assertFalse(publication["needs_review"])
         self.assertEqual("done", publication["review"]["status"])
-        self.assertEqual("钩子有效，转化达标", publication["review"]["conclusion"])
-        self.assertEqual(
-            "2026-11-21T10:00:00+08:00",
-            publication["review"]["recorded_at"],
-        )
+        self.assertEqual("continue", publication["review"]["conclusion"])
+        self.assertIsNotNone(publication["review"]["recorded_at"])
         # 近期发布、没有待办指标的 publication 仍在默认范围内。
         self.assertIn(publication_id, payload["scope"]["publication_ids"])
 
@@ -2447,6 +2453,220 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual([], payload["diagnostics"]["errors"])
         self.assertIn(content["content_id"], payload["scope"]["content_ids"])
         self.assertIn(publication_id, payload["scope"]["publication_ids"])
+
+    # ---------- publication review and content close ----------
+
+    def test_publication_declares_required_windows_and_optional_flag(self):
+        content_id, _card = self.create_ready_content()
+
+        required = self.run_workflow(
+            "create-publication",
+            content_id,
+            "--channel",
+            "wechat",
+            "--required-window",
+            "48h",
+            "--required-window",
+            "7d",
+            "--actor",
+            "gm",
+        )
+        self.assertEqual(0, required.returncode, required.stderr)
+        required_record, _ = parse_frontmatter(self.publication_cards()[-1])
+        self.assertTrue(required_record["required"])
+        self.assertEqual(["48h", "7d"], required_record["required_metric_windows"])
+
+        optional = self.run_workflow(
+            "create-publication",
+            content_id,
+            "--channel",
+            "wechat",
+            "--optional",
+            "--actor",
+            "gm",
+        )
+        self.assertEqual(0, optional.returncode, optional.stderr)
+        optional_record, _ = parse_frontmatter(self.publication_cards()[-1])
+        self.assertFalse(optional_record["required"])
+        self.assertEqual([], optional_record["required_metric_windows"])
+
+    def test_growth_reviews_publication_after_required_windows_exist(self):
+        publication_id, publication_card = self.create_published_publication()
+        record, _ = parse_frontmatter(publication_card)
+        record["required_metric_windows"] = ["48h"]
+        write_frontmatter(publication_card, record)
+        self.metric_catalog()
+        metric_result = self.record_metrics(publication_id, "48h", {"views": 1234})
+        self.assertEqual(0, metric_result.returncode, metric_result.stderr)
+
+        reviewed = self.transition(
+            publication_id,
+            "--to",
+            "reviewed",
+            "--conclusion",
+            "iterate",
+            "--next-action",
+            "优化标题后复用",
+            actor="growth",
+        )
+
+        self.assertEqual(0, reviewed.returncode, reviewed.stderr)
+        final, _ = parse_frontmatter(publication_card)
+        self.assertEqual("reviewed", final["status"])
+        self.assertEqual("iterate", final["review"]["conclusion"])
+        self.assertEqual("优化标题后复用", final["review"]["next_action"])
+        self.assertEqual(["48h"], final["review"]["metric_windows"])
+        self.assertEqual("growth", final["review"]["recorded_by"])
+
+    def test_review_rejects_missing_required_window(self):
+        publication_id, publication_card = self.create_published_publication()
+        record, _ = parse_frontmatter(publication_card)
+        record["required_metric_windows"] = ["48h", "7d"]
+        write_frontmatter(publication_card, record)
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
+        )
+
+        reviewed = self.transition(
+            publication_id,
+            "--to",
+            "reviewed",
+            "--conclusion",
+            "inconclusive",
+            "--next-action",
+            "等待 7d 数据",
+            actor="growth",
+        )
+
+        self.assertEqual(1, reviewed.returncode)
+        self.assertIn("7d", reviewed.stderr)
+        final, _ = parse_frontmatter(publication_card)
+        self.assertEqual("published", final["status"])
+
+    def test_gm_reviews_with_explicit_data_exception(self):
+        publication_id, publication_card = self.create_published_publication()
+        record, _ = parse_frontmatter(publication_card)
+        record["required_metric_windows"] = ["48h"]
+        write_frontmatter(publication_card, record)
+
+        reviewed = self.transition(
+            publication_id,
+            "--to",
+            "reviewed",
+            "--conclusion",
+            "inconclusive",
+            "--next-action",
+            "改用平台导出的月报",
+            "--exception-reason",
+            "平台接口未提供历史窗口",
+            actor="gm",
+        )
+
+        self.assertEqual(0, reviewed.returncode, reviewed.stderr)
+        final, _ = parse_frontmatter(publication_card)
+        self.assertEqual("reviewed", final["status"])
+        self.assertEqual("平台接口未提供历史窗口", final["review"]["exception_reason"])
+        event = final["events"][-1]
+        self.assertEqual("review", event["action"])
+        self.assertEqual("平台接口未提供历史窗口", event["exception_reason"])
+
+    def test_content_close_lists_required_publication_blockers(self):
+        content_id, content_card = self.create_ready_content()
+        publication_id, _publication_card = self.create_publication(content_id)
+
+        closed = self.transition(content_id, "--to", "closed", actor="gm")
+
+        self.assertEqual(1, closed.returncode)
+        self.assertIn(publication_id, closed.stderr)
+        self.assertIn("adapting", closed.stderr)
+        record, _ = parse_frontmatter(content_card)
+        self.assertEqual("ready", record["status"])
+
+    def test_content_closes_when_required_are_done_and_optional_does_not_block(self):
+        content_id, content_card = self.create_ready_content()
+        required_id, required_card = self.create_publication(content_id)
+        optional_id, optional_card = self.create_publication(content_id)
+
+        required_record, _ = parse_frontmatter(required_card)
+        required_record["status"] = "cancelled"
+        required_record["cancellation"] = {
+            "cancelled_at": "2026-11-21T10:00:00+08:00",
+            "cancelled_by": "gm",
+            "reason": "渠道临时停更",
+        }
+        required_record["events"].append(
+            {
+                "action": "cancel",
+                "at": "2026-11-21T10:00:00+08:00",
+                "actor": "gm",
+                "from_status": "adapting",
+                "to_status": "cancelled",
+                "note": "渠道临时停更",
+            }
+        )
+        write_frontmatter(required_card, required_record)
+        optional_record, _ = parse_frontmatter(optional_card)
+        optional_record["required"] = False
+        write_frontmatter(optional_card, optional_record)
+
+        closed = self.transition(content_id, "--to", "closed", actor="gm")
+
+        self.assertEqual(0, closed.returncode, closed.stderr)
+        final, _ = parse_frontmatter(content_card)
+        self.assertEqual("closed", final["status"])
+        self.assertEqual("close", final["events"][-1]["action"])
+        self.assertEqual(required_id, required_record["publication_id"])
+        self.assertEqual(optional_id, optional_record["publication_id"])
+
+    def test_review_and_close_refresh_views_without_touching_metrics(self):
+        publication_id, publication_card = self.create_published_publication()
+        record, _ = parse_frontmatter(publication_card)
+        content_id = record["content_id"]
+        metrics_path = (
+            self.instance
+            / "knowledge"
+            / "content"
+            / content_id
+            / "publications"
+            / publication_id
+            / "指标.md"
+        )
+        self.metric_catalog()
+        recorded = self.record_metrics(publication_id, "48h", {"views": 1234})
+        self.assertEqual(0, recorded.returncode, recorded.stderr)
+        history = metrics_path.read_bytes()
+
+        reviewed = self.transition(
+            publication_id,
+            "--to",
+            "reviewed",
+            "--conclusion",
+            "continue",
+            "--next-action",
+            "扩量",
+            actor="growth",
+        )
+        self.assertEqual(0, reviewed.returncode, reviewed.stderr)
+        closed = self.transition(content_id, "--to", "closed", actor="gm")
+        self.assertEqual(0, closed.returncode, closed.stderr)
+
+        built = self.run_workflow("build")
+        self.assertEqual(0, built.returncode, built.stderr)
+        self.assertEqual(history, metrics_path.read_bytes())
+
+        calendar = (
+            self.instance / "knowledge" / "business" / "选题日历.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("closed", calendar)
+        channel_record = (
+            self.instance / "knowledge" / "business" / "wechat" / "发布记录.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("reviewed", channel_record)
+        self.assertIn("views=1234", channel_record)
+        self.assertIn("continue", channel_record)
+        self.assertIn("扩量", channel_record)
 
     # ---------- build ----------
 

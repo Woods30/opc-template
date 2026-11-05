@@ -171,6 +171,21 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
 6. `build` 的频道视图区分指标缺失（未记录）、不可得（`{"available": false, "reason":
    "..."}`）与数值为零；渠道账号观测单独成节，不混入 publication 指标。
 
+### 复盘与关闭
+
+1. publication 创建时用 `--required-window 48h`（可重复）声明必需指标窗口；`--optional`
+   表示该 publication 不参与内容关闭判定，且不得声明必需窗口。默认是必需 publication。
+2. 发布后由 growth 完成复盘：`transition <publication_id> --to reviewed --conclusion
+   <continue|iterate|stop|inconclusive> --next-action "<下一项行动>" --actor growth`。
+   必需窗口的数据都已记录才能进入 reviewed；`review` 引用实际存在的指标窗口，不改写
+   历史指标。
+3. 数据确实不可得时（如平台不提供历史窗口），由 gm 带 `--exception-reason "<原因>"`
+   完成复盘；例外写进 review 与事件链，成为关键业务事件。
+4. 内容关闭由 gm 执行：`transition <content_id> --to closed --actor gm`。只有 ready 内容
+   可以关闭；所有必需 publication 必须已 reviewed 或已带原因 cancelled，否则命令失败并
+   列出阻塞项。可选 publication 不阻塞关闭。
+5. 完成复盘与关闭内容会刷新生成的选题日历与渠道发布记录，但不修改任何历史指标快照。
+
 ### 业务看板
 
 1. `tools/opc-workflow build` 还写出 `knowledge/business/dashboard.json`：看板的只读
