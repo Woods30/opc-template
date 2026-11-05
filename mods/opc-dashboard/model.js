@@ -24,6 +24,27 @@ export const CANONICAL_PREFIXES = [
   "knowledge/business/growth/",
 ];
 
+// 终端名来自实例名册，不按命名规则猜地址。
+export function findTeamTerminal(team, role) {
+  if (!Array.isArray(team)) return null;
+  const entry = team.find(
+    item =>
+      item &&
+      item.role === role &&
+      typeof item.terminal === "string" &&
+      item.terminal.trim() !== "",
+  );
+  return entry ? entry.terminal : null;
+}
+
+// 聚焦终端的动作序列：看板布局里没有终端面板，先切回本实例主布局再聚焦。
+export function terminalFocusPlan(prefix, address) {
+  const plan = [];
+  if (prefix) plan.push({ command: "layout.switch", args: { name: prefix } });
+  if (address) plan.push({ command: "pane.focus", args: { terminal: address } });
+  return plan;
+}
+
 // 看板只读这些子树里的 canonical 记录；别的路径一律不读。
 export const SOURCE_PREFIXES = [
   "knowledge/content/",

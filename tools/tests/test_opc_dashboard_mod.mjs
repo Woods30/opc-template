@@ -501,6 +501,31 @@ test("realpath 校验挡住 canonical 子树内的 symlink 越界", async () => 
   }
 });
 
+test("终端聚焦按名册找终端名，不猜地址", () => {
+  const team = [
+    { role: "gm", terminal: "opc-gm" },
+    { role: "content", terminal: "opc-content" },
+  ];
+  assert.equal(model.findTeamTerminal(team, "content"), "opc-content");
+  assert.equal(model.findTeamTerminal(team, "dev"), null);
+  assert.equal(model.findTeamTerminal([], "gm"), null);
+  assert.equal(model.findTeamTerminal(null, "gm"), null);
+  assert.equal(model.findTeamTerminal([{ role: "gm" }], "gm"), null);
+});
+
+test("聚焦终端先切回主布局再聚焦，缺前缀时只聚焦", () => {
+  assert.deepEqual(model.terminalFocusPlan("opc", "t43"), [
+    { command: "layout.switch", args: { name: "opc" } },
+    { command: "pane.focus", args: { terminal: "t43" } },
+  ]);
+  assert.deepEqual(model.terminalFocusPlan("", "t43"), [
+    { command: "pane.focus", args: { terminal: "t43" } },
+  ]);
+  assert.deepEqual(model.terminalFocusPlan("opc", ""), [
+    { command: "layout.switch", args: { name: "opc" } },
+  ]);
+});
+
 test("build 失败时的诊断能解析成可点击的条目", () => {
   const stderr = [
     "警告：knowledge/content/content-1/指标.md：published publication 尚未记录指标窗口",

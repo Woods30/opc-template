@@ -30,6 +30,8 @@ import {
   bannerState,
   isEmpty,
   isAllowedSourcePath,
+  findTeamTerminal,
+  terminalFocusPlan,
   SOURCE_PREFIXES,
   REALPATH_SNIPPET,
 } from "./model.js";
@@ -220,22 +222,22 @@ export default class OpcDashboard extends View {
 
   // 终端名来自实例名册，不按命名规则猜地址。
   async focusTerminal(role) {
-    const entry = (this.payload?.team ?? []).find(item => item.role === role);
-    if (!entry) {
+    const terminal = findTeamTerminal(this.payload?.team ?? [], role);
+    if (!terminal) {
       this.actionError = `名册里没有角色「${role}」的终端`;
       this.cx.notify();
       return;
     }
     try {
-      const result = await exec("hc", ["get", entry.terminal, "--json"]);
+      const result = await exec("hc", ["get", terminal, "--json"]);
       if (result.code !== 0) {
-        this.actionError = `终端「${entry.terminal}」不在线：${(result.stderr || "").trim().slice(0, 200)}`;
+        this.actionError = `终端「${terminal}」不在线：${(result.stderr || "").trim().slice(0, 200)}`;
         this.cx.notify();
         return;
       }
       const parsed = JSON.parse(result.stdout || "{}");
       if (!parsed.address) {
-        this.actionError = `终端「${entry.terminal}」没有地址`;
+        this.actionError = `终端「${terminal}」没有地址`;
         this.cx.notify();
         return;
       }
@@ -243,8 +245,9 @@ export default class OpcDashboard extends View {
       // 看板布局里没有终端面板：先把窗口切回本实例的主布局，
       // 聚焦才有地方显示，否则点了像没反应。
       const prefix = await this.instancePrefix();
-      if (prefix) run("layout.switch", { name: prefix });
-      run("pane.focus", { terminal: parsed.address });
+      for (const step of terminalFocusPlan(prefix, parsed.address)) {
+        run(step.command, step.args);
+      }
     } catch (error) {
       this.actionError = `聚焦终端失败：${error?.message ?? error}`;
       this.cx.notify();
