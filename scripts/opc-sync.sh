@@ -223,7 +223,8 @@ template_managed_files() {
   jq -r '.rules[] | select(.mode == "managed") | .match' "$policy" | while IFS= read -r m; do
     if [[ "$m" == */ ]]; then
       [[ -d "$src/$m" ]] || continue
-      find "$src/$m" -type f -not -path '*/.git/*' | while IFS= read -r f; do
+      find "$src/$m" -type f -not -path '*/.git/*' \
+        -not -name 'gpui-kit.d.ts' -not -name 'jsconfig.json' | while IFS= read -r f; do
         opc_rel "$f" "$src"
       done
     else

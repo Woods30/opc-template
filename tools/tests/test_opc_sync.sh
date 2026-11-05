@@ -68,6 +68,54 @@ fi
 jq '.channels = []' "$INST/channels.json" > "$INST/channels.json.tmp" && \
   mv "$INST/channels.json.tmp" "$INST/channels.json"
 
+# ---- 看板：mod 装进 herdr 配置目录，布局里的实例路径按实例替换 ----
+# 看板是独立面板，不改现有布局的安装与切换行为。
+if [[ -f "$WORK/config/herdr-app/mods/t-opc-dashboard/main.js" \
+   && -f "$WORK/config/herdr-app/mods/t-opc-dashboard/model.js" \
+   && -f "$WORK/config/herdr-app/mods/t-opc-dashboard/mod.json" ]]; then
+  ok "看板 mod 装进 herdr 配置目录"
+else
+  bad "看板 mod 没有装进 herdr 配置目录"
+fi
+check "看板布局按实例替换实例目录" "$INST" \
+  "$(jq -r '.children[] | select(.id=="dashboard") | .content.props.instance' \
+     "$WORK/config/herdr-app/layouts/t-opc-dashboard.json" 2>/dev/null)"
+check "看板布局指向本实例的 mod" "t-opc-dashboard" \
+  "$(jq -r '.children[] | select(.id=="dashboard") | .content.mod' \
+     "$WORK/config/herdr-app/layouts/t-opc-dashboard.json" 2>/dev/null)"
+# 主布局 layouts/opc.json 装成 <前缀>.json，其余装成 <前缀>-<名字>.json。
+if [[ -f "$WORK/config/herdr-app/layouts/t.json" \
+   && -f "$WORK/config/herdr-app/layouts/t-grid.json" ]]; then
+  ok "既有布局的安装与切换行为没有被看板影响"
+else
+  bad "看板安装把既有布局弄丢了"
+fi
+if grep -qF '{{' "$WORK/config/herdr-app/layouts/t-opc-dashboard.json" 2>/dev/null; then
+  bad "看板布局里还留着没替换的占位"
+else
+  ok "看板布局里没有没替换的占位"
+fi
+
+# 没装 Herdr 时安装器要说清楚，而不是失败或装出个坏面板。
+mkdir -p "$WORK/bin"
+for cmd in jq python3 git bash sed grep cp mkdir rm chmod cat basename dirname tr; do
+  real="$(command -v "$cmd" 2>/dev/null || true)"
+  [[ -n "$real" ]] && ln -sf "$real" "$WORK/bin/$cmd"
+done
+no_herdr_out="$(PATH="$WORK/bin:/usr/bin:/bin" XDG_CONFIG_HOME="$WORK/config" \
+  "$INST/scripts/opc-install.sh" t 2>&1)"
+no_herdr_code=$?
+if [[ "$no_herdr_code" -eq 0 ]] && grep -q "没找到 herdr-app" <<< "$no_herdr_out"; then
+  ok "没装 Herdr 时安装器给出清楚结果且不失败"
+else
+  bad "没装 Herdr 时安装器没说清楚或直接失败"
+fi
+if [[ -f "$INST/knowledge/business/选题日历.md" ]]; then
+  ok "没装 Herdr 时第一阶段的种子与视图照常物化"
+else
+  bad "没装 Herdr 时第一阶段的种子与视图没了"
+fi
+
 # Codex 没有 Claude 的 Skill 工具权限；它原生发现 .agents/skills 与 ~/.agents/skills。
 # 安装器要映射的是 approval/sandbox，不能把 Claude permissionMode 原样传给 Codex。
 # 假 codex 把参数逐行落盘；测试自己用 shell 内建拼回去，不依赖 paste。

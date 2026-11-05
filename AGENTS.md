@@ -35,7 +35,8 @@ knowledge/
 │   ├── growth/   # 渠道计划、指标目录、渠道快照、转化路径、实验
 │   ├── product/  # 需求、方案、实现记录、已知问题
 │   ├── 品牌口径.md
-│   └── 选题日历.md
+│   ├── 选题日历.md
+│   └── dashboard.json  # generated 只读视图：看板 JSON 契约（build 生成）
 ├── review/       # 非 canonical 对外物料的待审区；主稿审核不使用
 ├── decisions/    # 决策记录（gm 裁决后落盘）
 ├── daily/        # 每日汇总
@@ -169,6 +170,20 @@ hc send <前缀>-<发起方> "完成：<产出文件路径>"
    publication。
 6. `build` 的频道视图区分指标缺失（未记录）、不可得（`{"available": false, "reason":
    "..."}`）与数值为零；渠道账号观测单独成节，不混入 publication 指标。
+
+### 业务看板
+
+1. `tools/opc-workflow build` 还写出 `knowledge/business/dashboard.json`：看板的只读
+   JSON 契约，只含 metadata（状态、时间、路径、指标摘要），不含主稿、渠道稿与复盘正文。
+   它是 generated 只读视图，不得手工编辑；坏了就重跑 `build`。
+2. 看板是独立的 herdr mod（`mods/opc-dashboard/`），只读这份 JSON，不遍历也不解析
+   canonical Markdown，也不承担任何业务写入——canonical 记录的写入仍然只有 workflow
+   命令；看板最多重跑一次 `build` 刷新 generated 视图。
+3. 看板默认视图聚焦未关闭或受阻内容、待审批、开放任务，以及未完成指标/复盘、近期发布
+   与近期计划的 publication；历史默认不计入，避免旧数据污染 KPI。
+4. 看板点条目时只读预览对应的 canonical 源文件；点角色时按 `knowledge/team.md` 里的
+   **准确终端名**找到那个终端并聚焦，不按命名规则猜地址；打不开文件或终端时只提示
+   可恢复的错误，不改业务状态。
 
 ### 权限缺口
 

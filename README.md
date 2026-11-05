@@ -268,6 +268,20 @@ channel 不匹配、缺失来源、重复窗口都会被拒绝。频道视图的
 不是生成文件（缺 generated 标记），`build` 会拒绝覆盖并报错——旧格式需要人工确认，不能
 被静默冲掉。
 
+`build` 同时写出 `knowledge/business/dashboard.json`：看板的**只读契约**，把内容、
+publication、任务、审批、阻塞、指标摘要与复盘结论编译成一份带版本号的 JSON，只含看板
+需要的 metadata，不含主稿、渠道稿正文、复盘正文或资产内容。契约要点：
+
+- `contract_version` 固定为 `1`；`read_only` 与 `generated` 标出它的性质
+- `as_of` 取所有记录时间的最大值，不读系统时钟——同一份数据多次 build 结果完全一致
+- `contents[]`、`publications[]`、`tasks[]`、`approvals[]`、`channels[]`、`team[]` 是
+  看板要展示的条目；每条都带 `source_path` / `draft_path`，点击就能打开 canonical 源文件
+- `scope` 是默认视图范围：未关闭或受阻内容、待审批、开放任务，以及未完成指标/复盘或
+  近期发布/计划的 publication
+- `diagnostics` 带校验的 errors 与 warnings：error 会保留上一份有效缓存并让 build 返回
+  非零，warning 不阻止生成
+- 任一 error 都不会产生半份 JSON：先全量校验，再原子替换；内容没变就跳过写入
+
 ## 发布前自检：tools/preflight
 
 `tools/preflight <稿件路径>` 在发布前核对稿件与两份源文件是否一致：
@@ -299,12 +313,33 @@ channel 不匹配、缺失来源、重复窗口都会被拒绝。频道视图的
 | `focus.json` | `<前缀>-focus.json` | 只留主区，pane 占满整个窗口 |
 | `grid.json` | `<前缀>-grid.json` | 更紧凑的 pane 边框与间距，适合 2×2 |
 | `monitor.json` | `<前缀>-monitor.json` | 保留 agents 列表，去掉右侧面板 |
+| `opc-dashboard.json` | `<前缀>-opc-dashboard.json` | 业务看板：只读面板，不含终端 |
 
 切换：`ctrl-shift-l` 循环，或
 
 ```sh
 herdr-app do layout.switch '{"name":"opc-grid"}'
 ```
+
+### 业务看板：mods/opc-dashboard
+
+看板是独立的 **herdr mod**（`mods/opc-dashboard/`），装进
+`~/.config/herdr-app/mods/<前缀>-opc-dashboard/`。它只读 `knowledge/business/dashboard.json`，
+不遍历也不解析 canonical Markdown，也不提供任何业务写入操作：canonical 记录的写入仍然
+只有 workflow 命令，看板最多重跑一次 `build` 刷新 generated 视图：
+
+- 顶部是数据截止时间、条目计数、刷新按钮，以及校验 warning / error 与缓存过期的提示
+- 筛选支持时间、渠道、内容状态、publication 状态、角色、优先级与阻塞；「含历史」默认关闭，
+  免得 closed / archived 的旧数据污染默认 KPI
+- 分区展示紧急项、内容流水线、发布节奏、待 owner / gm 处理、渠道增长与复盘；终端与
+  agent 状态只是辅助信息
+- 点条目在上方读出对应 canonical 源文件（只读预览）；点角色名按 `knowledge/team.md` 的
+  **准确终端名**找到那个终端，切回本实例的主布局并聚焦它，不按命名规则猜地址；
+  打不开时给出可恢复的错误，不改业务状态
+
+文件变化经过短 debounce 后刷新（连续事件合并成一次），另有低频兜底刷新与手动刷新。
+安装器也会把 `mods/opc-dashboard` 装进 herdr 配置目录；没装 herdr 时只是少一个面板，
+第一阶段的 workflow 与 generated Markdown 不受影响。
 
 **一屏看多个角色**：
 

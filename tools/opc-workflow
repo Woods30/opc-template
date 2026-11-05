@@ -33,7 +33,7 @@ import secrets
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -41,6 +41,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SCHEMA_VERSION = 1
 CONTENT_DIR = Path("knowledge") / "content"
+KNOWLEDGE_DIR = Path("knowledge")
+INBOX_DIR = KNOWLEDGE_DIR / "inbox"
+TEAM_NAME = "team.md"
 BUSINESS_DIR = Path("knowledge") / "business"
 CALENDAR_NAME = "选题日历.md"
 CARD_NAME = "内容卡.md"
@@ -52,6 +55,9 @@ PUBLICATION_METRICS_NAME = "指标.md"
 METRIC_CATALOG_NAME = "指标.md"
 CHANNEL_SNAPSHOTS_NAME = "渠道快照.md"
 GROWTH_DIR = BUSINESS_DIR / "growth"
+DASHBOARD_NAME = "dashboard.json"
+DASHBOARD_CONTRACT_VERSION = 1
+DASHBOARD_MARKER = '"read_only": true'
 GENERATED_MARKER = "GENERATED FILE — READ ONLY"
 DEFAULT_ACTOR = "content"
 CONTENT_ID_RE = re.compile(r"^content-\d{8}-\d{12}-[0-9a-f]{8}$")
@@ -78,6 +84,7 @@ PUBLICATION_STATUSES = (
 )
 METRIC_AGGREGATIONS = ("sum", "average", "latest")
 METRIC_SCOPES = ("publication", "channel")
+TASK_STATE_ORDER = {"open": 0, "done": 1, "cancelled": 2}
 
 
 class WorkflowError(Exception):
@@ -152,13 +159,20 @@ def configured_roles(root: Path):
 
 
 def configured_channels(root: Path):
+    return {
+        channel_id: detail["enabled"]
+        for channel_id, detail in configured_channel_details(root).items()
+    }
+
+
+def configured_channel_details(root: Path):
     payload = read_json(root / "channels.json")
     channels = payload.get("channels") if isinstance(payload, dict) else None
     if not isinstance(channels, list):
         raise WorkflowError(
             f"channels.json 的 channels 必须是数组：{root / 'channels.json'}"
         )
-    known = {}
+    details = {}
     for channel in channels:
         if not isinstance(channel, dict) or not isinstance(channel.get("id"), str):
             continue
@@ -167,10 +181,14 @@ def configured_channels(root: Path):
             raise WorkflowError(
                 f"channels.json 使用非法 channel id「{channel_id}」"
             )
-        if channel_id in known:
+        if channel_id in details:
             raise WorkflowError(f"channels.json 使用重复 channel id「{channel_id}」")
-        known[channel_id] = bool(channel.get("enabled"))
-    return known
+        name = channel.get("name")
+        details[channel_id] = {
+            "name": name if isinstance(name, str) and name else channel_id,
+            "enabled": bool(channel.get("enabled")),
+        }
+    return details
 
 
 def require_text(label: str, value: str | None):
@@ -2700,7 +2718,7 @@ def build_calendar(root: Path):
         print_diagnostics(errors, warnings)
         return 1
     business = ensure_local_directory(root, BUSINESS_DIR)
-    targets = [(business / CALENDAR_NAME, render_calendar(records))]
+    targets = [(business / CALENDAR_NAME, render_calendar(records), GENERATED_MARKER)]
     channels = configured_channels(root)
     for channel, enabled in channels.items():
         if not enabled:
@@ -2710,10 +2728,26 @@ def build_calendar(root: Path):
             (
                 channel_dir / "发布记录.md",
                 render_channel_publications(channel, publications, records, growth),
+                GENERATED_MARKER,
             )
         )
+    dashboard_target = business / DASHBOARD_NAME
+    try:
+        dashboard_rendered = render_dashboard_cache(
+            root, records, publications, growth, errors, warnings
+        )
+    except Exception as error:  # 看板生成失败要说清楚，不能抛 traceback 给 owner
+        print(f"错误：看板契约：{error}", file=sys.stderr)
+        return 1
+    targets.append(
+        (
+            dashboard_target,
+            dashboard_rendered,
+            DASHBOARD_MARKER,
+        )
+    )
 
-    for target, _rendered in targets:
+    for target, _rendered, marker in targets:
         if target.is_symlink():
             print(f"错误：生成目标不能是 symlink：{target.relative_to(root)}", file=sys.stderr)
             return 1
@@ -2726,7 +2760,7 @@ def build_calendar(root: Path):
             existing = target.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             existing = ""
-        if GENERATED_MARKER not in existing:
+        if marker not in existing:
             print(
                 f"错误：{target.relative_to(root)} 不是生成文件，拒绝覆盖既有内容。"
                 "请先人工确认并迁移，或删除该文件后重新生成。",
@@ -2734,14 +2768,548 @@ def build_calendar(root: Path):
             )
             return 1
 
-    for target, rendered in targets:
+    for target, rendered, _marker in targets:
+        if target.exists() and target.is_file():
+            try:
+                if target.read_text(encoding="utf-8") == rendered:
+                    continue
+            except (OSError, UnicodeError):
+                pass
         write_atomic(target, rendered)
     print_diagnostics([], warnings)
     print(
         f"已生成选题日历：{len(records)} 条待排期内容；"
-        f"渠道发布记录：{len(publications)} 条 publication"
+        f"渠道发布记录：{len(publications)} 条 publication；"
+        f"看板缓存：{dashboard_target.relative_to(root).as_posix()}"
     )
     return 0
+
+
+# ---------- dashboard ----------
+
+
+def parse_timestamp(value):
+    """把记录里的时间字段解析成可比较的 aware datetime；解析不了返回 None。"""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    parsed = None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(text, pattern)
+                break
+            except ValueError:
+                parsed = None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def strip_code(text: str):
+    return text.strip().strip("`").strip()
+
+
+def split_task_fields(text: str):
+    """把「发起方：gm | 任务：xxx」拆成字段字典。"""
+    fields = {}
+    for chunk in text.split("|"):
+        for separator in ("：", ":"):
+            if separator in chunk:
+                key, _, value = chunk.partition(separator)
+                fields[key.strip()] = value.strip()
+                break
+    return fields
+
+
+def parse_inbox_entry(line: str, role: str, source: str):
+    """解析一行派工条目；不是派工条目时返回 None。"""
+    stripped = line.strip()
+    if not stripped.startswith("- "):
+        return None
+    body = stripped[2:].strip()
+    state = "open"
+    if body.startswith("✅"):
+        state = "done"
+        body = body[1:].strip()
+    elif body.startswith("⛔"):
+        state = "cancelled"
+        body = body[1:].strip()
+    start = body.find("[")
+    end = body.find("]", start + 1) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return None
+    prefix = body[:start].strip()
+    requested_at = body[start + 1:end].strip()
+    fields = split_task_fields(body[end + 1:])
+    task = fields.get("任务")
+    if not task:
+        return None
+    reason = None
+    if state == "cancelled":
+        reason = prefix
+        if reason.startswith("已撤销"):
+            reason = reason[len("已撤销") :].strip()
+            reason = reason.lstrip("：:").strip()
+        reason = reason.rstrip("-—:： ").strip() or None
+    digest = hashlib.sha256(
+        "|".join([role, requested_at, task]).encode("utf-8")
+    ).hexdigest()
+    return {
+        "task_id": f"task-{digest[:12]}",
+        "role": role,
+        "requester": fields.get("发起方"),
+        "requested_at": requested_at,
+        "task": task,
+        "acceptance": fields.get("验收"),
+        "state": state,
+        "reason": reason,
+        "source_path": source,
+    }
+
+
+def task_sort_key(task: dict):
+    parsed = parse_timestamp(task.get("requested_at"))
+    return (
+        TASK_STATE_ORDER.get(task.get("state"), len(TASK_STATE_ORDER)),
+        0 if parsed is None else 1,
+        parsed or datetime.min.replace(tzinfo=timezone.utc),
+        task.get("task_id") or "",
+    )
+
+
+def scan_inbox_tasks(root: Path):
+    """读 inbox 队列：只有未标记的条目是待办，其余是历史。"""
+    inbox = root / INBOX_DIR
+    tasks = []
+    if inbox.is_symlink() or not inbox.is_dir():
+        return tasks
+    for path in sorted(inbox.glob("*.md")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        source = path.relative_to(root).as_posix()
+        for line in text.splitlines():
+            entry = parse_inbox_entry(line, path.stem, source)
+            if entry is not None:
+                tasks.append(entry)
+    return sorted(tasks, key=task_sort_key)
+
+
+def scan_team(root: Path):
+    """读名册的第一张表：角色与终端名。"""
+    path = root / KNOWLEDGE_DIR / TEAM_NAME
+    if path.is_symlink() or not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return []
+    rows = []
+    header = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if header is not None:
+                break
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if header is None:
+            header = cells
+            continue
+        if all(cell and set(cell) <= set("-: ") for cell in cells):
+            continue
+        if len(cells) < 2:
+            continue
+        role = strip_code(cells[0])
+        terminal = strip_code(cells[1])
+        if not role or not terminal:
+            continue
+        rows.append({"role": role, "terminal": terminal})
+    return rows
+
+
+def record_block_state(data: dict):
+    """内容与 publication 的阻塞状态：布尔或带原因的块。"""
+    block = data.get("block")
+    if isinstance(block, dict):
+        return True, block.get("reason")
+    if isinstance(block, bool):
+        return block, data.get("block_reason")
+    blocked = data.get("blocked")
+    if isinstance(blocked, bool):
+        return blocked, data.get("block_reason")
+    return False, None
+
+
+def publication_metric_state(data: dict, catalog: dict, windows: list):
+    """指标三态：not_applicable / missing / partial / recorded。"""
+    channel = data.get("channel")
+    definitions = [
+        definition
+        for definition in catalog.values()
+        if definition.get("scope") == "publication"
+        and channel in definition.get("channels", ())
+    ]
+    if not definitions:
+        return "not_applicable", False
+    if not windows:
+        return "missing", True
+    values = windows[-1].get("values")
+    if not isinstance(values, dict):
+        return "missing", True
+    missing = [
+        definition["key"]
+        for definition in sorted(definitions, key=lambda item: item.get("key", ""))
+        if definition["key"] not in values
+    ]
+    if missing:
+        return "partial", True
+    return "recorded", False
+
+
+def window_sort_key(window: dict):
+    parsed = parse_timestamp(window.get("observed_at"))
+    return (
+        0 if parsed is None else 1,
+        parsed or datetime.min.replace(tzinfo=timezone.utc),
+        window.get("window") or "",
+    )
+
+
+def snapshot_sort_key(observation: dict):
+    parsed = parse_timestamp(observation.get("observed_at"))
+    return (
+        0 if parsed is None else 1,
+        parsed or datetime.min.replace(tzinfo=timezone.utc),
+        observation.get("recorded_at") or "",
+    )
+
+
+def publication_in_scope(entry: dict, as_of):
+    """默认视图范围：未完成指标/复盘、待审批、近期发布与近期计划。"""
+    if entry.get("needs_metrics") or entry.get("needs_review"):
+        return True
+    if entry.get("approval_status") == "pending":
+        return True
+    status = entry.get("status")
+    if status in ("published", "reviewed"):
+        published_at = parse_timestamp(entry.get("published_at"))
+        if published_at is None or as_of is None:
+            return False
+        return published_at >= as_of - timedelta(days=7)
+    if status == "scheduled":
+        planned_at = parse_timestamp(entry.get("planned_at"))
+        if planned_at is None or as_of is None:
+            return True
+        return planned_at <= as_of + timedelta(days=30)
+    return False
+
+
+def metric_summary_text(record: dict, catalog: dict, windows: list):
+    """看板用的指标摘要：窗口与数值，缺失与不可得分开说。"""
+    definitions = sorted(
+        (
+            definition
+            for definition in catalog.values()
+            if definition.get("scope") == "publication"
+            and record.get("channel") in definition.get("channels", ())
+        ),
+        key=lambda definition: definition.get("key", ""),
+    )
+    if not definitions or not windows:
+        return ""
+    parts = []
+    for window in windows:
+        values = window.get("values")
+        if not isinstance(values, dict):
+            values = {}
+        cells = []
+        for definition in definitions:
+            key = definition["key"]
+            if key not in values:
+                cells.append(f"{key}=缺失")
+                continue
+            value = values[key]
+            if isinstance(value, dict) and value.get("available") is False:
+                cells.append(f"{key}=不可得")
+            else:
+                cells.append(f"{key}={value}")
+        parts.append(f"{window.get('window')}：" + "、".join(cells))
+    return "；".join(parts)
+
+
+def dashboard_as_of(contents: list, publications: list, tasks: list, growth: GrowthScan):
+    """数据截止时间取所有记录时间的最大值，保证同一份数据算出同一个值。"""
+    candidates = []
+    for entry in contents:
+        candidates.append(entry.get("created_at"))
+    for entry in publications:
+        candidates.extend(
+            [entry.get("created_at"), entry.get("planned_at"), entry.get("published_at")]
+        )
+    for task in tasks:
+        candidates.append(task.get("requested_at"))
+    for windows in growth.publication_metrics.values():
+        for window in windows:
+            candidates.append(window.get("observed_at"))
+    for observation in growth.channel_snapshots:
+        candidates.append(observation.get("observed_at"))
+    parsed = [value for value in (parse_timestamp(item) for item in candidates) if value]
+    if not parsed:
+        return None
+    return max(parsed).isoformat()
+
+
+def build_dashboard_payload(
+    root: Path,
+    records: list,
+    publications: list,
+    growth: GrowthScan,
+    errors: list,
+    warnings: list,
+):
+    """只读看板的 JSON 契约：只带元数据，不带正文与哈希。"""
+    publications_by_content = {}
+    for publication in publications:
+        content_id = publication.data.get("content_id")
+        publications_by_content.setdefault(content_id, []).append(publication)
+
+    contents = []
+    approvals = []
+    for item in sorted(records, key=record_sort_key):
+        data = item.data
+        content_id = data.get("content_id")
+        blocked, block_reason = record_block_state(data)
+        approval = data.get("approval")
+        if not isinstance(approval, dict):
+            approval = {}
+        related = sorted(
+            publications_by_content.get(content_id, []), key=publication_sort_key
+        )
+        contents.append(
+            {
+                "content_id": content_id,
+                "title": data.get("title"),
+                "status": data.get("status"),
+                "role": data.get("actor"),
+                "priority": data.get("priority"),
+                "blocked": blocked,
+                "block_reason": block_reason,
+                "target_date": data.get("target_date"),
+                "created_at": data.get("created_at"),
+                "approval_status": approval.get("status"),
+                "publication_ids": [
+                    publication.data.get("publication_id") for publication in related
+                ],
+                "source_path": item.source,
+                "draft_path": (
+                    f"{CONTENT_DIR.as_posix()}/{content_id}/{MAIN_DRAFT_NAME}"
+                ),
+            }
+        )
+        if approval.get("status") == "pending":
+            approvals.append(
+                {
+                    "entity": "content",
+                    "id": content_id,
+                    "artifact": MAIN_DRAFT_NAME,
+                    "requested_at": approval.get("requested_at"),
+                    "requested_by": approval.get("requested_by"),
+                    "source_path": item.source,
+                }
+            )
+
+    publication_entries = []
+    for item in sorted(publications, key=publication_sort_key):
+        data = item.data
+        publication_id = data.get("publication_id")
+        content_id = data.get("content_id")
+        schedule = data.get("schedule")
+        if not isinstance(schedule, dict):
+            schedule = {}
+        approval = data.get("approval")
+        if not isinstance(approval, dict):
+            approval = {}
+        fact = data.get("publication")
+        if not isinstance(fact, dict):
+            fact = {}
+        blocked, block_reason = record_block_state(data)
+        windows = sorted(
+            growth.publication_metrics.get(publication_id, []), key=window_sort_key
+        )
+        metric_state, needs_metrics = publication_metric_state(
+            data, growth.catalog, windows
+        )
+        review = data.get("review")
+        if not isinstance(review, dict):
+            review = {}
+        needs_review = data.get("status") in ("published", "reviewed") and review.get(
+            "status"
+        ) not in ("done", "recorded")
+        publication_entries.append(
+            {
+                "publication_id": publication_id,
+                "content_id": content_id,
+                "channel": data.get("channel"),
+                "status": data.get("status"),
+                "role": data.get("actor"),
+                "priority": data.get("priority"),
+                "blocked": blocked,
+                "block_reason": block_reason,
+                "created_at": data.get("created_at"),
+                "planned_at": schedule.get("planned_at"),
+                "timezone": schedule.get("timezone"),
+                "published_at": fact.get("published_at"),
+                "url": fact.get("url"),
+                "external_id": fact.get("external_id"),
+                "approval_status": approval.get("status"),
+                "metrics": {
+                    "state": metric_state,
+                    "summary": metric_summary_text(data, growth.catalog, windows),
+                    "windows": [
+                        {
+                            "window": window.get("window"),
+                            "observed_at": window.get("observed_at"),
+                            "source": window.get("source"),
+                            "values": window.get("values"),
+                        }
+                        for window in windows
+                    ],
+                },
+                "needs_metrics": needs_metrics,
+                "needs_review": needs_review,
+                "review": {
+                    "status": review.get("status"),
+                    "conclusion": review.get("conclusion"),
+                    "recorded_at": review.get("recorded_at"),
+                },
+                "source_path": item.source,
+                "draft_path": (
+                    f"{CONTENT_DIR.as_posix()}/{content_id}/"
+                    f"{PUBLICATIONS_DIR_NAME}/{publication_id}/{CHANNEL_DRAFT_NAME}"
+                ),
+                "metrics_path": (
+                    f"{CONTENT_DIR.as_posix()}/{content_id}/"
+                    f"{PUBLICATIONS_DIR_NAME}/{publication_id}/{PUBLICATION_METRICS_NAME}"
+                ),
+            }
+        )
+        if approval.get("status") == "pending":
+            approvals.append(
+                {
+                    "entity": "publication",
+                    "id": publication_id,
+                    "artifact": CHANNEL_DRAFT_NAME,
+                    "requested_at": approval.get("requested_at"),
+                    "requested_by": approval.get("requested_by"),
+                    "source_path": item.source,
+                }
+            )
+
+    channel_entries = []
+    for channel_id, detail in sorted(configured_channel_details(root).items()):
+        if not detail["enabled"]:
+            continue
+        observations = sorted(
+            (
+                observation
+                for observation in growth.channel_snapshots
+                if isinstance(observation, dict)
+                and observation.get("channel") == channel_id
+            ),
+            key=snapshot_sort_key,
+        )
+        account_metrics = {}
+        if observations:
+            values = observations[-1].get("values")
+            if isinstance(values, dict):
+                account_metrics = values
+        channel_entries.append(
+            {
+                "channel": channel_id,
+                "name": detail["name"],
+                "publication_count": sum(
+                    1
+                    for entry in publication_entries
+                    if entry.get("channel") == channel_id
+                ),
+                "account_metrics": account_metrics,
+            }
+        )
+
+    tasks = scan_inbox_tasks(root)
+    as_of_text = dashboard_as_of(contents, publication_entries, tasks, growth)
+    as_of = parse_timestamp(as_of_text)
+    return {
+        "contract_version": DASHBOARD_CONTRACT_VERSION,
+        "generated": True,
+        "read_only": True,
+        "as_of": as_of_text,
+        "counts": {
+            "contents": len(contents),
+            "publications": len(publication_entries),
+            "tasks": len(tasks),
+            "approvals": len(approvals),
+            "channels": len(channel_entries),
+        },
+        "contents": contents,
+        "publications": publication_entries,
+        "tasks": tasks,
+        "approvals": approvals,
+        "channels": channel_entries,
+        "team": scan_team(root),
+        "diagnostics": {
+            "errors": [
+                {"source": error.source, "message": error.message} for error in errors
+            ],
+            "warnings": [
+                {"source": warning.source, "message": warning.message}
+                for warning in warnings
+            ],
+        },
+        "scope": {
+            "content_ids": [
+                entry["content_id"]
+                for entry in contents
+                if entry.get("status") not in ("closed", "cancelled")
+                or entry.get("blocked")
+            ],
+            "publication_ids": [
+                entry["publication_id"]
+                for entry in publication_entries
+                if publication_in_scope(entry, as_of)
+            ],
+            "task_ids": [
+                task["task_id"] for task in tasks if task.get("state") == "open"
+            ],
+            "approval_ids": [approval["id"] for approval in approvals],
+        },
+    }
+
+
+def render_dashboard_cache(
+    root: Path,
+    records: list,
+    publications: list,
+    growth: GrowthScan,
+    errors: list,
+    warnings: list,
+):
+    """渲染看板契约的 JSON 文本；只带元数据，不带正文与哈希。"""
+    payload = build_dashboard_payload(
+        root, records, publications, growth, errors, warnings
+    )
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 # ---------- CLI ----------

@@ -387,6 +387,7 @@ fi
 } > "$ROOT/knowledge/team.md"
 
 # 4. 布局（可选，存在才装）
+DASHBOARD_MOD="$PREFIX-opc-dashboard"
 if [[ -f "$ROOT/layouts/opc.json" ]]; then
   mkdir -p "$LAYOUTS"
   # opc.json 装成 <前缀>.json（主布局）；其余 <名字>.json 装成 <前缀>-<名字>.json
@@ -398,9 +399,30 @@ if [[ -f "$ROOT/layouts/opc.json" ]]; then
     else
       target="$LAYOUTS/$PREFIX-$name.json"
     fi
-    cp "$f" "$target"
+    # 带占位的布局（看板）要按实例替换：实例目录与 mod 名都是实例主权
+    if grep -qF '{{' "$f"; then
+      jq --arg instance "$ROOT" --arg mod "${DASHBOARD_MOD}" '
+        walk(if type == "string"
+             then gsub("\\{\\{INSTANCE\\}\\}"; $instance) | gsub("\\{\\{MOD\\}\\}"; $mod)
+             else . end)' "$f" > "$target"
+    else
+      cp "$f" "$target"
+    fi
     [[ -f "$ROOT/layouts/$name.svg" ]] && cp "$ROOT/layouts/$name.svg" "${target%.json}.svg"
   done
+fi
+
+# 5. 看板 mod（只读面板；没有 Herdr 也不影响第一阶段工具）
+dashboard_note="看板 mod：模版里没有 mods/opc-dashboard，跳过"
+if [[ -d "$ROOT/mods/opc-dashboard" ]]; then
+  mkdir -p "$(opc_mods_dir)/${DASHBOARD_MOD}"
+  cp "$ROOT/mods/opc-dashboard/main.js" "$ROOT/mods/opc-dashboard/model.js" \
+     "$ROOT/mods/opc-dashboard/mod.json" "$(opc_mods_dir)/${DASHBOARD_MOD}/"
+  if command -v herdr-app >/dev/null 2>&1; then
+    dashboard_note="看板 mod：$(opc_mods_dir)/${DASHBOARD_MOD}（布局 $(opc_layouts_dir)/$PREFIX-opc-dashboard.json）"
+  else
+    dashboard_note="看板 mod：已写入 $(opc_mods_dir)/${DASHBOARD_MOD}，但没找到 herdr-app 命令；装好 Herdr 后自动生效"
+  fi
 fi
 
 echo "已安装 OPC 实例：前缀 $PREFIX"
@@ -408,6 +430,7 @@ echo "  角色：$(echo $roles | tr ' ' ', ')"
 echo "  模板：$TEMPLATES/$PREFIX-<角色>.md"
 echo "  权限：$ROOT/.opc/settings-<角色>.json（仅 claude 角色）"
 echo "  名册：$ROOT/knowledge/team.md"
+echo "  $dashboard_note"
 # 非 claude 的 CLI 不托管权限，要说清楚，否则 owner 会以为白名单覆盖了它们
 unmanaged=""
 for role in $roles; do

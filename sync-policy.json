@@ -28,6 +28,10 @@
       "mode": "managed"
     },
     {
+      "match": "mods/",
+      "mode": "managed"
+    },
+    {
       "match": ".claude/",
       "mode": "managed"
     },

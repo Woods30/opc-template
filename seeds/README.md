@@ -46,8 +46,14 @@ tools/opc-workflow transition <publication_id> --to published --actual-at <ISO�
 tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at <ISO时间> --source <来源> --values '<JSON>' --actor growth
 tools/opc-workflow record-channel-snapshot --channel <channel> --observed-at <ISO时间> --source <来源> --values '<JSON>' --actor growth
 tools/opc-workflow validate                         # 校验内容、publication、审批 hash 与指标
-tools/opc-workflow build                            # 刷新 generated 业务视图
+tools/opc-workflow build                            # 刷新 generated 业务视图与看板 JSON
 ```
+
+## 业务看板
+
+`build` 会写出 `knowledge/business/dashboard.json`：看板的只读 JSON 契约。
+装了 herdr 的实例还有一个业务看板布局（`<前缀>-opc-dashboard.json`），在布局切换里
+选它就能看到内容流水线、发布节奏、待处理事项与渠道增长——看板只读，不改任何事实。
 
 ## 与模版的关系
 

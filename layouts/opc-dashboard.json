@@ -1,0 +1,33 @@
+{
+  "id": "root",
+  "type": "column",
+  "titlebar": "none",
+  "traffic_lights": [
+    12,
+    16
+  ],
+  "background": "canvas",
+  "children": [
+    {
+      "id": "top",
+      "type": "block",
+      "size": {
+        "px": 46
+      },
+      "window_drag": true,
+      "content": {
+        "mod": "workspace-chrome"
+      }
+    },
+    {
+      "id": "dashboard",
+      "type": "block",
+      "content": {
+        "mod": "{{MOD}}",
+        "props": {
+          "instance": "{{INSTANCE}}"
+        }
+      }
+    }
+  ]
+}

@@ -80,6 +80,7 @@ opc_role_cli() {
 
 opc_templates_dir() { printf '%s/herdr-core/templates' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 opc_layouts_dir()   { printf '%s/herdr-app/layouts'   "${XDG_CONFIG_HOME:-$HOME/.config}"; }
+opc_mods_dir()      { printf '%s/herdr-app/mods'      "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
 # ---- 各 CLI 的 Skill 与权限模型 ----
 # 不同 CLI 的「技能在哪」和「谁来批」不是一回事，OPC 不能把 Claude 的规则

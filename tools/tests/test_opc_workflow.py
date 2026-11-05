@@ -229,6 +229,35 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(0, scheduled.returncode, scheduled.stderr)
         return publication_id, publication_card
 
+    def create_published_publication(self):
+        publication_id, publication_card = self.create_scheduled_publication()
+        published = self.publish(publication_id)
+        self.assertEqual(0, published.returncode, published.stderr)
+        return publication_id, publication_card
+
+    def write_inbox(self, role, lines):
+        inbox = self.instance / "knowledge" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / f"{role}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def write_team(self, rows):
+        team = self.instance / "knowledge" / "team.md"
+        team.parent.mkdir(parents=True, exist_ok=True)
+        body = [
+            "# 团队名册",
+            "",
+            "| 角色 | 终端名 | 模板名 | CLI | 负责的子树 |",
+            "|---|---|---|---|---|",
+        ]
+        body.extend(rows)
+        team.write_text("\n".join(body) + "\n", encoding="utf-8")
+
+    def dashboard_path(self):
+        return self.instance / "knowledge" / "business" / "dashboard.json"
+
+    def dashboard(self):
+        return json.loads(self.dashboard_path().read_text(encoding="utf-8"))
+
     def publish(self, publication_id, *args, actor="gm"):
         return self.transition(
             publication_id,
@@ -2145,6 +2174,279 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("knowledge/content/linked", result.stderr)
         self.assertIn("symlink", result.stderr)
+
+    # ---------- dashboard contract ----------
+
+    def test_build_writes_versioned_dashboard_json_with_metadata_only(self):
+        publication_id, _publication_card = self.create_published_publication()
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
+        )
+        self.write_inbox(
+            "gm",
+            [
+                "- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题",
+                "- ✅ [2026-11-03 08:00] 发起方：gm | 任务：修掉旧日历 | 验收：已删除",
+            ],
+        )
+        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/inbox/gm.md` |"])
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = self.dashboard()
+        self.assertEqual(1, payload["contract_version"])
+        self.assertTrue(payload["generated"])
+        self.assertTrue(payload["read_only"])
+        self.assertEqual(1, payload["counts"]["contents"])
+        self.assertEqual(1, payload["counts"]["publications"])
+        self.assertEqual(2, payload["counts"]["tasks"])
+
+        content = payload["contents"][0]
+        self.assertEqual("ready", content["status"])
+        self.assertEqual("content", content["role"])
+        self.assertEqual([publication_id], content["publication_ids"])
+        self.assertIn("status", content)
+        for field in ("priority", "blocked", "target_date", "created_at"):
+            self.assertIn(field, content)
+
+        publication = payload["publications"][0]
+        self.assertEqual(publication_id, publication["publication_id"])
+        self.assertEqual("published", publication["status"])
+        self.assertEqual("2026-11-20T09:07:00+08:00", publication["published_at"])
+        self.assertEqual("https://example.com/posts/launch", publication["url"])
+        self.assertEqual("48h", publication["metrics"]["windows"][0]["window"])
+        self.assertIn("source_path", publication)
+        self.assertIn("draft_path", publication)
+
+        tasks = payload["tasks"]
+        self.assertEqual(["open", "done"], [task["state"] for task in tasks])
+        self.assertEqual("gm", tasks[0]["role"])
+        self.assertTrue(tasks[0]["task_id"].startswith("task-"))
+        self.assertEqual("产出本周选题清单", tasks[0]["task"])
+        self.assertEqual("10 个选题", tasks[0]["acceptance"])
+
+        self.assertEqual(
+            [{"role": "gm", "terminal": "opc-gm"}],
+            payload["team"],
+        )
+
+        text = self.dashboard_path().read_text(encoding="utf-8")
+        self.assertNotIn("已完成适配", text)
+        self.assertNotIn("第一版正文", text)
+        self.assertNotIn("artifact_hash", text)
+
+    def test_build_dashboard_for_empty_instance_is_valid_and_renderable(self):
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = self.dashboard()
+        self.assertEqual(1, payload["contract_version"])
+        self.assertEqual([], payload["contents"])
+        self.assertEqual([], payload["publications"])
+        self.assertEqual([], payload["tasks"])
+        self.assertEqual([], payload["approvals"])
+        self.assertEqual(0, payload["counts"]["contents"])
+
+    def test_build_dashboard_keeps_last_valid_cache_when_validation_fails(self):
+        publication_id, _publication_card = self.create_published_publication()
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        previous = self.dashboard_path().read_bytes()
+
+        content_id, card = self.create_content(title="会被写坏的卡")
+        card.write_text("---\nnot-json\n---\n\n# 内容卡\n", encoding="utf-8")
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(previous, self.dashboard_path().read_bytes())
+
+    def test_build_dashboard_is_deterministic(self):
+        publication_id, _publication_card = self.create_published_publication()
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
+        )
+
+        first = self.run_workflow("build")
+        self.assertEqual(0, first.returncode, first.stderr)
+        first_bytes = self.dashboard_path().read_bytes()
+        second = self.run_workflow("build")
+        self.assertEqual(0, second.returncode, second.stderr)
+
+        self.assertEqual(first_bytes, self.dashboard_path().read_bytes())
+
+    def test_build_dashboard_exposes_default_scope_and_filter_fields(self):
+        publication_id, _publication_card = self.create_published_publication()
+        self.write_inbox(
+            "gm",
+            ["- [2026-11-04 09:30] 发起方：gm | 任务：跟进发布 | 验收：已确认"],
+        )
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        payload = self.dashboard()
+
+        scope = payload["scope"]
+        self.assertEqual([publication_id], scope["publication_ids"])
+        self.assertEqual(
+            [record["content_id"] for record in payload["contents"]],
+            scope["content_ids"],
+        )
+        self.assertEqual(1, len(scope["task_ids"]))
+        publication = payload["publications"][0]
+        for field in ("channel", "status", "role", "priority", "blocked"):
+            self.assertIn(field, publication)
+        self.assertIn("as_of", payload)
+
+    def test_build_dashboard_reports_warnings_without_blocking(self):
+        publication_id, _publication_card = self.create_published_publication()
+        self.metric_catalog()
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = self.dashboard()
+        self.assertEqual([], payload["diagnostics"]["errors"])
+        self.assertTrue(payload["diagnostics"]["warnings"])
+        self.assertTrue(payload["publications"][0]["needs_metrics"])
+
+    def test_build_dashboard_keeps_account_level_metrics_out_of_publications(self):
+        publication_id, _publication_card = self.create_published_publication()
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
+        )
+        self.assertEqual(0, self.record_channel_snapshot({"followers": 5000}).returncode)
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        payload = self.dashboard()
+
+        publication = payload["publications"][0]
+        self.assertNotIn("followers", json.dumps(publication, ensure_ascii=False))
+        channels = payload["channels"]
+        self.assertEqual("wechat", channels[0]["channel"])
+        self.assertEqual(5000, channels[0]["account_metrics"]["followers"])
+
+    def test_build_dashboard_surfaces_recorded_review_conclusion(self):
+        publication_id, publication_card = self.create_published_publication()
+        card = self.instance / publication_card
+        raw = card.read_text(encoding="utf-8")
+        start = raw.index("---\n") + len("---\n")
+        end = raw.index("\n---\n", start)
+        data = json.loads(raw[start:end])
+        data["review"] = {
+            "status": "done",
+            "conclusion": "钩子有效，转化达标",
+            "recorded_at": "2026-11-21T10:00:00+08:00",
+        }
+        card.write_text(
+            "---\n" + json.dumps(data, ensure_ascii=False, indent=2) + raw[end:],
+            encoding="utf-8",
+        )
+
+        result = self.run_workflow("build")
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = self.dashboard()
+
+        publication = payload["publications"][0]
+        self.assertFalse(publication["needs_review"])
+        self.assertEqual("done", publication["review"]["status"])
+        self.assertEqual("钩子有效，转化达标", publication["review"]["conclusion"])
+        self.assertEqual(
+            "2026-11-21T10:00:00+08:00",
+            publication["review"]["recorded_at"],
+        )
+        # 近期发布、没有待办指标的 publication 仍在默认范围内。
+        self.assertIn(publication_id, payload["scope"]["publication_ids"])
+
+    def test_build_dashboard_lists_pending_approvals(self):
+        content_id, _content_card = self.create_ready_content()
+        publication_id, _publication_card = self.create_publication(content_id)
+        self.publication_draft(publication_id).write_text("# 渠道稿\n\n适配稿。\n", encoding="utf-8")
+        reviewed = self.transition(
+            publication_id,
+            "--to",
+            "reviewing",
+            actor="content",
+        )
+        self.assertEqual(0, reviewed.returncode, reviewed.stderr)
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        payload = self.dashboard()
+
+        approvals = payload["approvals"]
+        self.assertEqual(1, len(approvals))
+        self.assertEqual("publication", approvals[0]["entity"])
+        self.assertEqual(publication_id, approvals[0]["id"])
+        self.assertEqual("渠道稿.md", approvals[0]["artifact"])
+        self.assertIn(publication_id, payload["scope"]["publication_ids"])
+
+    def test_build_dashboard_reads_inbox_states_from_markers(self):
+        self.write_inbox(
+            "gm",
+            [
+                "- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题",
+                "- ✅ [2026-11-03 08:00] 发起方：gm | 任务：修掉旧日历 | 验收：已删除",
+                "- ⛔ 已撤销：不再需要 - [2026-11-02 08:00] 发起方：gm | 任务：换个方向 | 验收：无",
+            ],
+        )
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        payload = self.dashboard()
+
+        self.assertEqual(
+            ["open", "done", "cancelled"],
+            [task["state"] for task in payload["tasks"]],
+        )
+        self.assertEqual("不再需要", payload["tasks"][2]["reason"])
+        self.assertEqual(
+            [payload["tasks"][0]["task_id"]],
+            payload["scope"]["task_ids"],
+        )
+
+    def test_end_to_end_dashboard_covers_content_publish_metrics_and_tasks(self):
+        publication_id, _publication_card = self.create_published_publication()
+        self.metric_catalog()
+        self.assertEqual(
+            0,
+            self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
+        )
+        self.write_inbox(
+            "content",
+            ["- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题"],
+        )
+        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/inbox/gm.md` |"])
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        payload = self.dashboard()
+
+        content = payload["contents"][0]
+        self.assertEqual("ready", content["status"])
+        self.assertEqual([publication_id], content["publication_ids"])
+
+        publication = payload["publications"][0]
+        self.assertEqual("published", publication["status"])
+        self.assertEqual("48h", publication["metrics"]["windows"][0]["window"])
+        self.assertIn("views=1234", publication["metrics"]["summary"])
+        self.assertTrue(
+            publication["source_path"].endswith("发布卡.md"),
+            publication["source_path"],
+        )
+        self.assertTrue(
+            publication["metrics_path"].endswith("指标.md"),
+            publication["metrics_path"],
+        )
+
+        self.assertEqual(1, payload["counts"]["tasks"])
+        self.assertEqual("产出本周选题清单", payload["tasks"][0]["task"])
+        self.assertEqual([{"role": "gm", "terminal": "opc-gm"}], payload["team"])
+        self.assertEqual([], payload["diagnostics"]["errors"])
+        self.assertIn(content["content_id"], payload["scope"]["content_ids"])
+        self.assertIn(publication_id, payload["scope"]["publication_ids"])
 
     # ---------- build ----------
 

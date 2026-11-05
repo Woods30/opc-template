@@ -8,6 +8,10 @@ knowledge/business/README.md
 # 浏览器自动化工具的临时产物
 .playwright-mcp/
 
+# herdr 检查 mod 时在目录里生成的类型声明与编辑器配置，跟踪它们只会产生无意义 diff
+mods/*/gpui-kit.d.ts
+mods/*/jsconfig.json
+
 # 临时目录
 .tmp-*
 

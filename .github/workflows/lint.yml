@@ -31,6 +31,9 @@ jobs:
           python3 tools/tests/test_preflight.py
           python3 tools/tests/test_opc_workflow.py
 
+      - name: 看板 mod 测试
+        run: node --test tools/tests/test_opc_dashboard_mod.mjs
+
   sync:
     # 同步机制的场景回归：模版更新、冲突、种子升级、配置并集
     runs-on: ubuntu-latest
