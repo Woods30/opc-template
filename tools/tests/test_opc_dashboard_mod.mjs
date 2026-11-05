@@ -464,6 +464,43 @@ test("源文件路径只允许 canonical 子树，越界写法一律拒绝", () 
   assert.equal(model.isAllowedSourcePath(null), false);
 });
 
+test("realpath 校验挡住 canonical 子树内的 symlink 越界", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { mkdtemp, mkdir, writeFile, symlink, rm, realpath } = await import(
+    "node:fs/promises"
+  );
+  const { tmpdir } = await import("node:os");
+  const base = await mkdtemp(path.join(tmpdir(), "opc-dashboard-"));
+  try {
+    await mkdir(path.join(base, ".opc"), { recursive: true });
+    await writeFile(path.join(base, ".opc", "secret.md"), "secret\n");
+    await mkdir(path.join(base, "knowledge", "content"), { recursive: true });
+    const okPath = path.join(base, "knowledge", "content", "ok.md");
+    await writeFile(okPath, "ok\n");
+    await symlink(
+      "../../.opc/secret.md",
+      path.join(base, "knowledge", "content", "link.md"),
+    );
+
+    const resolve = relative =>
+      spawnSync(
+        "python3",
+        ["-c", model.REALPATH_SNIPPET, base, relative, ...model.SOURCE_PREFIXES],
+        { encoding: "utf8" },
+      );
+
+    const ok = resolve("knowledge/content/ok.md");
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(ok.stdout.trim(), await realpath(okPath));
+
+    const linked = resolve("knowledge/content/link.md");
+    assert.notEqual(linked.status, 0);
+    assert.match(linked.stderr, /允许的 canonical 子树/);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test("build 失败时的诊断能解析成可点击的条目", () => {
   const stderr = [
     "警告：knowledge/content/content-1/指标.md：published publication 尚未记录指标窗口",

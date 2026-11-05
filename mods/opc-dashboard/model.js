@@ -39,6 +39,22 @@ export function isAllowedSourcePath(relativePath) {
   return SOURCE_PREFIXES.some(prefix => relativePath.startsWith(prefix));
 }
 
+// 字面量检查挡不住 symlink：content 树里放一个指向 .opc/ 的链接，
+// 前缀仍然合法。定位真实文件时用 realpath 再做一次容器检查，
+// 并且要求解析后的目标落在允许的 canonical 子树里。
+// mod 的 fs/promises 没有 realpath，用实例本来就需要的 python3 做这一步。
+export const REALPATH_SNIPPET = [
+  "import os, sys",
+  "base = os.path.realpath(sys.argv[1])",
+  "target = os.path.realpath(os.path.join(base, sys.argv[2]))",
+  "prefixes = [os.path.realpath(os.path.join(base, item)) for item in sys.argv[3:]]",
+  "if target != base and not target.startswith(base + os.sep):",
+  "    sys.exit('源文件越出实例目录')",
+  "if not any(target == root or target.startswith(root + os.sep) for root in prefixes):",
+  "    sys.exit('源文件不在允许的 canonical 子树内')",
+  "print(target)",
+].join("\n");
+
 export function emptyFilters() {
   return {
     time: "",

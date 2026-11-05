@@ -30,6 +30,8 @@ import {
   bannerState,
   isEmpty,
   isAllowedSourcePath,
+  SOURCE_PREFIXES,
+  REALPATH_SNIPPET,
 } from "./model.js";
 
 const DASHBOARD_RELATIVE = "knowledge/business/dashboard.json";
@@ -38,28 +40,9 @@ const REFRESH_INTERVAL = 30000;
 const DEBOUNCE_MS = 400;
 const POLL_INTERVAL = 300;
 
-// 看板只读这些子树里的 canonical 记录；别的路径一律不读。
-const SOURCE_PREFIXES = [
-  "knowledge/content/",
-  "knowledge/inbox/",
-  "knowledge/business/growth/",
-];
-
 function joinPath(root, relative) {
   return `${root.replace(/\/+$/, "")}/${relative}`;
 }
-
-// 源文件路径来自生成的契约，但不能直接拼进 readTextFile：
-// 先按字面量拒绝越界写法，再用 realpath 确认解析后的目标仍在实例目录内。
-// mod 的 fs/promises 没有 realpath，用实例本来就需要的 python3 做这一步。
-const REALPATH_SNIPPET = [
-  "import os, sys",
-  "base = os.path.realpath(sys.argv[1])",
-  "target = os.path.realpath(os.path.join(base, sys.argv[2]))",
-  "if target != base and not target.startswith(base + os.sep):",
-  "    sys.exit('源文件越出实例目录')",
-  "print(target)",
-].join("\n");
 
 async function readCanonicalSource(instance, relativePath) {
   if (!isAllowedSourcePath(relativePath)) {
@@ -70,6 +53,7 @@ async function readCanonicalSource(instance, relativePath) {
     REALPATH_SNIPPET,
     instance,
     relativePath,
+    ...SOURCE_PREFIXES,
   ]);
   if (result.code !== 0) {
     throw new Error((result.stderr || "定位源文件失败").trim().slice(0, 200));
