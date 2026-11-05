@@ -314,7 +314,8 @@ tools/preflight --publication <publication_id>
 - 退出码：`0` 无硬性失败，`1` 有失败，`2` 用法错误
 
 选题日历是 generated 只读视图，preflight 不读它；旧的 `knowledge/business/<channel>/`
-稿件布局也不再支持，遇到时会明确指向 canonical 位置。
+稿件布局也不再支持，遇到时会明确指向 canonical 位置。稿件、内容卡与发布卡都会拒绝
+symlink 和越出实例目录的真实路径；cancelled publication 不会被当作可发布。
 
 **规则不在脚本里**：口径改 `品牌口径.md`；内容与 publication 事实改对应 canonical 记录。
 只有新增「代码类」检查才需要改 `tools/preflight`——那是 owner 的活。

@@ -278,6 +278,21 @@ def relative(root, path):
         return path
 
 
+def safe_path(root, path):
+    """拒绝 symlink 与越出实例目录的路径；返回 (real_path, 错误)。"""
+    absolute = os.path.abspath(path)
+    if os.path.islink(absolute):
+        return None, "路径不能是 symlink：{}".format(relative(root, absolute))
+    try:
+        root_real = os.path.realpath(root)
+        real = os.path.realpath(absolute)
+        if os.path.commonpath([root_real, real]) != root_real:
+            return None, "路径越出实例目录：{}".format(relative(root, absolute))
+    except ValueError:
+        return None, "无法解析路径：{}".format(relative(root, absolute))
+    return real, ""
+
+
 def parse_canonical_path(root, draft_path):
     """按固定布局解析稿件位置；返回 (kind, content_id, publication_id, 原因)。"""
     absolute = os.path.abspath(draft_path)
@@ -403,6 +418,26 @@ def resolve_target(root, draft_path, content_id, publication_id, checks):
                 )
             )
             return None
+        for candidate, check_id, title in (
+            (package, "publication-record", "publication 记录存在"),
+            (
+                os.path.join(package, CHANNEL_DRAFT_NAME),
+                "draft-location",
+                "稿件位于 canonical 位置",
+            ),
+        ):
+            _real, error = safe_path(root, candidate)
+            if error:
+                checks.append(
+                    Check(
+                        check_id,
+                        title,
+                        STATUS_FAIL,
+                        [error],
+                        relative(root, candidate),
+                    )
+                )
+                return None
         target = Target(
             kind="channel",
             draft_path=os.path.join(package, CHANNEL_DRAFT_NAME),
@@ -428,6 +463,18 @@ def resolve_target(root, draft_path, content_id, publication_id, checks):
         content_id=content_id,
         content_dir=os.path.join(root, CONTENT_REL, content_id),
     )
+    _real, error = safe_path(root, target.draft_path)
+    if error:
+        checks.append(
+            Check(
+                "draft-location",
+                "稿件位于 canonical 位置",
+                STATUS_FAIL,
+                [error],
+                relative(root, target.draft_path),
+            )
+        )
+        return None
     checks.append(
         Check(
             "draft-location",
@@ -851,6 +898,12 @@ def word_count_check(brand_text, draft, channel, label):
 def check_content_record(root, content_id):
     card = os.path.join(root, CONTENT_REL, content_id, CARD_NAME)
     source = relative(root, card)
+    _real, path_error = safe_path(root, card)
+    if path_error:
+        return (
+            None,
+            Check("content-record", "内容记录有效", STATUS_FAIL, [path_error], source),
+        )
     if not os.path.isfile(card):
         return (
             None,
@@ -900,6 +953,18 @@ def check_content_record(root, content_id):
 def check_publication_record(root, content_id, publication_id, target):
     card = os.path.join(target.publication_dir, PUBLICATION_CARD_NAME)
     source = relative(root, card)
+    _real, path_error = safe_path(root, card)
+    if path_error:
+        return (
+            None,
+            Check(
+                "publication-record",
+                "publication 记录有效",
+                STATUS_FAIL,
+                [path_error],
+                source,
+            ),
+        )
     if not os.path.isfile(card):
         return (
             None,
@@ -1165,7 +1230,7 @@ def run_checks(
                 ),
                 draft,
                 CHANNEL_DRAFT_NAME,
-                ("reviewing", "scheduled", "published", "reviewed", "cancelled"),
+                ("reviewing", "scheduled"),
             )
         )
     else:
@@ -1175,7 +1240,7 @@ def run_checks(
                 relative(root, os.path.join(target.content_dir, CARD_NAME)),
                 draft,
                 MAIN_DRAFT_NAME,
-                ("ready", "closed"),
+                ("ready",),
             )
         )
 

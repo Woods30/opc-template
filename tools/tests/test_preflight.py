@@ -380,6 +380,60 @@ class PreflightTestCase(unittest.TestCase):
         self.assertEqual(approval.status, pf.STATUS_FAIL)
         self.assertTrue(any("渠道稿.md" in item for item in approval.detail))
 
+    def test_cancelled_publication_is_not_publishable(self):
+        with open(self.publication_card, encoding="utf-8") as handle:
+            text = handle.read()
+        card = json.loads(text.split("---\n")[1])
+        card["status"] = "cancelled"
+        self.write_card(self.publication_card, card, text.split("---\n")[2])
+
+        checks = self.run_publication()
+        approval = self.check_by_id(checks, "approval-valid")
+        self.assertEqual(approval.status, pf.STATUS_FAIL)
+        self.assertTrue(any("cancelled" in item for item in approval.detail))
+
+    # ---------- 路径安全 ----------
+
+    def test_symlinked_draft_is_rejected(self):
+        outside_dir = tempfile.mkdtemp(prefix="preflight-outside-")
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        outside = os.path.join(outside_dir, "outside.md")
+        self.write(outside, GOOD_DRAFT)
+        os.remove(self.main_draft)
+        os.symlink(outside, self.main_draft)
+
+        checks = self.run_main()
+        location = self.check_by_id(checks, "draft-location")
+        self.assertEqual(location.status, pf.STATUS_FAIL)
+        self.assertTrue(any("symlink" in item for item in location.detail))
+
+    def test_symlinked_content_card_is_rejected(self):
+        outside_dir = tempfile.mkdtemp(prefix="preflight-outside-")
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        outside = os.path.join(outside_dir, "内容卡.md")
+        self.write(outside, json.dumps({"record_type": "content"}))
+        os.remove(self.content_card)
+        os.symlink(outside, self.content_card)
+
+        checks = self.run_main()
+        content = self.check_by_id(checks, "content-record")
+        self.assertEqual(content.status, pf.STATUS_FAIL)
+        self.assertTrue(any("symlink" in item for item in content.detail))
+
+    def test_publication_directory_outside_root_is_rejected(self):
+        outside_dir = tempfile.mkdtemp(prefix="preflight-outside-")
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        moved = os.path.join(outside_dir, PUBLICATION_ID)
+        shutil.move(self.publication_dir, moved)
+        os.symlink(moved, self.publication_dir)
+
+        checks = self.run_publication()
+        publication = self.check_by_id(checks, "publication-record")
+        self.assertEqual(publication.status, pf.STATUS_FAIL)
+        self.assertTrue(
+            any("symlink" in item or "越出实例目录" in item for item in publication.detail)
+        )
+
     # ---------- 渠道 ----------
 
     def test_channel_mismatch_fails(self):
