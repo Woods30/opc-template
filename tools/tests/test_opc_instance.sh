@@ -131,7 +131,7 @@ printf '\n- [2026-12-07 10:00] 发起方：gm | 任务 ID：task-abc123 | 业务
 expect "validate 通过" tools/opc-workflow validate
 expect "build 刷新生成视图" tools/opc-workflow build
 
-expect "选题日历标记 closed" grep -q "closed" knowledge/business/选题日历.md
+expect "已关闭内容不进选题日历" bash -c "! grep -q '$content_id' knowledge/business/选题日历.md"
 expect "发布记录展示复盘结论" grep -q "continue" knowledge/business/wechat/发布记录.md
 expect "发布记录展示下一项行动" grep -q "继续观察同类选题" knowledge/business/wechat/发布记录.md
 expect "看板 JSON 生成" test -f knowledge/business/dashboard.json

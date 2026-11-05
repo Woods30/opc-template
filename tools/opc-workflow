@@ -65,6 +65,9 @@ PUBLICATION_ID_RE = re.compile(
     r"^publication-\d{8}-\d{12}-[0-9a-f]{8}$"
 )
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+HISTORY_STATUSES = ("closed", "cancelled")
+CALENDAR_UNSCHEDULED_HEADING = "## 待排期选题"
+CALENDAR_SCHEDULED_HEADING = "## 已排期内容"
 CHANNEL_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 METRIC_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 METRIC_WINDOW_RE = re.compile(r"^[1-9]\d*[hdw]$")
@@ -2710,28 +2713,32 @@ def record_sort_key(item: ContentRecord):
     return (1, created_at if isinstance(created_at, str) else "", item.data["content_id"])
 
 
-def render_calendar(records: list[ContentRecord]):
-    ordered = sorted(records, key=record_sort_key)
-    lines = [
-        "# 选题日历",
-        "",
-        f"> **{GENERATED_MARKER}**",
-        "> 由 `tools/opc-workflow build` 从 `knowledge/content/*/内容卡.md` 生成。请勿手工编辑。",
-        "",
-        "## 待排期选题",
-        "",
-    ]
-    if not ordered:
-        lines.extend(["当前没有待排期的 proposed 内容。", ""])
-        return "\n".join(lines)
+def calendar_split(records: list[ContentRecord]):
+    """把活跃内容分成待排期与已排期两节。
 
-    lines.extend(
-        [
-            "| 内容 ID | 标题 | 目标日期 | 来源 | 摘要 | 状态 | 内容卡 |",
-            "|---|---|---|---|---|---|---|"
-        ]
+    spec：没有目标日期的选题进「待排期选题」，有目标日期的内容进「已排期内容」。
+    已关闭和已取消的内容是历史，不再占用当前运营视图。
+    """
+    active = [
+        item for item in records if item.data.get("status") not in HISTORY_STATUSES
+    ]
+    unscheduled = sorted(
+        (item for item in active if not item.data.get("target_date")),
+        key=record_sort_key,
     )
-    for item in ordered:
+    scheduled = sorted(
+        (item for item in active if item.data.get("target_date")),
+        key=lambda item: (str(item.data.get("target_date")), record_sort_key(item)),
+    )
+    return unscheduled, scheduled
+
+
+def calendar_rows(items: list[ContentRecord]) -> list[str]:
+    lines = [
+        "| 内容 ID | 标题 | 目标日期 | 来源 | 摘要 | 状态 | 内容卡 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for item in items:
         record = item.data
         content_id = record["content_id"]
         link = f"[打开](../content/{content_id}/{CARD_NAME})"
@@ -2747,6 +2754,29 @@ def render_calendar(records: list[ContentRecord]):
             )
         )
     lines.append("")
+    return lines
+
+
+def render_calendar(records: list[ContentRecord]):
+    unscheduled, scheduled = calendar_split(records)
+    lines = [
+        "# 选题日历",
+        "",
+        f"> **{GENERATED_MARKER}**",
+        "> 由 `tools/opc-workflow build` 从 `knowledge/content/*/内容卡.md` 生成。请勿手工编辑。",
+        "",
+        CALENDAR_UNSCHEDULED_HEADING,
+        "",
+    ]
+    if unscheduled:
+        lines.extend(calendar_rows(unscheduled))
+    else:
+        lines.extend(["当前没有待排期的内容。", ""])
+    lines.extend([CALENDAR_SCHEDULED_HEADING, ""])
+    if scheduled:
+        lines.extend(calendar_rows(scheduled))
+    else:
+        lines.extend(["当前没有已排期的内容。", ""])
     return "\n".join(lines)
 
 
@@ -3044,8 +3074,9 @@ def build_calendar(root: Path):
                 pass
         write_atomic(target, rendered)
     print_diagnostics([], warnings)
+    unscheduled, scheduled = calendar_split(records)
     print(
-        f"已生成选题日历：{len(records)} 条待排期内容；"
+        f"已生成选题日历：{len(unscheduled)} 条待排期内容、{len(scheduled)} 条已排期内容；"
         f"渠道发布记录：{len(publications)} 条 publication；"
         f"看板缓存：{dashboard_target.relative_to(root).as_posix()}"
     )

@@ -106,7 +106,9 @@ hc send <前缀>-<角色名> "任务已投递：见 knowledge/inbox/<角色名>.
 - **常驻表**（`business/品牌口径.md`、`business/growth/指标.md` 等）由所属角色直接维护。
 
 `knowledge/business/选题日历.md` 是 generated 只读视图；运行 `tools/opc-workflow build`
-从内容卡刷新，不得手工编辑。内容卡里的 actor 只能是自己的 role key（默认取
+从内容卡刷新，不得手工编辑。日历分两节：**待排期选题**放没有目标日期的活跃内容，
+**已排期内容**放有目标日期的活跃内容；已关闭与已取消的内容是历史，不进日历，
+去内容卡或看板历史里看。内容卡里的 actor 只能是自己的 role key（默认取
 `OPC_ROLE`），不得冒充其他角色。
 
 完成后回报：

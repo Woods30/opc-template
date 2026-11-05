@@ -272,7 +272,8 @@ inconclusive）与 `--next-action`，并引用创建时用 `--required-window` �
 关闭。复盘与关闭只刷新 generated 视图，不改写历史指标快照。
 
 `build` 完整校验所有内容卡与 publication 卡后，原子替换 `knowledge/business/选题日历.md`
-和各启用频道的 `发布记录.md`。日历显示目标日期和当前内容状态；频道记录只显示 metadata
+和各启用频道的 `发布记录.md`。日历分两节：没有目标日期的活跃内容进「待排期选题」，
+有目标日期的进「已排期内容」；已关闭与已取消的内容是历史，不进日历。频道记录只显示 metadata
 与 canonical links，不复制主稿、渠道稿、审批说明或资产。generated views 均标有
 `GENERATED FILE — READ ONLY`，不得手工维护；生成失败会保留上一份有效视图。已有目标若
 不是生成文件（缺 generated 标记），`build` 会拒绝覆盖并报错——旧格式需要人工确认，不能

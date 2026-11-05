@@ -2681,7 +2681,14 @@ class WorkflowTestCase(unittest.TestCase):
         calendar = (
             self.instance / "knowledge" / "business" / "选题日历.md"
         ).read_text(encoding="utf-8")
-        self.assertIn("closed", calendar)
+        self.assertNotIn(content_id, calendar)
+        dashboard = json.loads(
+            (self.instance / "knowledge" / "business" / "dashboard.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        statuses = {entry["content_id"]: entry["status"] for entry in dashboard["contents"]}
+        self.assertEqual("closed", statuses[content_id])
         channel_record = (
             self.instance / "knowledge" / "business" / "wechat" / "发布记录.md"
         ).read_text(encoding="utf-8")
@@ -2702,8 +2709,33 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertIn("tools/opc-workflow build", text)
         self.assertIn("knowledge/content/*/内容卡.md", text)
         self.assertIn("## 待排期选题", text)
-        self.assertIn("当前没有待排期的 proposed 内容。", text)
-        self.assertIn("已生成选题日历：0 条待排期内容", result.stdout)
+        self.assertIn("当前没有待排期的内容。", text)
+        self.assertIn("## 已排期内容", text)
+        self.assertIn("当前没有已排期的内容。", text)
+        self.assertIn("已生成选题日历：0 条待排期内容、0 条已排期内容", result.stdout)
+
+    def test_calendar_splits_unscheduled_and_scheduled_contents(self):
+        undated_id = "content-20261105-120000000000-a1b2c3d4"
+        dated_id = "content-20261106-120000000000-b2c3d4e5"
+        undated = self.valid_record(undated_id)
+        dated = self.valid_record(dated_id)
+        dated["target_date"] = "2026-12-01"
+        dated["title"] = "已排期的选题"
+        self.write_card(undated_id, undated)
+        self.write_card(dated_id, dated)
+
+        result = self.run_workflow("build")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        text = (self.instance / "knowledge" / "business" / "选题日历.md").read_text(
+            encoding="utf-8"
+        )
+        unscheduled, scheduled = text.split("## 已排期内容")
+        self.assertIn(undated_id, unscheduled)
+        self.assertNotIn(dated_id, unscheduled)
+        self.assertIn(dated_id, scheduled)
+        self.assertIn("2026-12-01", scheduled)
+        self.assertIn("已生成选题日历：1 条待排期内容、1 条已排期内容", result.stdout)
 
     def test_build_sorts_records_and_escapes_markdown_table_cells(self):
         later_id = "content-20261105-120000000001-b1b2c3d4"
