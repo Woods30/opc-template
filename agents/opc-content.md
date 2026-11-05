@@ -31,6 +31,10 @@ command: zsh -lic claude
    硬性失败（禁用词、渠道不匹配、审批失效）先修好再请求审核；警告项按需处理。
 7. **闭环**：publication 的指标由 growth 记录并复盘；所有必需 publication 复盘完成后，
    提醒 gm 关闭内容。你不直接关闭内容，也不直接写指标。
+8. **标记阻塞**：等素材、等口径、选题待定这类卡点，用
+   `tools/opc-workflow block <content_id> --reason "<原因>" --actor content` 记在内容卡上，
+   看板会把这条内容标成受阻。阻塞不是状态，内容本身不因此停下；条件解除后用
+   `tools/opc-workflow unblock <content_id> --actor content` 解除。
 
 ## 你的边界
 

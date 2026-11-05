@@ -2721,6 +2721,82 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("cancellation", result.stderr)
 
+    def test_content_records_and_clears_a_block_with_reason(self):
+        content_id, content_card = self.create_content(title="被阻塞的选题")
+
+        blocked = self.run_workflow(
+            "block", content_id, "--reason", "等品牌素材", "--actor", "content"
+        )
+
+        self.assertEqual(0, blocked.returncode, blocked.stderr)
+        record, _ = parse_frontmatter(content_card)
+        self.assertEqual("等品牌素材", record["block"]["reason"])
+        self.assertEqual("content", record["block"]["by"])
+        self.assertEqual("block", record["events"][-1]["action"])
+
+        built = self.run_workflow("build")
+        self.assertEqual(0, built.returncode, built.stderr)
+        dashboard = json.loads(
+            (self.instance / "knowledge" / "business" / "dashboard.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        entry = next(
+            item for item in dashboard["contents"] if item["content_id"] == content_id
+        )
+        self.assertTrue(entry["blocked"])
+        self.assertEqual("等品牌素材", entry["block_reason"])
+
+        unblocked = self.run_workflow(
+            "unblock", content_id, "--note", "素材已到位", "--actor", "gm"
+        )
+
+        self.assertEqual(0, unblocked.returncode, unblocked.stderr)
+        record, _ = parse_frontmatter(content_card)
+        self.assertNotIn("block", record)
+        self.assertEqual("unblock", record["events"][-1]["action"])
+
+    def test_block_requires_reason_known_role_and_open_content(self):
+        content_id, content_card = self.create_content(title="阻塞校验")
+
+        no_reason = self.run_workflow("block", content_id, "--actor", "content")
+        self.assertEqual(1, no_reason.returncode)
+        self.assertIn("reason", no_reason.stderr)
+
+        wrong_role = self.run_workflow(
+            "block", content_id, "--reason", "等素材", "--actor", "growth"
+        )
+        self.assertEqual(1, wrong_role.returncode)
+
+        blocked = self.run_workflow(
+            "block", content_id, "--reason", "等素材", "--actor", "content"
+        )
+        self.assertEqual(0, blocked.returncode, blocked.stderr)
+
+        again = self.run_workflow(
+            "block", content_id, "--reason", "还是等素材", "--actor", "content"
+        )
+        self.assertEqual(1, again.returncode)
+        self.assertIn("已被阻塞", again.stderr)
+
+        unblocked = self.run_workflow("unblock", content_id, "--actor", "content")
+        self.assertEqual(0, unblocked.returncode, unblocked.stderr)
+
+        missing = self.run_workflow("unblock", content_id, "--actor", "content")
+        self.assertEqual(1, missing.returncode)
+        self.assertIn("没有被阻塞", missing.stderr)
+
+    def test_validate_rejects_inconsistent_block_metadata(self):
+        content_id, content_card = self.create_content(title="阻塞元数据")
+        record, _ = parse_frontmatter(content_card)
+        record["block"] = {"reason": "等素材", "by": "content"}
+        write_frontmatter(content_card, record)
+
+        result = self.run_workflow("validate")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("block", result.stderr)
+
     def test_review_and_close_refresh_views_without_touching_metrics(self):
         publication_id, publication_card = self.create_published_publication()
         record, _ = parse_frontmatter(publication_card)

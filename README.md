@@ -219,6 +219,8 @@ tools/opc-workflow transition <publication_id> --to published --actual-at "<offs
 tools/opc-workflow transition <publication_id> --to reviewed --conclusion <continue|iterate|stop|inconclusive> --next-action "<下一项行动>" --actor growth
 tools/opc-workflow transition <content_id> --to closed --actor gm
 tools/opc-workflow transition <content_id> --to cancelled --note "<取消原因>" --actor gm
+tools/opc-workflow block <content_id> --reason "<阻塞原因>" --actor content
+tools/opc-workflow unblock <content_id> [--note "<解除说明>"] --actor gm
 tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at "<offset-aware ISO 8601>" --source "<来源>" --values '{"<metric_key>": 数值}' --actor growth
 tools/opc-workflow record-channel-snapshot --channel <channel> --observed-at "<offset-aware ISO 8601>" --source "<来源>" --values '{"<metric_key>": 数值}' --actor growth
 tools/opc-workflow validate
@@ -271,8 +273,10 @@ inconclusive）与 `--next-action`，并引用创建时用 `--required-window` �
 例外写入 review 与事件链。内容关闭由 gm 用 `--to closed` 完成：所有必需 publication 必须
 已 reviewed 或已带原因 cancelled，否则失败并列出阻塞项；`--optional` 的 publication 不阻塞
 关闭。选题作废由 gm 用 `--to cancelled --note "<原因>"` 完成：只对 proposed 或 drafting 内容
-开放，取消是终态，内容卡保留取消原因与事件。复盘与关闭只刷新 generated 视图，不改写历史
-指标快照。
+开放，取消是终态，内容卡保留取消原因与事件。阻塞不是状态：content 或 gm 用
+`block <content_id> --reason "<原因>"` 把卡点记在内容卡上，条件解除后用
+`unblock <content_id>` 解除，看板会把受阻内容单独标出。复盘与关闭只刷新 generated 视图，
+不改写历史指标快照。
 
 `build` 完整校验所有内容卡与 publication 卡后，原子替换 `knowledge/business/选题日历.md`
 和各启用频道的 `发布记录.md`。日历分两节：没有目标日期的活跃内容进「待排期选题」，

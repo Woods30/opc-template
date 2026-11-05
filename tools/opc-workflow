@@ -9,6 +9,8 @@
     tools/opc-workflow transition <content_id> --to drafting|reviewing [--actor ...]
     tools/opc-workflow transition <content_id> --decision approved|changes_requested|rejected [--note ...]
     tools/opc-workflow transition <content_id> --to closed|cancelled [--note ...] --actor gm
+    tools/opc-workflow block <content_id> --reason "<原因>" [--actor ...]
+    tools/opc-workflow unblock <content_id> [--note "<解除说明>"] [--actor ...]
     tools/opc-workflow transition <publication_id> --to scheduled|published|cancelled [...]
     tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at ... --source ... --values ...
     tools/opc-workflow record-channel-snapshot --channel ... --observed-at ... --source ... --values ...
@@ -89,6 +91,7 @@ PUBLICATION_STATUSES = (
 METRIC_AGGREGATIONS = ("sum", "average", "latest")
 METRIC_SCOPES = ("publication", "channel")
 REVIEW_CONCLUSIONS = ("continue", "iterate", "stop", "inconclusive")
+BLOCK_ACTORS = ("gm", "content")
 TASK_STATE_ORDER = {"open": 0, "done": 1, "cancelled": 2}
 
 
@@ -1131,6 +1134,35 @@ def validate_approval(
     return errors
 
 
+def validate_content_block_events(source: str, block, events: list):
+    errors = []
+    last = next(
+        (
+            event
+            for event in reversed(events)
+            if isinstance(event, dict) and event.get("action") in ("block", "unblock")
+        ),
+        None,
+    )
+    if block is None:
+        if last is not None and last.get("action") == "block":
+            errors.append(Diagnostic(source, "内容没有 block 元数据，但事件里有 block"))
+        return errors
+    if not isinstance(block, dict):
+        return errors
+    if last is None or last.get("action") != "block":
+        errors.append(Diagnostic(source, "block 元数据与 block/unblock event 不一致"))
+        return errors
+    expected = {
+        "at": block.get("at"),
+        "actor": block.get("by"),
+        "note": block.get("reason"),
+    }
+    if any(last.get(field) != value for field, value in expected.items()):
+        errors.append(Diagnostic(source, "block 元数据与 block/unblock event 不一致"))
+    return errors
+
+
 def validate_content_cancellation_events(source: str, cancellation: dict, events: list):
     errors = []
     cancel_event = next(
@@ -1292,6 +1324,21 @@ def validate_record(
     elif cancellation is not None:
         errors.append(Diagnostic(source, "只有 cancelled 内容可以包含 cancellation"))
 
+    block = record.get("block")
+    if block is not None:
+        if not isinstance(block, dict):
+            errors.append(Diagnostic(source, "字段 block 必须是 object"))
+        else:
+            if not is_nonempty_string(block.get("reason")):
+                errors.append(Diagnostic(source, "block reason 不能为空"))
+            if not valid_offset_time(block.get("at")):
+                errors.append(
+                    Diagnostic(source, "block at 必须是 offset-aware ISO 8601 时间")
+                )
+            by = block.get("by")
+            if not isinstance(by, str) or by not in known_roles:
+                errors.append(Diagnostic(source, "block by 使用非法 actor"))
+
     created_at = record.get("created_at")
     if isinstance(created_at, str) and not valid_offset_time(created_at):
         errors.append(Diagnostic(source, "字段 created_at 必须是 offset-aware ISO 8601 时间"))
@@ -1346,6 +1393,7 @@ def validate_record(
                 errors.extend(
                     validate_content_cancellation_events(source, cancellation, events)
                 )
+            errors.extend(validate_content_block_events(source, block, events))
     return errors
 
 
@@ -1374,6 +1422,8 @@ def validate_event(source: str, index: int, event, known_roles: dict):
         "approval_decision",
         "close",
         "cancel",
+        "block",
+        "unblock",
     )
     if isinstance(action, str) and action not in known_actions:
         errors.append(Diagnostic(source, f"{label} 使用未知 action「{action}」"))
@@ -1389,12 +1439,16 @@ def validate_event(source: str, index: int, event, known_roles: dict):
         errors.append(
             Diagnostic(source, f"{label} {action} actor 必须是 {expected_actor}")
         )
+    if action in ("block", "unblock") and actor not in BLOCK_ACTORS:
+        errors.append(Diagnostic(source, f"{label} {action} actor 必须是 gm 或 content"))
     if action in (
         "transition",
         "submit_review",
         "approval_decision",
         "close",
         "cancel",
+        "block",
+        "unblock",
     ):
         for field in ("from_status", "to_status"):
             value = event.get(field)
@@ -2587,6 +2641,73 @@ def publication_close_blockers(root: Path, content_id: str, package: Path):
             continue
         blockers.append(f"{publication_id}（{status}）")
     return blockers
+
+
+def block_content(
+    root: Path,
+    content_id: str,
+    reason_arg: str | None,
+    actor_arg: str | None,
+):
+    """记录内容阻塞：阻塞是内容卡上的独立对象，不是生命周期状态。"""
+    root = ensure_instance(root)
+    actor = resolve_actor(root, actor_arg)
+    if actor not in BLOCK_ACTORS:
+        raise WorkflowError("记录内容阻塞的 actor 必须是 gm 或 content")
+    reason = require_text("reason", reason_arg)
+    if reason is None:
+        raise WorkflowError("记录阻塞必须提供 reason 说明原因")
+    root, _package, card, record, body = load_content_for_transition(root, content_id)
+    status = record["status"]
+    if status in ("closed", "cancelled"):
+        raise WorkflowError(f"{status} 内容不再接受阻塞记录")
+    if isinstance(record.get("block"), dict):
+        raise WorkflowError("内容已被阻塞，先解除阻塞再重新记录")
+    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    record["block"] = {"reason": reason, "at": now, "by": actor}
+    record["events"].append(
+        {
+            "action": "block",
+            "at": now,
+            "actor": actor,
+            "from_status": status,
+            "to_status": status,
+            "note": reason,
+        }
+    )
+    write_atomic(card, render_card(record, body))
+    return "blocked", actor
+
+
+def unblock_content(
+    root: Path,
+    content_id: str,
+    note_arg: str | None,
+    actor_arg: str | None,
+):
+    root = ensure_instance(root)
+    actor = resolve_actor(root, actor_arg)
+    if actor not in BLOCK_ACTORS:
+        raise WorkflowError("解除内容阻塞的 actor 必须是 gm 或 content")
+    note = require_text("note", note_arg)
+    root, _package, card, record, body = load_content_for_transition(root, content_id)
+    if not isinstance(record.get("block"), dict):
+        raise WorkflowError("内容没有被阻塞，无需解除")
+    status = record["status"]
+    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    record.pop("block", None)
+    event = {
+        "action": "unblock",
+        "at": now,
+        "actor": actor,
+        "from_status": status,
+        "to_status": status,
+    }
+    if note is not None:
+        event["note"] = note
+    record["events"].append(event)
+    write_atomic(card, render_card(record, body))
+    return "unblocked", actor
 
 
 def transition_content(
@@ -3811,6 +3932,16 @@ def build_parser():
     channel_snapshot_parser.add_argument("--values", required=True, help="JSON object：metric key → 数值或不可得说明")
     channel_snapshot_parser.add_argument("--actor", help="记录 actor；必须是 growth")
 
+    block_parser = subparsers.add_parser("block", help="记录内容阻塞")
+    block_parser.add_argument("content_id", help="稳定 content_id")
+    block_parser.add_argument("--reason", help="阻塞原因")
+    block_parser.add_argument("--actor", help="记录 actor；必须是 gm 或 content")
+
+    unblock_parser = subparsers.add_parser("unblock", help="解除内容阻塞")
+    unblock_parser.add_argument("content_id", help="稳定 content_id")
+    unblock_parser.add_argument("--note", help="解除阻塞的说明")
+    unblock_parser.add_argument("--actor", help="记录 actor；必须是 gm 或 content")
+
     subparsers.add_parser("validate", help="校验 canonical 内容卡")
     subparsers.add_parser("build", help="校验并原子生成选题日历")
     return parser
@@ -3881,6 +4012,24 @@ def main(argv=None):
                     args.note,
                 )
             print(f"已更新 {args.content_id} → {status}（actor={actor}）")
+            return 0
+        if args.command == "block":
+            state, actor = block_content(
+                root,
+                args.content_id,
+                args.reason,
+                args.actor,
+            )
+            print(f"已更新 {args.content_id} → {state}（actor={actor}）")
+            return 0
+        if args.command == "unblock":
+            state, actor = unblock_content(
+                root,
+                args.content_id,
+                args.note,
+                args.actor,
+            )
+            print(f"已更新 {args.content_id} → {state}（actor={actor}）")
             return 0
         if args.command == "record-metrics":
             path = record_publication_metrics(

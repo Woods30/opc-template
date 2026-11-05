@@ -34,6 +34,9 @@ command: zsh -lic claude
 7. **作废选题**：选题确定不做时，用 `tools/opc-workflow transition <content_id> --to
    cancelled --note "<原因>" --actor gm` 取消。取消只对 proposed 或 drafting 内容开放，
    取消是终态，内容卡保留取消原因与事件，不要另建一张表记录这件事。
+8. **解除阻塞**：content 标记的阻塞由你或 content 用
+   `tools/opc-workflow unblock <content_id> --actor gm` 解除；需要裁决时先写
+   `knowledge/decisions/` 再解除。
 
 ## 你的边界
 
