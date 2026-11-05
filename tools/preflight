@@ -29,6 +29,8 @@ DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BRAND_REL = os.path.join("knowledge", "business", "品牌口径.md")
 CALENDAR_REL = os.path.join("knowledge", "business", "选题日历.md")
 BUSINESS_REL = os.path.join("knowledge", "business")
+# 选题日历由 tools/opc-workflow build 生成后，旧日历检查没有事实可读，只能跳过
+GENERATED_MARKER = "GENERATED FILE — READ ONLY"
 
 STATUS_OK = "ok"
 STATUS_FAIL = "fail"
@@ -700,8 +702,19 @@ def run_checks(root, draft_path, channel_override=None):
         )
 
     # 2. 稿件在选题日历中
+    calendar_generated = GENERATED_MARKER in calendar_text
     row, matched_by, kind = find_row(tables, draft)
-    if row is None:
+    if calendar_generated:
+        checks.append(
+            Check(
+                "calendar-entry",
+                "稿件在选题日历中",
+                STATUS_SKIP,
+                ["选题日历是 generated 视图，没有旧格式可核对；稿件登记由 canonical 内容卡负责"],
+                calendar_path,
+            )
+        )
+    elif row is None:
         checks.append(
             Check(
                 "calendar-entry",
@@ -851,15 +864,26 @@ def run_checks(root, draft_path, channel_override=None):
     # 8. 选题表有没有支柱列（警告）
     topic_headers = [h for h, _ in tables if "选题" in h]
     has_pillar = any("支柱" in cell for cell in topic_headers)
-    checks.append(
-        Check(
-            "calendar-pillar",
-            "选题日历有支柱列",
-            STATUS_OK if has_pillar else STATUS_WARN,
-            ["有支柱列"] if has_pillar else ["日历还没有「支柱」列，主轴唯一无法机器核对"],
-            CALENDAR_REL,
+    if calendar_generated:
+        checks.append(
+            Check(
+                "calendar-pillar",
+                "选题日历有支柱列",
+                STATUS_SKIP,
+                ["选题日历是 generated 视图，没有支柱列可核对"],
+                CALENDAR_REL,
+            )
         )
-    )
+    else:
+        checks.append(
+            Check(
+                "calendar-pillar",
+                "选题日历有支柱列",
+                STATUS_OK if has_pillar else STATUS_WARN,
+                ["有支柱列"] if has_pillar else ["日历还没有「支柱」列，主轴唯一无法机器核对"],
+                CALENDAR_REL,
+            )
+        )
 
     # 9. 字数是否在渠道口径范围内（警告；计数口径见实现文档）
     checks.append(word_count_check(brand_text, draft, kind, row))

@@ -175,7 +175,7 @@
       ]
     },
     "seeds/knowledge/business/选题日历.md": {
-      "requirePlaceholder": true,
+      "requirePlaceholder": false,
       "forbid": [
         "http://",
         "https://"

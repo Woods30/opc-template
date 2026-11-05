@@ -14,7 +14,8 @@
 
 ```text
 knowledge/           唯一事实来源
-├── business/        结果：成稿、物料、发布记录、常驻口径
+├── content/         canonical 内容包：<content_id>/内容卡.md
+├── business/        结果、常驻口径与 generated 只读视图
 ├── work/<角色>/     过程：草稿、提案、日志、template-proposals/
 ├── review/          待 owner 过审的对外发布内容
 ├── decisions/       决策记录
@@ -33,6 +34,9 @@ scripts/opc-status.sh    # 看状态
 scripts/opc-down.sh      # 停止
 scripts/opc-sync.sh check   # 看模版有没有更新
 scripts/opc-sync.sh pull    # 拉取模版更新
+tools/opc-workflow create-content --title "<标题>"  # 创建 canonical proposed 内容
+tools/opc-workflow validate                         # 校验内容卡
+tools/opc-workflow build                            # 刷新 generated 选题日历
 ```
 
 ## 与模版的关系

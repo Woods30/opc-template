@@ -29,6 +29,7 @@ jobs:
         run: |
           python3 tools/tests/test_opc_lint.py
           python3 tools/tests/test_preflight.py
+          python3 tools/tests/test_opc_workflow.py
 
   sync:
     # 同步机制的场景回归：模版更新、冲突、种子升级、配置并集

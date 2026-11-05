@@ -91,6 +91,16 @@ CALENDAR = """# 选题日历
 | 第一篇 | X（单条 / thread） | 11-04 | 11-22 | 待审 | `2026-11-04-改写一-X.md` | `utm_source=x` |
 """
 
+GENERATED_CALENDAR = """# 选题日历
+
+> **GENERATED FILE — READ ONLY**
+> 由 `tools/opc-workflow build` 从 `knowledge/content/*/内容卡.md` 生成。请勿手工编辑。
+
+## 待排期选题
+
+当前没有待排期的 proposed 内容。
+"""
+
 GOOD_DRAFT = """# 第一篇
 
 > **渠道**：公众号（主稿）
@@ -221,6 +231,19 @@ class PreflightTestCase(unittest.TestCase):
         self.write(os.path.join(self.content_dir, "2026-11-04-没登记.md"), GOOD_DRAFT)
         checks = self.run_checks("2026-11-04-没登记.md")
         self.assertEqual(self.check_by_id(checks, "calendar-entry").status, pf.STATUS_FAIL)
+
+    def test_generated_calendar_skips_the_legacy_calendar_checks(self):
+        # 选题日历已是 generated 视图：旧日历检查没有事实可读，只能跳过，不能误报失败
+        self.write(os.path.join(self.business_dir, "选题日历.md"), GENERATED_CALENDAR)
+        checks = self.run_checks("2026-11-04-第一篇.md")
+
+        failed = [c.id for c in checks if c.status == pf.STATUS_FAIL]
+        self.assertEqual(failed, [], "generated 日历下不该有失败项：{}".format(failed))
+        entry = self.check_by_id(checks, "calendar-entry")
+        self.assertEqual(entry.status, pf.STATUS_SKIP)
+        self.assertTrue(any("generated" in d for d in entry.detail))
+        pillar = self.check_by_id(checks, "calendar-pillar")
+        self.assertEqual(pillar.status, pf.STATUS_SKIP)
 
     def test_channel_mismatch_fails(self):
         self.write(

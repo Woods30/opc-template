@@ -63,7 +63,8 @@ INSTANCE.md          本实例专属信息（前缀、频道、运行参数、�
 agents/              各角色的 hc 模板源（唯一事实来源）
 seeds/               占位骨架源：开实例时物化到 knowledge/business/
 knowledge/           唯一事实来源：
-                     ├── business/  结果：频道成稿与物料、增长、产品、常驻口径
+                     ├── content/   canonical 内容包：<content_id>/内容卡.md
+                     ├── business/  结果、常驻口径与 generated 只读视图
                      ├── work/      过程：每个角色一个子树（草稿、提案、日志）
                      ├── review/    待 owner 过审的对外发布内容
                      └── decisions/ daily/ inbox/
@@ -74,7 +75,8 @@ layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
 ```
 
 **生成物不要手改**：`knowledge/team.md`、`knowledge/business/README.md`、
-`knowledge/inbox/<角色>.md`（首次生成后由角色使用）、`.opc/**` 都由
+`knowledge/business/选题日历.md`、`knowledge/inbox/<角色>.md`（首次生成后由角色使用）、
+`.opc/**` 都由工具生成。选题日历运行 `tools/opc-workflow build` 刷新，其余文件由
 `scripts/opc-install.sh` 生成。
 
 **结果与过程分开**：老板日常只看 `knowledge/business/`；`knowledge/work/` 里的草稿
@@ -194,6 +196,31 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 改完重跑 `scripts/opc-install.sh`：只建启用频道的目录与 `发布记录.md`，**已存在的
 目录不删**（避免删掉历史产出）。
 
+## 内容事实入口：tools/opc-workflow
+
+`opc-workflow` 用 Python 3 标准库维护 canonical 内容卡和派生视图，不依赖数据库、服务或
+第三方 package。实例根目录由脚本自身位置推导（工具住在 `tools/` 下），不接受外部传入的
+根目录，因此只能作用于本实例：
+
+```sh
+tools/opc-workflow create-content --title "<标题>"
+tools/opc-workflow create-content --title "<标题>" --source "<来源>" --summary "<摘要>" --actor content
+tools/opc-workflow validate
+tools/opc-workflow build
+```
+
+`create-content` 生成不可覆盖的 `content_id`，把 JSON-compatible frontmatter 内容卡固定写到
+`knowledge/content/<content_id>/内容卡.md`；后续状态变化不移动目录。actor 必须是
+`roles.json` 中的 role key，省略时依次取 `OPC_ROLE` 与 `content`；`OPC_ROLE` 存在时不允许
+用 `--actor` 冒充别的角色，已停用的角色也不能创建内容。内容卡可以直接编辑，
+但编辑后应先运行 `validate`；诊断会指向损坏的源记录。
+
+`build` 完整校验所有内容卡后，原子替换 `knowledge/business/选题日历.md`。无日期的
+proposed 内容出现在「待排期选题」；空实例也会生成有意义的空视图。日历标有
+`GENERATED FILE — READ ONLY`，不得手工维护；生成失败会保留上一份有效日历。已有日历
+若不是生成文件（缺 generated 标记），`build` 会拒绝覆盖并报错——旧格式日历需要人工
+迁移，不能被静默冲掉。
+
 ## 发布前自检：tools/preflight
 
 `tools/preflight <稿件路径>` 在发布前核对稿件与两份源文件是否一致：
@@ -203,8 +230,12 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 - 字数在渠道口径区间内；CTA 话术与渠道口径一致（必含话术 / 禁写词）
 - 退出码：`0` 无硬性失败，`1` 有失败，`2` 用法错误
 
-**规则不在脚本里**：改口径改 `品牌口径.md`，改选题改 `选题日历.md`，脚本自动跟随。
-只有新增「代码类」检查才需要改 `tools/preflight`——那是 owner 的活。
+**规则不在脚本里**：口径改 `品牌口径.md`；选题事实改对应内容卡，再运行
+`tools/opc-workflow build` 刷新只读日历。只有新增「代码类」检查才需要改
+`tools/preflight`——那是 owner 的活。
+
+选题日历已经是 generated 视图时，日历相关的旧检查（稿件登记、支柱列）会标成「跳过」，
+不再拿旧格式当事实；canonical 内容卡级别的核对会在后续迭代里接上。
 
 它是**内容线专用**工具。如果这个实例不做内容，把 `tools/preflight` 与 `tools/tests/`
 连同 `opc-install.sh` 里两条 `Bash(./tools/preflight:*)` 白名单一起删掉即可，其余角色

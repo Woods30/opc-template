@@ -1,0 +1,577 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""OPC 内容事实模型的最小 workflow 入口。
+
+命令：
+
+    tools/opc-workflow create-content --title "<标题>" [--source ...] [--summary ...] [--actor ...]
+    tools/opc-workflow validate
+    tools/opc-workflow build
+
+根目录由脚本自身位置推导：工具住在实例的 tools/ 下，父目录就是实例根。
+不接受外部传入的根目录，避免把实例外的目录当成事实来源。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import secrets
+import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+SCHEMA_VERSION = 1
+CONTENT_DIR = Path("knowledge") / "content"
+BUSINESS_DIR = Path("knowledge") / "business"
+CALENDAR_NAME = "选题日历.md"
+CARD_NAME = "内容卡.md"
+GENERATED_MARKER = "GENERATED FILE — READ ONLY"
+DEFAULT_ACTOR = "content"
+CONTENT_ID_RE = re.compile(r"^content-\d{8}-\d{12}-[0-9a-f]{8}$")
+
+# 内容生命周期（见父 Issue #1）。create 之外的状态由后续 workflow 转换写入。
+CONTENT_STATUSES = ("proposed", "drafting", "reviewing", "ready", "closed", "cancelled")
+
+
+class WorkflowError(Exception):
+    """可直接展示给 CLI 用户的 workflow 错误。"""
+
+
+@dataclass
+class Diagnostic:
+    source: str
+    message: str
+
+
+@dataclass
+class ContentRecord:
+    source: str
+    data: dict
+
+
+# ---------- 基础读取 ----------
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise WorkflowError(f"缺少文件：{path}") from error
+    except (OSError, json.JSONDecodeError) as error:
+        raise WorkflowError(f"无法读取 JSON：{path}：{error}") from error
+
+
+def instance_root() -> Path:
+    """实例根 = 工具所在目录的父目录。工具只在实例里工作。"""
+    return Path(__file__).resolve().parent.parent
+
+
+def ensure_instance(root: Path):
+    root = root.resolve()
+    metadata_path = root / ".opc" / "instance.json"
+    if not metadata_path.is_file():
+        raise WorkflowError(f"目标不是 OPC 实例（缺少 {metadata_path}）：{root}")
+    metadata = read_json(metadata_path)
+    if not isinstance(metadata, dict) or metadata.get("kind") != "opc-instance":
+        raise WorkflowError(f"目标不是 OPC 实例：{root}")
+    return root
+
+
+def configured_roles(root: Path):
+    payload = read_json(root / "roles.json")
+    roles = payload.get("roles") if isinstance(payload, dict) else None
+    if not isinstance(roles, list):
+        raise WorkflowError(f"roles.json 的 roles 必须是数组：{root / 'roles.json'}")
+    known = {}
+    for role in roles:
+        if isinstance(role, dict) and isinstance(role.get("name"), str):
+            known[role["name"]] = bool(role.get("enabled"))
+    return known
+
+
+def require_text(label: str, value: str | None):
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        raise WorkflowError(f"{label}不能为空")
+    return value
+
+
+def valid_offset_time(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def is_nonempty_string(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+# ---------- 创建 ----------
+
+
+def new_content_id(now: datetime):
+    return "content-{}-{}".format(
+        now.strftime("%Y%m%d-%H%M%S%f"),
+        secrets.token_hex(4),
+    )
+
+
+def ensure_local_directory(root: Path, relative: Path):
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise WorkflowError(f"目录不能是 symlink：{current.relative_to(root)}")
+        if current.exists() and not current.is_dir():
+            raise WorkflowError(f"路径必须是目录：{current.relative_to(root)}")
+        current.mkdir(exist_ok=True)
+        if not current.resolve().is_relative_to(root):
+            raise WorkflowError(f"目录越出实例：{current.relative_to(root)}")
+    return current
+
+
+def resolve_actor(root: Path, actor: str | None):
+    """决定 actor：显式参数优先，其次 OPC_ROLE，最后默认 content。
+
+    OPC_ROLE 存在时不允许用 --actor 冒充别的角色：角色终端自己就是身份来源。
+    """
+    environment_role = (os.environ.get("OPC_ROLE") or "").strip()
+    requested = require_text("actor", actor)
+    if requested and environment_role and requested != environment_role:
+        raise WorkflowError(
+            f"actor「{requested}」与当前角色 OPC_ROLE「{environment_role}」不一致，拒绝冒充"
+        )
+    chosen = requested or environment_role or DEFAULT_ACTOR
+    roles = configured_roles(root)
+    if chosen not in roles:
+        raise WorkflowError(f"非法 actor「{chosen}」：必须是 roles.json 中的 role key")
+    if not roles[chosen]:
+        raise WorkflowError(f"actor「{chosen}」在 roles.json 里已停用")
+    return chosen
+
+
+def create_content(root: Path, title: str, source: str | None, summary: str | None, actor: str | None):
+    root = ensure_instance(root)
+    title = require_text("标题", title)
+    source = require_text("来源", source)
+    summary = require_text("摘要", summary)
+    actor = resolve_actor(root, actor)
+
+    content_root = ensure_local_directory(root, CONTENT_DIR)
+    while True:
+        now = datetime.now(timezone.utc)
+        content_id = new_content_id(now)
+        package = content_root / content_id
+        try:
+            package.mkdir()
+        except FileExistsError:
+            continue
+        break
+
+    created_at = now.isoformat(timespec="microseconds")
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "content",
+        "content_id": content_id,
+        "title": title,
+        "status": "proposed",
+        "created_at": created_at,
+        "actor": actor,
+        "events": [
+            {
+                "action": "create",
+                "at": created_at,
+                "actor": actor,
+                "to_status": "proposed",
+            }
+        ],
+    }
+    if source is not None:
+        record["source"] = source
+    if summary is not None:
+        record["summary"] = summary
+
+    card = package / CARD_NAME
+    body = "---\n{}\n---\n\n# 内容卡\n".format(
+        json.dumps(record, ensure_ascii=False, indent=2)
+    )
+    try:
+        card.write_text(body, encoding="utf-8")
+    except OSError:
+        try:
+            package.rmdir()
+        except OSError:
+            pass
+        raise
+
+    relative = card.relative_to(root)
+    return content_id, relative.as_posix()
+
+
+# ---------- 解析与校验 ----------
+
+
+def parse_frontmatter(card: Path, source: str):
+    try:
+        text = card.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        return None, [Diagnostic(source, f"无法读取内容卡：{error}")]
+    lines = text.splitlines()
+    if not lines or lines[0] != "---":
+        return None, [Diagnostic(source, "frontmatter 必须以 --- 开始")]
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        return None, [Diagnostic(source, "frontmatter 缺少结束标记 ---")]
+    try:
+        payload = json.loads("\n".join(lines[1:end]))
+    except json.JSONDecodeError as error:
+        return None, [Diagnostic(source, f"frontmatter 不是合法 JSON：{error.msg}")]
+    if not isinstance(payload, dict):
+        return None, [Diagnostic(source, "frontmatter 必须是 JSON object")]
+    return payload, []
+
+
+def validate_record(source: str, directory_id: str, record: dict, known_roles: dict):
+    errors = []
+    required_types = {
+        "schema_version": int,
+        "record_type": str,
+        "content_id": str,
+        "title": str,
+        "status": str,
+        "created_at": str,
+        "actor": str,
+        "events": list,
+    }
+    for field, expected in required_types.items():
+        if field not in record:
+            errors.append(Diagnostic(source, f"字段 {field} 缺失"))
+            continue
+        value = record[field]
+        valid_type = isinstance(value, expected)
+        if expected is int and isinstance(value, bool):
+            valid_type = False
+        if not valid_type:
+            type_name = "整数" if expected is int else expected.__name__
+            errors.append(Diagnostic(source, f"字段 {field} 必须是{type_name}"))
+
+    for field in ("source", "summary"):
+        if field in record and not is_nonempty_string(record[field]):
+            errors.append(Diagnostic(source, f"字段 {field} 必须是非空字符串"))
+
+    schema_version = record.get("schema_version")
+    if type(schema_version) is int and schema_version != SCHEMA_VERSION:
+        errors.append(Diagnostic(source, f"未知 schema_version：{schema_version}"))
+    if isinstance(record.get("record_type"), str) and record["record_type"] != "content":
+        errors.append(Diagnostic(source, "字段 record_type 必须是 content"))
+
+    content_id = record.get("content_id")
+    if isinstance(content_id, str):
+        if not CONTENT_ID_RE.fullmatch(content_id):
+            errors.append(Diagnostic(source, "字段 content_id 格式非法"))
+        if content_id != directory_id:
+            errors.append(Diagnostic(source, "字段 content_id 与固定目录名不一致"))
+    if isinstance(record.get("title"), str) and not record["title"].strip():
+        errors.append(Diagnostic(source, "字段 title 必须是非空字符串"))
+
+    status = record.get("status")
+    if isinstance(status, str) and status not in CONTENT_STATUSES:
+        errors.append(
+            Diagnostic(source, f"未知 status「{status}」：只能是 {'、'.join(CONTENT_STATUSES)}")
+        )
+
+    created_at = record.get("created_at")
+    if isinstance(created_at, str) and not valid_offset_time(created_at):
+        errors.append(Diagnostic(source, "字段 created_at 必须是 offset-aware ISO 8601 时间"))
+    actor = record.get("actor")
+    if isinstance(actor, str):
+        if not actor.strip():
+            errors.append(Diagnostic(source, "字段 actor 必须是非空字符串"))
+        elif actor not in known_roles:
+            errors.append(Diagnostic(source, f"非法 actor「{actor}」：不在 roles.json 中"))
+
+    events = record.get("events")
+    if isinstance(events, list):
+        if not events:
+            errors.append(Diagnostic(source, "字段 events 至少要有一个 create event"))
+        else:
+            for index, event in enumerate(events):
+                errors.extend(validate_event(source, index, event, known_roles))
+            create_event = events[0]
+            if isinstance(create_event, dict):
+                if create_event.get("action") != "create":
+                    errors.append(Diagnostic(source, "第一个 event 必须是 create"))
+                if isinstance(created_at, str) and create_event.get("at") != created_at:
+                    errors.append(Diagnostic(source, "create event 的 at 必须与 created_at 一致"))
+                if isinstance(actor, str) and create_event.get("actor") != actor:
+                    errors.append(Diagnostic(source, "create event 的 actor 必须与顶层 actor 一致"))
+                if create_event.get("to_status") != "proposed":
+                    errors.append(Diagnostic(source, "create event 的 to_status 必须是 proposed"))
+    return errors
+
+
+def validate_event(source: str, index: int, event, known_roles: dict):
+    errors = []
+    label = f"第 {index + 1} 个 event"
+    if not isinstance(event, dict):
+        return [Diagnostic(source, f"{label} 必须是 object")]
+    for field in ("action", "at", "actor"):
+        if field not in event:
+            errors.append(Diagnostic(source, f"{label} 字段 {field} 缺失"))
+        elif not isinstance(event[field], str):
+            errors.append(Diagnostic(source, f"{label} 字段 {field} 必须是字符串"))
+    at = event.get("at")
+    if isinstance(at, str) and not valid_offset_time(at):
+        errors.append(Diagnostic(source, f"{label} 的 at 必须是 offset-aware ISO 8601 时间"))
+    actor = event.get("actor")
+    if isinstance(actor, str) and actor not in known_roles:
+        errors.append(Diagnostic(source, f"{label} 使用非法 actor「{actor}」"))
+    return errors
+
+
+def scan_content_records(root: Path):
+    root = ensure_instance(root)
+    content_root = root / CONTENT_DIR
+    records = []
+    errors = []
+    warnings = []
+    if not content_root.exists():
+        return root, records, errors, warnings
+    if content_root.is_symlink() or not content_root.is_dir():
+        return root, records, [Diagnostic(CONTENT_DIR.as_posix(), "内容根目录不能是 symlink，且必须是目录")], warnings
+
+    known_roles = configured_roles(root)
+    with os.scandir(content_root) as scanner:
+        entries = sorted(scanner, key=lambda entry: entry.name)
+    for entry in entries:
+        source_dir = (CONTENT_DIR / entry.name).as_posix()
+        if entry.is_symlink():
+            errors.append(Diagnostic(source_dir, "内容包不能是 symlink"))
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        card = Path(entry.path) / CARD_NAME
+        source = (CONTENT_DIR / entry.name / CARD_NAME).as_posix()
+        if card.is_symlink():
+            errors.append(Diagnostic(source, "内容卡不能是 symlink"))
+            continue
+        if not card.is_file():
+            warnings.append(Diagnostic(source, "内容包缺少内容卡，跳过"))
+            continue
+        record, card_errors = parse_frontmatter(card, source)
+        errors.extend(card_errors)
+        if record is None:
+            continue
+        errors.extend(validate_record(source, entry.name, record, known_roles))
+        records.append(ContentRecord(source, record))
+
+    by_id = {}
+    for record in records:
+        content_id = record.data.get("content_id")
+        if not isinstance(content_id, str):
+            continue
+        by_id.setdefault(content_id, []).append(record.source)
+    for content_id, sources in sorted(by_id.items()):
+        if len(sources) < 2:
+            continue
+        joined = "、".join(sources)
+        for source in sources:
+            errors.append(Diagnostic(source, f"重复 content_id「{content_id}」：{joined}"))
+    return root, records, errors, warnings
+
+
+def print_diagnostics(errors, warnings):
+    for warning in warnings:
+        print(f"警告：{warning.source}：{warning.message}")
+    for error in errors:
+        print(f"错误：{error.source}：{error.message}", file=sys.stderr)
+
+
+def validate_content(root: Path):
+    _root, records, errors, warnings = scan_content_records(root)
+    if errors:
+        print_diagnostics(errors, warnings)
+        return 1
+    print_diagnostics([], warnings)
+    print(f"校验通过：{len(records)} 条内容记录")
+    return 0
+
+
+# ---------- 生成视图 ----------
+
+
+def markdown_cell(value):
+    if value is None or value == "":
+        return "—"
+    text = str(value)
+    return (
+        text.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "<br>")
+    )
+
+
+def record_sort_key(item: ContentRecord):
+    """按创建时间排序；时间解析不了时退回字符串，保证顺序稳定。"""
+    created_at = item.data.get("created_at")
+    if isinstance(created_at, str):
+        try:
+            parsed = datetime.fromisoformat(created_at)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            return (0, parsed, item.data["content_id"])
+    return (1, created_at if isinstance(created_at, str) else "", item.data["content_id"])
+
+
+def render_calendar(records: list[ContentRecord]):
+    ordered = sorted(records, key=record_sort_key)
+    lines = [
+        "# 选题日历",
+        "",
+        f"> **{GENERATED_MARKER}**",
+        "> 由 `tools/opc-workflow build` 从 `knowledge/content/*/内容卡.md` 生成。请勿手工编辑。",
+        "",
+        "## 待排期选题",
+        "",
+    ]
+    if not ordered:
+        lines.extend(["当前没有待排期的 proposed 内容。", ""])
+        return "\n".join(lines)
+
+    lines.extend(
+        [
+            "| 内容 ID | 标题 | 来源 | 摘要 | 状态 | 内容卡 |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    for item in ordered:
+        record = item.data
+        content_id = record["content_id"]
+        link = f"[打开](../content/{content_id}/{CARD_NAME})"
+        lines.append(
+            "| {} | {} | {} | {} | {} | {} |".format(
+                markdown_cell(content_id),
+                markdown_cell(record["title"]),
+                markdown_cell(record.get("source")),
+                markdown_cell(record.get("summary")),
+                markdown_cell(record["status"]),
+                link,
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_atomic(path: Path, text: str):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".opc-workflow-calendar-",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def build_calendar(root: Path):
+    root, records, errors, warnings = scan_content_records(root)
+    if errors:
+        print_diagnostics(errors, warnings)
+        return 1
+    business = ensure_local_directory(root, BUSINESS_DIR)
+    calendar = business / CALENDAR_NAME
+    if calendar.is_file():
+        existing = ""
+        try:
+            existing = calendar.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            existing = ""
+        if GENERATED_MARKER not in existing:
+            print_diagnostics(errors, warnings)
+            print(
+                f"错误：{CALENDAR_NAME} 不是生成文件，拒绝覆盖既有内容。"
+                "请先人工确认并迁移，或删除该文件后重新生成。",
+                file=sys.stderr,
+            )
+            return 1
+    write_atomic(calendar, render_calendar(records))
+    print_diagnostics([], warnings)
+    print(f"已生成选题日历：{len(records)} 条待排期内容")
+    return 0
+
+
+# ---------- CLI ----------
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="创建、校验并构建 OPC canonical 内容记录")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    create = subparsers.add_parser("create-content", help="创建 proposed 内容卡")
+    create.add_argument("--title", required=True, help="选题标题")
+    create.add_argument("--source", help="信息来源")
+    create.add_argument("--summary", help="内容摘要")
+    create.add_argument("--actor", help="roles.json 中的 role key；默认取 OPC_ROLE 或 content")
+    subparsers.add_parser("validate", help="校验 canonical 内容卡")
+    subparsers.add_parser("build", help="校验并原子生成选题日历")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    root = instance_root()
+    try:
+        if args.command == "create-content":
+            content_id, path = create_content(
+                root,
+                args.title,
+                args.source,
+                args.summary,
+                args.actor,
+            )
+            print(f"已创建 {content_id}：{path}")
+            return 0
+        if args.command == "validate":
+            return validate_content(root)
+        if args.command == "build":
+            return build_calendar(root)
+    except WorkflowError as error:
+        print(f"错误：{error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"错误：写入失败：{error}", file=sys.stderr)
+        return 1
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -7,6 +7,7 @@
       "template": "agents/opc-gm.md",
       "permissionMode": "bypassPermissions",
       "scope": [
+        "knowledge/content",
         "knowledge/business",
         "knowledge/review",
         "knowledge/decisions",
@@ -24,8 +25,8 @@
       "permissionMode": "bypassPermissions",
       "scope": [
         "knowledge/work/content",
-        "knowledge/business/品牌口径.md",
-        "knowledge/business/选题日历.md"
+        "knowledge/content",
+        "knowledge/business/品牌口径.md"
       ],
       "approvedSkills": []
     },

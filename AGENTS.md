@@ -27,7 +27,8 @@ dev 负责研发。
 
 ```text
 knowledge/
-├── business/     # 业务结果：老板日常只看这里
+├── content/      # canonical 内容包：<content_id>/内容卡.md，创建后不移动
+├── business/     # 业务结果与 generated 只读视图：老板日常只看这里
 │   ├── <频道>/   # 由 channels.json 生成，含 assets/ 与 发布记录.md
 │   │   ├── assets/       # 封面、配图
 │   │   └── 发布记录.md
@@ -43,7 +44,8 @@ knowledge/
     └── template-proposals/  # 给模版提的改进提案（见「模版与实例」）
 ```
 
-- `business/` 是**结果**：成稿、物料、发布记录、常驻口径。老板只看这里。
+- `content/` 是**事实**：每条内容从 proposed 起固定在 `<content_id>/内容卡.md`，不靠移动目录表达状态。
+- `business/` 是**结果与视图**：成稿、物料、常驻口径，以及 generated 只读视图。老板只看这里。
 - `work/` 是**过程**：草稿、提案、日志。老板不看，但进版本库。
 - `review/` 是**状态**：gm 已过、等 owner 点头的对外发布内容。
 
@@ -57,7 +59,8 @@ OPC 有两层：**模版**（通用机制，公开仓库）与**实例**（这�
 角色在**实例**里运行，模版只装机制。
 
 - 模版里的占位骨架在 `seeds/business/`，开实例时物化到本目录的
-  `knowledge/business/`。物化之后那份文件就归业务所有，角色照常维护。
+  `knowledge/business/`。物化之后通常归业务所有；标有 `GENERATED FILE — READ ONLY`
+  的文件例外，只能通过对应生成命令刷新。
 - **发现模版要改，不要在实例里直接改模版文件**（脚本、简报、规约）。改实例的
   副本会在下一次同步时被覆盖，而且会把模版和业务的改动搅在一起。
 - 正确做法是写**提案**：`knowledge/work/<角色>/template-proposals/<YYYY-MM-DD>-<主题>.md`，
@@ -89,10 +92,15 @@ hc send <前缀>-<角色名> "任务已投递：见 knowledge/inbox/<角色名>.
 
 ### 执行
 
-收到通知后读 `knowledge/inbox/<角色名>.md` 的最新条目执行。产出分两种：
+收到通知后读 `knowledge/inbox/<角色名>.md` 的最新条目执行。产出分三种：
 
 - **过程**（草稿、提案、实验记录）写 `knowledge/work/<角色名>/`；
+- **内容事实**通过 `tools/opc-workflow` 写入 `knowledge/content/<content_id>/`；
 - **常驻表**（`business/品牌口径.md`、`business/growth/指标.md` 等）由所属角色直接维护。
+
+`knowledge/business/选题日历.md` 是 generated 只读视图；运行 `tools/opc-workflow build`
+从内容卡刷新，不得手工编辑。内容卡里的 actor 只能是自己的 role key（默认取
+`OPC_ROLE`），不得冒充其他角色。
 
 完成后回报：
 
