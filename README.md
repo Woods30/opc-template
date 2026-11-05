@@ -215,6 +215,11 @@ tools/opc-workflow build
 用 `--actor` 冒充别的角色，已停用的角色也不能创建内容。内容卡可以直接编辑，
 但编辑后应先运行 `validate`；诊断会指向损坏的源记录。
 
+**actor 是归属记录，不是授权**：`OPC_ROLE` 由角色启动器导出，但调用方自己也能设置它，
+工具无法自证调用者是谁。所以这条检查防的是误用（顺手写了别人的角色名），不是伪造；
+真正的写入边界在权限层（Claude 的 `settings-<角色>.json` scope、codex 的 scope 守卫）。
+`create-content` 每次都会把记下的 actor 打在输出里（`actor=content`），归属写错能当场发现。
+
 `build` 完整校验所有内容卡后，原子替换 `knowledge/business/选题日历.md`。无日期的
 proposed 内容出现在「待排期选题」；空实例也会生成有意义的空视图。日历标有
 `GENERATED FILE — READ ONLY`，不得手工维护；生成失败会保留上一份有效日历。已有日历

@@ -10,6 +10,10 @@
 
 根目录由脚本自身位置推导：工具住在实例的 tools/ 下，父目录就是实例根。
 不接受外部传入的根目录，避免把实例外的目录当成事实来源。
+
+actor 是内容卡的**归属记录**，不是授权：OPC_ROLE 由角色启动器导出，但调用方
+自己也能设置它，工具无法自证调用者是谁。因此 actor 检查只防误用；真正的写入
+边界在权限层（Claude 的 settings scope、codex 的 scope 守卫）。
 """
 
 from __future__ import annotations
@@ -145,7 +149,10 @@ def ensure_local_directory(root: Path, relative: Path):
 def resolve_actor(root: Path, actor: str | None):
     """决定 actor：显式参数优先，其次 OPC_ROLE，最后默认 content。
 
-    OPC_ROLE 存在时不允许用 --actor 冒充别的角色：角色终端自己就是身份来源。
+    注意信任边界：OPC_ROLE 由角色启动器导出，但调用方自己也能设置它，
+    所以这条检查防的是「误用」（拿 --actor 写别人），不是「伪造」。
+    actor 是内容卡的归属记录，不是授权；真正的写入边界在权限层
+    （Claude 的 settings scope 与 codex 的 scope 守卫）。
     """
     environment_role = (os.environ.get("OPC_ROLE") or "").strip()
     requested = require_text("actor", actor)
@@ -217,7 +224,7 @@ def create_content(root: Path, title: str, source: str | None, summary: str | No
         raise
 
     relative = card.relative_to(root)
-    return content_id, relative.as_posix()
+    return content_id, relative.as_posix(), actor
 
 
 # ---------- 解析与校验 ----------
@@ -551,14 +558,14 @@ def main(argv=None):
     root = instance_root()
     try:
         if args.command == "create-content":
-            content_id, path = create_content(
+            content_id, path, actor = create_content(
                 root,
                 args.title,
                 args.source,
                 args.summary,
                 args.actor,
             )
-            print(f"已创建 {content_id}：{path}")
+            print(f"已创建 {content_id}（actor={actor}）：{path}")
             return 0
         if args.command == "validate":
             return validate_content(root)

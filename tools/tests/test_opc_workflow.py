@@ -240,6 +240,19 @@ class WorkflowTestCase(unittest.TestCase):
             "拒绝执行时不得在实例外创建任何文件",
         )
 
+    def test_create_content_reports_the_actor_it_attributed(self):
+        # 归属是审计字段：调用方必须一眼看见它被记成了谁，误用才能当场发现
+        result = self.run_workflow(
+            "create-content",
+            "--title",
+            "归属可见",
+            "--actor",
+            "gm",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("actor=gm", result.stdout)
+
     def test_create_content_refuses_to_impersonate_another_role(self):
         result = self.run_workflow(
             "create-content",
