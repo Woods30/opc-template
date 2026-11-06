@@ -43,6 +43,19 @@ def validate(template_root, manifest):
             raise OpcError("种子来源不存在：{}".format(item["source"]))
         if not item.get("target"):
             raise OpcError("种子缺少 target：{}".format(item["source"]))
+    starters = manifest.get("starters") or {}
+    for item in starters.get("files", []):
+        if not (root / item["source"]).is_file():
+            raise OpcError("起始材料来源不存在：{}".format(item["source"]))
+        if not item.get("target"):
+            raise OpcError("起始材料缺少 target：{}".format(item["source"]))
+    for item in starters.get("dirs", []):
+        path = root / item["source"]
+        # 目录型起始材料可以先声明后落地（如 `skills/`）：目录不在就不起作用。
+        if path.exists() and not path.is_dir():
+            raise OpcError("起始材料来源不是目录：{}".format(item["source"]))
+        if not item.get("target"):
+            raise OpcError("起始材料目录缺少 target：{}".format(item["source"]))
     ui = manifest.get("ui") or {}
     for item in ui.get("layouts", []):
         if not (root / item["source"]).is_file():
@@ -84,20 +97,20 @@ def should_ignore(path):
     return any(part in IGNORE_DIRS for part in path.parts)
 
 
-def seed_paths(manifest):
-    return [(item["source"], item["target"]) for item in manifest.get("seeds", [])]
-
-
 def config_specs(manifest):
     return manifest.get("config", [])
 
 
-def commit_paths(manifest):
-    """upgrade/migrate 需要提交的路径（相对实例根）。"""
+def commit_paths(manifest, extra=None):
+    """upgrade/migrate 需要提交的路径（相对实例根）。
+
+    种子已是起始材料，只在本次真的动了的时候才提交，所以由调用方通过
+    extra 传进来；这里只管机制目录、机制文件与配置文件。
+    """
     mech = manifest.get("mechanism") or {}
     paths = list(mech.get("dirs", [])) + list(mech.get("files", []))
     paths += [spec["target"] for spec in manifest.get("config", [])]
-    paths += [item["target"] for item in manifest.get("seeds", [])]
+    paths += list(extra or [])
     seen = []
     for path in paths:
         if path not in seen:

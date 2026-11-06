@@ -5,10 +5,10 @@ import sys
 from pathlib import Path
 
 from . import install as install_mod
-from . import gitutil, manifest as manifest_mod, registry, ui
+from . import gitutil, manifest as manifest_mod, registry, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_bytes, sha256_file
-from .upgrade import apply_payload, load_instance
+from .upgrade import apply_payload, load_instance, starter_lines
 
 DELETIONS = [
     "layouts",
@@ -81,6 +81,30 @@ def _backup(instance, rels):
     return root
 
 
+def _legacy_starter_baseline(instance, payload, manifest):
+    """老实例的起始材料基线：拿 git 里首次提交的那份当基线。
+
+    首次提交里那份就是「装进来时的模版版本」：owner 之后没改过的，
+    升级时会刷新到模版最新版；改过的会因哈希不同被保留并告警。
+    """
+    files = {}
+    for entry in starters.expand(payload, manifest):
+        rel = entry["target"]
+        if not (Path(instance) / rel).is_file():
+            continue
+        commit = gitutil.first_add_commit(instance, rel)
+        if not commit:
+            continue
+        text = gitutil.show_file(instance, commit, rel)
+        if text is None:
+            continue
+        record = {"sha256": sha256_bytes(text.encode("utf-8")), "kind": entry["kind"]}
+        if entry.get("unit"):
+            record["unit"] = entry["unit"]
+        files[rel] = record
+    return {"version": 1, "files": files}
+
+
 def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
     instance = Path(instance).resolve()
     data = load_instance(instance)
@@ -109,7 +133,7 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
         for rel in deletions:
             print("    - {}".format(rel))
         print("  全局清理：~/.config/herdr-app 下 {} 前缀的旧布局与 mod".format(prefix))
-        print("  然后：复制新机制、合并配置、补缺失种子、单个提交、重跑安装器")
+        print("  然后：复制新机制、合并配置、补起始材料、单个提交、重跑安装器")
         return 0
 
     if not args.yes:
@@ -118,6 +142,20 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
         answer = input("确认迁移 {}？[y/N] ".format(instance))
         if answer.strip().lower() not in {"y", "yes", "是"}:
             raise OpcError("已取消")
+
+    # 起始材料的计划在删旧结构之前算好：缺料就别动实例了。
+    entries = starters.expand(payload, manifest)
+    baseline = starters.read_baseline(instance)
+    if not baseline.get("files"):
+        baseline = _legacy_starter_baseline(instance, payload, manifest)
+    plan = starters.plan(payload, manifest, instance, baseline, entries=entries)
+    planned = [rel for _src, _dst, rel in plan["copy"]]
+    missing = list(plan.get("missing") or [])
+    missing.extend(starters.missing_required_files(instance, entries, planned))
+    missing.extend(starters.missing_role_entries(
+        instance, starters.instance_roles(instance), planned))
+    if missing:
+        raise OpcError("起始材料缺失：\n  " + "\n  ".join(missing))
 
     backup = _backup(instance, deletions)
     for rel in deletions:
@@ -129,7 +167,11 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
 
     apply_payload(instance, template_root, manifest, args.upstream, data)
 
-    commit_list = list(deletions) + manifest_mod.commit_paths(manifest)
+    starters.apply(plan)
+    starters.write_baseline(instance, plan["baseline"])
+
+    touched = list(plan["added"]) + list(plan["updated"])
+    commit_list = list(deletions) + manifest_mod.commit_paths(manifest, extra=touched)
     gitutil.commit_paths(
         instance, commit_list,
         "chore: 迁移到 opc 新结构（移除实例内的 UI/种子副本）",
@@ -143,6 +185,8 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
     registry.upsert(instance, prefix, gitutil.head_commit(template_root), args.upstream)
 
     print("已迁移：{}".format(instance))
+    for line in starter_lines(plan):
+        print(line)
     if backup.exists():
         print("  旧文件备份：{}".format(backup))
     print("  下一步：重启 herdr-app，然后 cd \"{}\" && scripts/opc-up.sh".format(instance))

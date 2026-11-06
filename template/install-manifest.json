@@ -3,8 +3,17 @@
   "name": "opc-template",
   "minOpcVersion": 1,
   "mechanism": {
-    "dirs": ["scripts", "tools", "agents"],
-    "files": ["AGENTS.md", "LICENSE"]
+    "dirs": ["scripts", "tools"],
+    "files": ["LICENSE"]
+  },
+  "starters": {
+    "files": [
+      { "source": "AGENTS.md", "target": "AGENTS.md", "required": true }
+    ],
+    "dirs": [
+      { "source": "agents", "target": "agents" },
+      { "source": "skills", "target": "skills", "type": "skill" }
+    ]
   },
   "config": [
     {

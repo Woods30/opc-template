@@ -1,4 +1,4 @@
-"""upgrade：指纹校验 + 整目录覆盖；本地改过机制文件则拒绝。"""
+"""upgrade：机制指纹校验 + 起始材料按基线更新；本地改过机制文件则拒绝。"""
 
 import difflib
 import json
@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from . import install as install_mod
-from . import gitutil, manifest as manifest_mod, registry, ui
+from . import gitutil, manifest as manifest_mod, registry, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_file
 
@@ -83,14 +83,22 @@ def merge_config(src, dst, spec):
 
 
 def verify(target, payload, manifest, old_files):
+    """机制文件的本地改动检测。
+
+    只看还是机制的文件：`AGENTS.md`、`agents/` 已经是起始材料，owner
+    改它们不算机制被改，不会因此拒绝升级。
+    """
     modified, deleted, collisions = [], [], []
+    new_files = manifest_mod.mechanism_files(payload.parent, manifest)
+    mechanism = set(new_files)
     for rel, digest in sorted(old_files.items()):
+        if rel not in mechanism:
+            continue
         path = Path(target) / rel
         if not path.exists():
             deleted.append(rel)
         elif sha256_file(path) != digest:
             modified.append(rel)
-    new_files = manifest_mod.mechanism_files(payload.parent, manifest)
     for rel in new_files:
         if rel in old_files:
             continue
@@ -114,7 +122,7 @@ def _diff(payload, target, rel):
 
 
 def apply_payload(target, template_root, manifest, upstream, data=None):
-    """机制覆盖、配置合并、种子物化、元数据重写。返回 (payload, added_config)。"""
+    """机制覆盖、配置合并、元数据重写。返回 (payload, added_config)。"""
     payload = manifest_mod.payload_root(template_root)
     prefix = (data or {}).get("prefix") or install_mod.slugify(Path(target).name)
     copy_mechanism_over(payload, manifest, target)
@@ -122,10 +130,44 @@ def apply_payload(target, template_root, manifest, upstream, data=None):
     for spec in manifest.get("config", []):
         added[spec["target"]] = merge_config(
             payload / spec["source"], Path(target) / spec["target"], spec)
-    install_mod.materialize_seeds(payload, manifest, target)
     install_mod.write_instance_json(target, prefix, template_root, upstream)
     install_mod.write_mechanism_json(target, payload, manifest, template_root, upstream)
     return payload, added
+
+
+def starter_plan(target, payload, manifest, old_files, entries=None):
+    """起始材料的升级计划：读基线（老实例拿机制指纹当基线）并比对现状。"""
+    if entries is None:
+        entries = starters.expand(payload, manifest)
+    baseline = starters.read_baseline(target)
+    if not baseline.get("files"):
+        baseline = starters.adopt_mechanism_baseline(baseline, old_files, entries)
+    return starters.plan(payload, manifest, target, baseline, entries=entries)
+
+
+def starter_lines(result):
+    """起始材料动作的可读摘要。
+
+    只有三种情况告警：owner 改过导致跳过更新、技能目录冻结、模版移除。
+    其余（新增、更新、owner 删过不再补）只是过程信息。
+    """
+    lines = []
+    if result.get("updated"):
+        lines.append("  起始材料更新：{}".format("、".join(result["updated"])))
+    if result.get("added"):
+        lines.append("  起始材料新增：{}".format("、".join(result["added"])))
+    if result.get("skipped"):
+        lines.append("  起始材料跳过（owner 已删除，不再补）：{}".format(
+            "、".join(result["skipped"])))
+    for rel, reason in result.get("kept") or []:
+        lines.append("  警告：{} {}".format(rel, reason))
+    if result.get("frozen"):
+        lines.append("  警告：技能冻结（整目录跳过更新）：{}".format(
+            "、".join(result["frozen"])))
+    if result.get("retired"):
+        lines.append("  警告：模版已移除该起始材料（实例保留）：{}".format(
+            "、".join(result["retired"])))
+    return lines
 
 
 def upgrade_one(template_root, manifest, args, instance, install_ui=True):
@@ -160,18 +202,33 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
         )
 
     new_files = set(manifest_mod.mechanism_files(payload.parent, manifest))
-    obsolete = sorted(set(old_files) - new_files)
+    entries = starters.expand(payload, manifest)
+    starter_targets = {entry["target"] for entry in entries}
+    # 不再是机制的旧文件里，属于起始材料的那部分不删：它归 owner 了。
+    obsolete = sorted((set(old_files) - new_files) - starter_targets)
+
+    plan = starter_plan(instance, payload, manifest, old_files, entries=entries)
+    planned = [rel for _src, _dst, rel in plan["copy"]]
+    missing = list(plan.get("missing") or [])
+    missing.extend(starters.missing_required_files(instance, entries, planned))
+    missing.extend(starters.missing_role_entries(
+        instance, starters.instance_roles(instance), planned))
+    if missing:
+        raise OpcError("起始材料缺失：\n  " + "\n  ".join(missing))
 
     if args.dry_run:
         print("将升级实例：{}（前缀 {}）".format(instance, prefix))
         print("  覆盖机制文件：{} 个".format(len(new_files)))
         if obsolete:
             print("  删除机制文件：{}".format("、".join(obsolete)))
-        print("  种子：只补缺失")
+        for line in starter_lines(plan):
+            print(line)
         print("  重跑实例安装器")
         return 0
 
     apply_payload(instance, template_root, manifest, args.upstream, data)
+    starters.apply(plan)
+    starters.write_baseline(instance, plan["baseline"])
 
     for rel in obsolete:
         path = instance / rel
@@ -181,12 +238,15 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
     install_mod.run_installer(instance, prefix, "--no-input", args.skip_smoke)
     if install_ui:
         ui.install(payload, manifest, force=args.force_ui, dry_run=False)
+    touched = list(plan["added"]) + list(plan["updated"])
     gitutil.commit_paths(
-        instance, manifest_mod.commit_paths(manifest),
+        instance, manifest_mod.commit_paths(manifest, extra=touched),
         "chore: opc upgrade -> {}".format(gitutil.head_commit(template_root)[:12]),
         template_repo=template_root,
     )
     registry.upsert(instance, prefix, gitutil.head_commit(template_root), args.upstream)
+    for line in starter_lines(plan):
+        print(line)
     print("已升级：{}".format(instance))
     return 0
 

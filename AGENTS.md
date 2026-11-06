@@ -3,11 +3,11 @@
 这是 **OPC 模版仓库**，不是实例。这里只放通用机制与模版开发材料；
 真实业务长在各自的实例仓库里。`CLAUDE.md` 转发到这里。
 
-## 两层模型
+## 三层模型
 
 | 层 | 是什么 | 在哪 |
 |---|---|---|
-| 模版 | 通用机制、骨架、全局 UI | 本仓库；`template/` 是运行载荷 |
+| 模版 | 通用机制、起始材料、全局 UI | 本仓库；`template/` 是运行载荷 |
 | 实例 | 这一家的真实业务 | 每个实例自己的目录，由 `opc install` 生成 |
 
 规则只有一条：**业务数据不进模版**。真实品牌名、频道 id、指标数字、客户资料、
@@ -21,10 +21,11 @@ opc-template/
 ├── bin/opc_lib/             # 入口的实现（Python 标准库）
 ├── template/                # 运行载荷：会被复制/安装到实例与本机的东西
 │   ├── install-manifest.json
-│   ├── AGENTS.md            # 公司共享规约（物化到每个实例）
-│   ├── agents/ scripts/ tools/
+│   ├── AGENTS.md            # 公司共享规约（起始材料，物化到每个实例）
+│   ├── agents/ skills/      # 起始材料：角色简报与技能，装一次就归 owner
+│   ├── scripts/ tools/      # 机制：按指纹分发
 │   ├── layouts/ mods/       # 全局 UI，只安装一份
-│   └── seeds/               # 实例骨架：缺失才物化
+│   └── seeds/               # 起始材料：业务种子，只补不覆盖
 ├── docs/                    # 模版开发文档与提案归档
 ├── tests/                   # 模版自检与沙箱测试
 └── .opc-template-repo       # 模版标记：实例安装器见到它就会拒绝运行
@@ -52,11 +53,11 @@ bin/opc paths --json                # 诊断本机路径
 
 1. **先改载荷**：机制改动落在 `template/`；`install-manifest.json` 是分类与
    分发规则的唯一来源，新增/删除文件要同步改它。
-2. **机制文件按指纹分发**：实例里的 `scripts/`、`tools/`、`agents/`、
-   `AGENTS.md`、`LICENSE` 由 `upgrade` 整目录覆盖；实例本地改过会被拒绝，
-   所以不要依赖实例侧的手工修补。
-3. **骨架只在缺失时物化**：`seeds/` 下是实例初始内容。改骨架不会覆盖已有实例；
-   删掉的骨架会在下次升级时复活。
+2. **机制文件按指纹分发**：实例里的 `scripts/`、`tools/`、`LICENSE` 由
+   `upgrade` 整目录覆盖；实例本地改过会被拒绝，所以不要依赖实例侧的手工修补。
+3. **起始材料按基线更新**：`AGENTS.md`、`agents/`、`skills/` 与 `seeds/` 装一次
+   就归 owner。实例用 `.opc/starters.json` 记基线：没改过的跟随模版更新，
+   改过的保留并告警，删掉的不复活，模版新增的补入。技能目录整目录冻结。
 4. **UI 全局唯一**：布局名固定为 `opc` / `opc-focus` / `opc-grid` /
    `opc-monitor`，mod 名固定为 `opc-dashboard` / `opc-tabs`。布局与 mod 里
    不得留 `{{...}}` 占位，也不得带实例前缀。

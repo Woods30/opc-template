@@ -89,11 +89,12 @@ opc upgrade                # 升级当前实例
 opc upgrade --all          # 升级注册表里的所有实例
 ```
 
-- 机制文件（`scripts/`、`tools/`、`agents/`、`AGENTS.md`）按 `.opc/mechanism.json`
+- 机制文件（`scripts/`、`tools/`、`LICENSE`）按 `.opc/mechanism.json`
   里的 SHA-256 校验：本地改过会打印 diff 并拒绝；确认放弃本地改动后加
   `--force-mechanism`。
+- 起始材料（`AGENTS.md`、`agents/`、`skills/`、业务种子）按 `.opc/starters.json`
+  的基线比对：没改过的跟随模版更新，改过的保留并告警，删掉的不复活，模版新增的补入。
 - `roles.json` / `channels.json` 按键合并：只增不改，新条目默认停用。
-- 骨架文件只在缺失时物化；删掉的骨架会在下次升级时复活。
 - `knowledge/` 永远不动。
 - 全局 UI 每次升级只装一次；所有实例共用同一份，升级任一实例都会更新它。
 

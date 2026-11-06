@@ -258,6 +258,12 @@ def load_policy(root):
             rules.append(Rule(rel.rstrip("/") + "/", "managed"))
         for rel in mech.get("files", []):
             rules.append(Rule(rel, "managed"))
+        starters = raw.get("starters", {})
+        for spec in starters.get("files", []):
+            rules.append(Rule(spec["source"], "starter"))
+        for spec in starters.get("dirs", []):
+            # 目录型起始材料可以先声明后落地（如 `skills/`）：目录不在就不起作用。
+            rules.append(Rule(spec["source"].rstrip("/") + "/", "starter", optional=True))
         for spec in raw.get("config", []):
             rules.append(Rule(spec["target"], "merge"))
         for seed in raw.get("seeds", []):
@@ -901,7 +907,7 @@ def check_l9_policy_covers(root, policy, tracked):
     if unclassified:
         c.status = STATUS_FAIL
         c.detail.append("{} 个文件没有归类：{}".format(len(unclassified), "、".join(unclassified[:8])))
-        c.detail.append("在 template/install-manifest.json 里声明它属于 mechanism / config / seeds / ui")
+        c.detail.append("在 template/install-manifest.json 里声明它属于 mechanism / starters / config / seeds / ui")
     return c
 
 

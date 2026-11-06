@@ -92,6 +92,26 @@ class BinOpcTestCase(unittest.TestCase):
         self.assertEqual(1, len(data["instances"]))
         self.assertEqual("t", data["instances"][0]["prefix"])
 
+    def test_install_splits_mechanism_and_starters(self):
+        target = self.tmp / "instance"
+        proc = self.run_opc(
+            "install", str(target), "t", "--template", str(ROOT),
+            "--no-input", "--skip-smoke")
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        mech = json.loads(
+            (target / ".opc" / "mechanism.json").read_text(encoding="utf-8"))["files"]
+        starters = json.loads(
+            (target / ".opc" / "starters.json").read_text(encoding="utf-8"))["files"]
+        # 机制指纹只覆盖机制文件
+        self.assertNotIn("AGENTS.md", mech)
+        self.assertFalse([k for k in mech if k.startswith(("agents/", "skills/"))])
+        # 起始材料单独记基线：路径 + SHA-256
+        for rel in ("AGENTS.md", "agents/opc-gm.md", "README.md"):
+            self.assertIn(rel, starters)
+            self.assertEqual(64, len(starters[rel]["sha256"]))
+        self.assertTrue((target / "AGENTS.md").is_file())
+        self.assertTrue((target / "agents" / "opc-gm.md").is_file())
+
     def test_install_refuses_non_empty_target(self):
         target = self.tmp / "instance"
         target.mkdir()

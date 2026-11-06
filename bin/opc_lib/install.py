@@ -1,4 +1,4 @@
-"""install：创建实例、复制机制、物化种子、装全局 UI。"""
+"""install：创建实例、复制机制、装起始材料、装全局 UI。"""
 
 import json
 import os
@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from . import cache, gitutil, manifest as manifest_mod, paths, registry, ui
+from . import cache, gitutil, manifest as manifest_mod, paths, registry, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_file
 
@@ -84,21 +84,6 @@ def copy_config(payload, manifest, target):
         if not dst.exists():
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
-
-
-def materialize_seeds(payload, manifest, target, dry_run=False):
-    created = []
-    for source, dest in manifest_mod.seed_paths(manifest):
-        src = payload / source
-        dst = Path(target) / dest
-        if dst.exists():
-            continue
-        created.append(dest)
-        if dry_run:
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-    return created
 
 
 def apply_answers(target, answers):
@@ -198,6 +183,7 @@ def run_installer(target, prefix, input_mode="--no-input", skip_smoke=False):
 
 def install(template_root, manifest, args):
     payload = manifest_mod.payload_root(template_root)
+    entries = starters.expand(payload, manifest)
     target = Path(args.target).expanduser()
     prefix = args.prefix or slugify(target.name)
     validate_prefix(prefix)
@@ -214,7 +200,7 @@ def install(template_root, manifest, args):
         print("  机制：{}".format("、".join(
             (manifest.get("mechanism") or {}).get("dirs", [])
             + (manifest.get("mechanism") or {}).get("files", []))))
-        print("  种子：{} 个（只补缺失）".format(len(manifest.get("seeds", []))))
+        print("  起始材料：{} 份（装一次就归 owner，升级只补不改）".format(len(entries)))
         print("  全局 UI：{}".format(paths.herdr_app_home()))
         print("  git：init + 首次提交")
         return 0
@@ -223,12 +209,18 @@ def install(template_root, manifest, args):
     target = target.resolve()
     copy_mechanism(payload, manifest, target)
     copy_config(payload, manifest, target)
-    materialize_seeds(payload, manifest, target)
+    baseline, _added = starters.install(payload, manifest, target, entries=entries)
+    starters.write_baseline(target, baseline)
 
     answers = load_json(args.answers) if args.answers else None
     if answers and answers.get("prefix"):
         prefix = validate_prefix(str(answers["prefix"]))
     apply_answers(target, answers)
+
+    missing = starters.missing_required_files(target, entries)
+    missing.extend(starters.missing_role_entries(target, starters.instance_roles(target)))
+    if missing:
+        raise OpcError("起始材料缺失：\n  " + "\n  ".join(missing))
 
     write_instance_json(target, prefix, template_root, args.upstream)
     write_mechanism_json(target, payload, manifest, template_root, args.upstream)
@@ -242,7 +234,7 @@ def install(template_root, manifest, args):
     if not args.no_git and gitutil.is_repo(target):
         gitutil.commit_paths(
             target, ["."],
-            "chore: 实例初始快照（模版机制 + 配置 + 种子）",
+            "chore: 实例初始快照（模版机制 + 起始材料 + 配置）",
             template_repo=template_root,
         )
 
