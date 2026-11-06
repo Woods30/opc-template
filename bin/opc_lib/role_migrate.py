@@ -13,13 +13,11 @@ description 写进 `roles.json`，旧文件连同原始 frontmatter 备份到
 跟随模版更新；对不上说明 owner 改过，记成 pinned，之后升级不再覆盖它。
 """
 
-import os
 import re
-import shutil
-import tempfile
 from pathlib import Path
 
 from . import install as install_mod
+from . import safefile
 from .errors import OpcError
 from .hashutil import sha256_bytes, sha256_file
 
@@ -154,28 +152,30 @@ def plan(instance, roles, fingerprint=None):
             continue
         old_path = instance / old_rel
         have_body = False
-        if not old_path.is_file():
+        if not old_path.exists():
             item["warnings"].append("旧角色文件 {} 不存在，只改元数据".format(old_rel))
-        elif old_path.is_symlink() or not _inside(instance, old_path):
-            # 旧简报是软链接或指向实例外：读它等于把实例外的文件抄进角色
-            # 提示词，所以不读，只改元数据。
-            item["warnings"].append(
-                "旧角色文件 {} 指向实例外，不读取内容".format(old_rel))
         else:
-            text = old_path.read_text(encoding="utf-8", errors="replace")
-            meta, body = split_frontmatter(text)
-            item["body"] = body.lstrip("\n")
-            have_body = True
-            description = meta.get("description") or ""
-            if description:
-                item["description"] = description
-            recorded = fingerprint.get(old_rel)
-            if recorded is None:
-                item["modified"] = True
+            try:
+                text = safefile.read_text(instance, old_rel)
+            except (OSError, safefile.UnsafePath):
+                # 旧简报是软链接或指向实例外：读它等于把实例外的文件抄进
+                # 角色提示词，所以不读，只改元数据。
                 item["warnings"].append(
-                    "旧指纹里没有 {} 的记录，按 owner 改过处理".format(old_rel))
-            elif recorded != sha256_file(old_path):
-                item["modified"] = True
+                    "旧角色文件 {} 指向实例外，不读取内容".format(old_rel))
+            else:
+                meta, body = split_frontmatter(text)
+                item["body"] = body.lstrip("\n")
+                have_body = True
+                description = meta.get("description") or ""
+                if description:
+                    item["description"] = description
+                recorded = fingerprint.get(old_rel)
+                if recorded is None:
+                    item["modified"] = True
+                    item["warnings"].append(
+                        "旧指纹里没有 {} 的记录，按 owner 改过处理".format(old_rel))
+                elif recorded != sha256_file(old_path):
+                    item["modified"] = True
         if not item["description"]:
             item["description"] = fallback_description(name)
             item["warnings"].append("旧简报没有 description，用占位描述代替")
@@ -287,20 +287,6 @@ def paths(result):
     return out
 
 
-def _copy_file(src, dst):
-    """复制文件：先写临时文件再 replace，replace 不会顺着软链接写。"""
-    dst = Path(dst)
-    fd, tmp_name = tempfile.mkstemp(dir=str(dst.parent), prefix=".opc-tmp-")
-    os.close(fd)
-    tmp = Path(tmp_name)
-    try:
-        shutil.copy2(str(src), str(tmp))
-        os.replace(str(tmp), str(dst))
-    finally:
-        if tmp.exists():
-            tmp.unlink()
-
-
 def apply(instance, result):
     """执行迁移：写角色目录、改 roles.json、备份并移除旧简报。
 
@@ -314,14 +300,15 @@ def apply(instance, result):
         if item["write"]:
             target = instance / item["target"]
             if not target.exists() and not _symlink_component(instance, target):
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(item["body"], encoding="utf-8")
-        if old_path.is_file() and not old_path.is_symlink() and _inside(instance, old_path):
+                safefile.write_text(instance, item["target"], item["body"])
+        if old_path.is_file() and not old_path.is_symlink():
             backup = instance / item["backup"]
             if not backup.exists() and not _symlink_component(instance, backup):
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                _copy_file(old_path, backup)
-            old_path.unlink()
+                safefile.copy_file(instance, item["old"], item["backup"])
+            try:
+                safefile.unlink(instance, item["old"])
+            except (OSError, safefile.UnsafePath):
+                pass
     _apply_roles(instance, result)
     return result
 
