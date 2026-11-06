@@ -18,6 +18,7 @@ SHA-256；技能目录额外记该技能包含的文件集合，用于整目录�
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from . import manifest as manifest_mod
@@ -183,11 +184,32 @@ def install(payload, manifest, instance, entries=None):
             # 父目录是软链接或落点在实例外：一律不写。
             continue
         if not dst.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+            _copy_into(src, instance, dst)
             added.append(entry["target"])
         _record(files, entry, sha256_file(src))
     return {"version": BASELINE_VERSION, "files": files}, added
+
+
+def _copy_into(src, instance, dst):
+    """把模版文件写进实例里的目标路径。
+
+    先在目标目录里写临时文件，再用 `os.replace` 换过去：replace 替换的是
+    目标本身，不会顺着目标的软链接写到别处去。
+    """
+    dst = Path(dst)
+    parent = dst.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if not _resolves_inside(instance, parent):
+        raise OpcError("起始材料目标目录不在实例内：{}".format(parent))
+    fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=".opc-tmp-")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copy2(str(src), str(tmp))
+        os.replace(str(tmp), str(dst))
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def adopt_mechanism_baseline(baseline, old_files, entries):
@@ -267,6 +289,7 @@ def plan(payload, manifest, instance, baseline, entries=None):
         "retired": [],
         "frozen": sorted(frozen),
         "missing": [],
+        "instance": str(instance),
     }
     new_files = {}
 
@@ -480,8 +503,14 @@ def missing_role_entries(instance, roles, planned=()):
 
 def apply(result):
     """执行计划里的拷贝。"""
+    instance = result.get("instance")
     for src, dst, _rel in result.get("copy") or []:
         dst = Path(dst)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        if dst.is_symlink():
+            # 目标是软链接：replace 会替换链接本身，但这里直接跳过更清楚。
+            continue
+        if instance and (_symlink_component(instance, dst)
+                         or not _resolves_inside(instance, dst)):
+            continue
+        _copy_into(src, instance, dst)
     return result
