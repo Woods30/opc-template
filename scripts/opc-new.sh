@@ -110,7 +110,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     if [[ -n "$INSTALL_INPUT" ]]; then
       echo "  安装：scripts/opc-install.sh $INSTALL_INPUT $PREFIX"
     else
-      echo "  安装：scripts/opc-install.sh $PREFIX（终端里跑会先问角色与 CLI）"
+      echo "  安装：scripts/opc-install.sh ${PREFIX}（终端里跑会先问角色与 CLI）"
     fi
   fi
   exit 0

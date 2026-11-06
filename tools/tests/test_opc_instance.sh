@@ -54,6 +54,14 @@ check "opc-new 建实例并安装返回 0" "0" "$?"
 expect "第二个实例的目录结构已建好" test -f "$INST2/knowledge/team.md"
 expect "第二个实例没有 review 与 daily 目录" test ! -e "$INST2/knowledge/review"
 
+# 不带 --interactive / --no-input 的 dry-run 也要能跑通：那句提示里变量后面紧跟
+# 中文，不写花括号会被 bash 当成变量名的一部分，在 set -u 下直接报 unbound。
+DRY_OUT="$("$TPL/scripts/opc-new.sh" "$WORK/inst3" --prefix t3 --source "$TPL" --dry-run 2>&1)"
+DRY_RC=$?
+check "dry-run 默认分支返回 0" "0" "$DRY_RC"
+check "dry-run 默认分支提示会先问角色与 CLI" "1" \
+  "$(grep -c '终端里跑会先问角色与 CLI' <<< "$DRY_OUT")"
+
 # ---- 1. 安装结构：canonical 内容区、规则、生成视图入口、工具 ----
 expect "新实例有 canonical 内容区" test -d "$INST/knowledge/content"
 expect "新实例有业务规则种子" test -f "$INST/knowledge/business/品牌口径.md"
