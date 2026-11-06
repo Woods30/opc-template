@@ -1,13 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""模版自检（opc-lint）——确保模版仓库里没有任何真实业务。
+"""自检（opc-lint）——模版仓库查内容，实例查结构。
 
-这个工具回答一个问题：**这个仓库是模版，还是混进了业务？**
+这个工具在两个地方跑，规则集不一样：
 
     bin/opc lint                         # 在模版仓库根跑
     bin/opc lint --strict                # 警告也算违规
     scripts/opc-lint.sh                  # 实例里的同一份工具
     scripts/opc-lint.sh --private-words ~/.config/opc/private-words.txt
+
+两种模式怎么分（见 lint_mode）：
+
+    模版仓库  根目录有 .opc-template-repo 标记；退一步，根下有载荷清单
+              （template/install-manifest.json）又没有合法实例元数据时也算。
+    实例      .opc/instance.json 是合法 JSON 且 kind == opc-instance。
+
+规则集随之分开：
+
+    模版侧（L1–L12、L15、L17–L23）
+                      查内容与安全表述：角色正文写没写清「等 gm 派工」、
+                      「只在本实例目录内取材」，种子有没有占位，技能库
+                      frontmatter 合不合法。模版里的角色是默认值，坏在这里
+                      会被装进每个新实例，所以必须硬拦。
+    实例侧（L24–L32）
+                      只查结构：角色目录在不在、路径越不越界、描述有没有、
+                      技能引用与 frontmatter 对不对、根 AGENTS.md 在不在、
+                      hc 模板生成得了生成不了。实例的角色正文归 owner 管——
+                      owner 想怎么写就怎么写，lint 不拦内容。
+    两边都跑（L0、L6、L13、L14、L16）
+                      注册表可读、提案格式与脱敏、实例自洽、私词扫描。
 
 规则来源（都从仓库文件里读，不写死在本脚本）：
 
@@ -37,6 +58,10 @@ PAYLOAD_REL = "template"
 MANIFEST_REL = "install-manifest.json"
 POLICY_REL = os.path.join(PAYLOAD_REL, MANIFEST_REL)
 MARKER_REL = ".opc-template-repo"
+
+# 两种模式：模版仓库查内容与安全表述，实例查结构。
+MODE_TEMPLATE = "template"
+MODE_INSTANCE = "instance"
 
 
 def default_root():
@@ -336,19 +361,31 @@ def instance_metadata(root):
     return data
 
 
-def is_template_repo(root):
-    """是不是模版仓库。
+def lint_mode(root):
+    """判断这次 lint 跑在哪一侧：模版仓库还是实例。
 
-    标记文件是最强信号；但标记被误删时不能就此把模版当成实例——那会让
-    「守卫在不在」这条规则自己消失。所以还有一条兜底：根目录有分类策略、
-    而没有合法实例元数据，就是模版。
+    两侧的规则集完全分开，互不串场：
+
+    实例  根目录有合法的 .opc/instance.json（kind == opc-instance）。
+    模版  其余情况：模版仓库有 .opc-template-repo 标记；标记被误删时，
+          根下有载荷清单（template/install-manifest.json）也算模版仓库。
+
+    顺序很重要：标记优先于实例元数据——装了标记的目录就是模版仓库，
+    实例元数据不能把模版侧的规则关掉；反过来，一个自称实例的目录如果
+    连实例元数据都拿不出合法结果，就按模版仓库算，宁可多查也不放过。
     """
     if os.path.isfile(os.path.join(root, MARKER_REL)):
-        return True
-    if os.path.isfile(os.path.join(payload_root(root), MANIFEST_REL)) \
-            and instance_metadata(root) is None:
-        return True
-    return False
+        return MODE_TEMPLATE
+    if instance_metadata(root) is not None:
+        return MODE_INSTANCE
+    if os.path.isfile(os.path.join(root, PAYLOAD_REL, MANIFEST_REL)):
+        return MODE_TEMPLATE
+    return MODE_INSTANCE
+
+
+def is_template_repo(root):
+    """是不是模版仓库（lint_mode 的布尔写法）。"""
+    return lint_mode(root) == MODE_TEMPLATE
 
 
 def classify(policy, rel_path):
@@ -714,28 +751,20 @@ def startup_instruction(section, pattern, negation):
     return positive, negated
 
 
-def check_l17_role_startup(root, instance=False):
+def check_l17_role_startup(root):
     """角色启动不自主开工：先汇报现状，等 gm 派工（gm 自己先与 owner 对齐）。
 
-    instance=True 时按实例的实际情况判定：模版还没同步过来的东西只警告，
-    但角色模板里真的写了「不用等 gm 派工」这种话，照样失败——那正是
-    角色一启动就自己开题的源头。
+    只在模版侧跑。实例里的角色正文归 owner 管，lint 不拦内容。
     """
     c = Check("L17", "角色启动不自主开工", source="AGENTS.md 与 agents/*.md")
     payload = payload_root(root)
     fails = []
-    warns = []
 
     rules = read_text(os.path.join(payload, "AGENTS.md"))
     if rules is None:
-        msg = "找不到 AGENTS.md"
-        (warns if instance else fails).append(msg)
+        fails.append("找不到 AGENTS.md")
     elif not RE_STARTUP_HEADING.search(rules):
-        msg = "AGENTS.md 缺少「启动不自主开工」小节：角色启动后先汇报现状，再等 gm 派工"
-        if instance:
-            warns.append(msg + "（实例可能还没同步模版）")
-        else:
-            fails.append(msg)
+        fails.append("AGENTS.md 缺少「启动不自主开工」小节：角色启动后先汇报现状，再等 gm 派工")
 
     roles_path = os.path.join(payload, "roles.json")
     try:
@@ -756,11 +785,7 @@ def check_l17_role_startup(root, instance=False):
             fails.append("角色 {} 的模板路径不合法：{}".format(name, template))
             continue
         if not os.path.isfile(path):
-            msg = "角色 {} 的模板文件不在实例里：{}".format(name, template)
-            if instance:
-                warns.append(msg)
-            else:
-                fails.append("角色 {} 的模板文件不存在：{}".format(name, template))
+            fails.append("角色 {} 的模板文件不存在：{}".format(name, template))
             continue
         text = read_text(path)
         section = role_startup_section(text)
@@ -772,26 +797,21 @@ def check_l17_role_startup(root, instance=False):
             if negated:
                 fails.append("角色 gm 的启动小节出现了否定的表述：必须写明先与 owner 对齐方向")
             elif not positive:
-                fails.append("角色 gm 的启动小节必须写明先与 owner 对齐方向"
-                             + ("（跑 bin/opc upgrade 同步模版）" if instance else ""))
+                fails.append("角色 gm 的启动小节必须写明先与 owner 对齐方向")
         else:
             positive, negated = startup_instruction(section, RE_DISPATCH, RE_NEGATED_DISPATCH)
             if negated:
                 fails.append("角色 {} 的启动小节出现了否定的表述：必须写明等 gm 派工：{}".format(name, template))
             elif not positive:
-                fails.append("角色 {} 的启动小节必须写明等 gm 派工：{}".format(name, template)
-                             + ("（跑 bin/opc upgrade 同步模版）" if instance else ""))
+                fails.append("角色 {} 的启动小节必须写明等 gm 派工：{}".format(name, template))
 
     c.detail.extend(fails)
-    c.detail.extend(warns)
     if fails:
         c.status = STATUS_FAIL
-    elif warns:
-        c.status = STATUS_WARN
     return c
 
 
-def check_l18_instance_scope(root, instance=False):
+def check_l18_instance_scope(root):
     """角色只在本实例目录内取材：实例目录外的东西不是本实例的业务。
 
     不写这条，角色会顺着 `hc ls` 里别的终端的 cwd 找「同类实例」，
@@ -800,11 +820,12 @@ def check_l18_instance_scope(root, instance=False):
     规范句式要逐字落在行首的加粗项目符号上；同一文件里出现与它冲突的
     表述也算违规——散文里出现关键词不等于这条约束真的写着。
     冲突判定是反向的：提到实例外 + 读/看动词 + 没有限制或授权说法 → 违规。
+
+    只在模版侧跑。实例里的角色正文归 owner 管，lint 不拦内容。
     """
     c = Check("L18", "角色只在本实例内取材", source="AGENTS.md 与 agents/*.md")
     payload = payload_root(root)
     fails = []
-    warns = []
 
     def inspect(label, text):
         """返回违规说明列表：规范句式缺失，或与它冲突。
@@ -849,15 +870,9 @@ def check_l18_instance_scope(root, instance=False):
 
     rules = read_text(os.path.join(payload, "AGENTS.md"))
     if rules is None:
-        msg = "找不到 AGENTS.md"
-        (warns if instance else fails).append(msg)
+        fails.append("找不到 AGENTS.md")
     else:
-        problems = inspect("AGENTS.md", rules)
-        if problems:
-            if instance:
-                warns.append("；".join(problems) + "（实例可能还没同步模版）")
-            else:
-                fails.extend(problems)
+        fails.extend(inspect("AGENTS.md", rules))
 
     roles_path = os.path.join(payload, "roles.json")
     try:
@@ -878,24 +893,14 @@ def check_l18_instance_scope(root, instance=False):
             fails.append("角色 {} 的模板路径不合法：{}".format(name, template))
             continue
         if not os.path.isfile(path):
-            msg = "角色 {} 的模板文件不在实例里：{}".format(name, template)
-            if instance:
-                warns.append(msg)
-            else:
-                fails.append(msg)
+            fails.append("角色 {} 的模板文件不存在：{}".format(name, template))
             continue
         text = read_text(path)
-        problems = inspect("角色 {} 的模板（{}）".format(name, template), text)
-        if problems:
-            # 文件在但规矩被删或被改坏：这是写坏了，不是「还没同步」，一律失败。
-            fails.extend(problems)
+        fails.extend(inspect("角色 {} 的模板（{}）".format(name, template), text))
 
     c.detail.extend(fails)
-    c.detail.extend(warns)
     if fails:
         c.status = STATUS_FAIL
-    elif warns:
-        c.status = STATUS_WARN
     return c
 
 
@@ -1266,6 +1271,10 @@ def check_l23_skills(root):
 
 
 def check_l16_instance(root, policy):
+    """实例自洽：标记、元数据、机制指纹。
+
+    角色与技能的结构另有规则（L24 起），这里只管实例本身。
+    """
     c = Check("L16", "实例自洽", source=".opc/instance.json 与 .opc/mechanism.json")
     if os.path.isfile(os.path.join(root, MARKER_REL)):
         c.status = STATUS_FAIL
@@ -1301,25 +1310,318 @@ def check_l16_instance(root, policy):
             elif _sha256_file(path) != digest:
                 c.status = STATUS_FAIL
                 c.detail.append("机制文件被本地改过：{}（跑 bin/opc upgrade 看差异）".format(rel))
+    return c
 
-    roles = os.path.join(root, "roles.json")
-    if os.path.isfile(roles):
-        try:
-            with open(roles, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
-            data = {}
-        for role in data.get("roles", []):
-            tpl = role.get("template")
-            if not tpl:
-                continue
-            path = safe_join(root, tpl)
-            if path is None:
-                c.status = STATUS_FAIL
-                c.detail.append("角色 {} 的模板路径不合法：{}".format(role.get("name"), tpl))
-            elif not os.path.isfile(path):
-                c.status = STATUS_FAIL
-                c.detail.append("角色 {} 的模板文件不存在：{}".format(role.get("name"), tpl))
+
+# ---------------------------------------------------------------- 实例结构
+
+# 实例侧只查结构：角色目录、路径、描述、技能引用与 frontmatter、根
+# AGENTS.md、hc 模板能不能生成。角色正文归 owner 管——owner 想怎么写
+# 就怎么写，lint 不拦内容（内容规则留在模版侧，见 L17、L18）。
+
+
+def resolve_inside(root, rel):
+    """把相对路径接到 root 下，并保证展开软链接后仍在 root 之内。
+
+    口径与实例侧 lib.sh 的 opc_safe_rel_path 一致：相对路径、不含 ..，
+    软链接展开后仍在实例内。返回 None 表示路径不合法。
+    """
+    if not rel or not isinstance(rel, str):
+        return None
+    rel = rel.replace("\\", "/")
+    if rel.startswith("/") or os.path.isabs(rel):
+        return None
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        return None
+    root_real = os.path.realpath(root)
+    full = os.path.realpath(os.path.join(root, *parts))
+    if full != root_real and not full.startswith(root_real + os.sep):
+        return None
+    return full
+
+
+def legal_skill_name(name):
+    """技能名是否合法。
+
+    口径与 lib.sh 的 opc_safe_skill_name 一致：普通标识符，且不含 ..。
+    """
+    if not isinstance(name, str) or not RE_SKILL_NAME.match(name):
+        return False
+    return ".." not in name
+
+
+def instance_roles(root):
+    """读实例的 roles.json。返回 (角色列表, 错误信息)。
+
+    角色列表为 None 表示读不了（错误信息里说明原因）。
+    """
+    path = os.path.join(root, "roles.json")
+    if not os.path.isfile(path):
+        return None, "实例里没有 roles.json"
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "roles.json 读不了：{}".format(exc)
+    roles = data.get("roles")
+    if not isinstance(roles, list):
+        return None, "roles.json 缺 roles 数组"
+    return roles, None
+
+
+def enabled_roles(roles):
+    return [r for r in roles if r.get("enabled")]
+
+
+def selected_skills(roles):
+    """启用角色选中的技能名（去重，保持 roles.json 里的顺序）。
+
+    只算启用角色：停用角色的技能不会进任何 hc 模板。
+    """
+    names = []
+    for role in enabled_roles(roles):
+        for name in role.get("skills") or []:
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def check_l24_roles_registry(root):
+    """roles.json 要能读：读不了，后面的结构规则都无从谈起。"""
+    c = Check("L24", "角色注册表可读", source="roles.json")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_FAIL
+        c.detail.append(err)
+    return c
+
+
+def check_l25_role_paths(root):
+    """角色的 template 路径必须合法：相对、不含 ..、展开软链接后仍在实例内。
+
+    角色简报会被拼成这个角色的启动提示，等于交给终端执行；路径一旦能
+    读出实例外的文件，那内容就可能被当成指令。
+    """
+    c = Check("L25", "角色路径合法", source="roles.json 的 template")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    fails = []
+    for role in roles:
+        tpl = role.get("template")
+        if not tpl:
+            continue
+        if resolve_inside(root, tpl) is None:
+            fails.append("角色 {} 的 template 路径不合法：{}（必须是实例内的相对路径）"
+                         .format(role.get("name"), tpl))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
+def check_l26_role_entry_files(root):
+    """启用角色的入口文件必须在。
+
+    停用角色不需要 AGENTS.md；启用角色缺了它，hc 模板就渲染不出来。
+    """
+    c = Check("L26", "启用角色的入口文件存在", source="agents/<角色>/AGENTS.md")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    fails = []
+    for role in enabled_roles(roles):
+        name = role.get("name", "")
+        tpl = role.get("template") or "agents/{}/AGENTS.md".format(name)
+        path = resolve_inside(root, tpl)
+        if path is None:
+            continue  # 路径不合法由 L25 报
+        if not os.path.isfile(path):
+            fails.append("启用角色 {} 缺少入口文件：{}".format(name, tpl))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
+def check_l27_role_descriptions(root):
+    """启用角色要有一句描述。
+
+    roles.json 是描述的唯一事实来源；描述空着，hc 模板的说明就只剩
+    「OPC 角色 X」这种占位。
+    """
+    c = Check("L27", "角色描述非空", source="roles.json 的 description")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    fails = []
+    for role in enabled_roles(roles):
+        desc = role.get("description")
+        if not isinstance(desc, str) or not desc.strip():
+            fails.append("启用角色 {} 的 description 是空的".format(role.get("name")))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
+def check_l28_skill_names(root):
+    """技能名必须是普通标识符。
+
+    技能名会拼进 skills/<名字>/SKILL.md，名字里带 .. 就能读出实例外的文件。
+    """
+    c = Check("L28", "技能名合法", source="roles.json 的 skills")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    fails = []
+    for role in roles:
+        for name in role.get("skills") or []:
+            if not legal_skill_name(name):
+                fails.append("角色 {} 选了非法技能名：{}（只允许字母数字开头，可带 . _ -）"
+                             .format(role.get("name"), name))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
+def check_l29_skill_frontmatter(root):
+    """选中技能的 frontmatter 要能解析，name 与 description 都要有。
+
+    坏掉的 frontmatter 会让技能索引里出现一条没有用途说明的条目。
+    """
+    c = Check("L29", "选中技能 frontmatter 合法", source="skills/<名字>/SKILL.md")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    fails = []
+    for name in selected_skills(roles):
+        if not legal_skill_name(name):
+            continue  # 名字不合法由 L28 报
+        path = resolve_inside(root, "skills/{}/SKILL.md".format(name))
+        if path is None or not os.path.isfile(path):
+            continue  # 缺失或越界由 L31 报
+        for problem in skill_frontmatter_problems(path):
+            fails.append("技能 {}：{}".format(name, problem))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
+def check_l30_skill_name_matches_dir(root):
+    """技能 frontmatter 的 name 必须与目录名一致。
+
+    索引里写的是路径，frontmatter 里的 name 是给角色看的说明：两者对不上，
+    角色读到的就不是自己要找的那份材料。
+    """
+    c = Check("L30", "技能名与目录名一致", source="skills/<名字>/SKILL.md")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    fails = []
+    for name in selected_skills(roles):
+        if not legal_skill_name(name):
+            continue
+        path = resolve_inside(root, "skills/{}/SKILL.md".format(name))
+        if path is None or not os.path.isfile(path):
+            continue
+        fields = parse_frontmatter(read_text(path) or "")
+        if not fields:
+            continue  # frontmatter 不合法由 L29 报
+        declared = (fields.get("name") or "").strip().strip('"').strip("'")
+        if declared and declared != name:
+            fails.append("技能 {} 的 frontmatter name 与目录名不一致：name={}".format(name, declared))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
+def check_l31_skill_available(root):
+    """选中技能要用得上：文件在实例里，且没被软链接指到实例外。
+
+    技能文件缺失只告警——安装器也是告警并跳过，别的角色仍要能启动。
+    """
+    c = Check("L31", "选中的技能可用", source="skills/<名字>/SKILL.md")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    warns = []
+    for name in selected_skills(roles):
+        if not legal_skill_name(name):
+            continue
+        rel = "skills/{}/SKILL.md".format(name)
+        path = resolve_inside(root, rel)
+        if path is None:
+            warns.append("选中的技能 {} 指向实例外：{}".format(name, rel))
+        elif not os.path.isfile(path):
+            warns.append("选中的技能 {} 不存在：{}".format(name, rel))
+    c.detail.extend(warns)
+    if warns:
+        c.status = STATUS_WARN
+    return c
+
+
+def check_l32_root_agents(root):
+    """实例根目录要有 AGENTS.md。
+
+    那是共享规约的入口：缺了它，角色启动就没有公司约定可读。
+    """
+    c = Check("L32", "根 AGENTS.md 存在", source="AGENTS.md")
+    if not os.path.isfile(os.path.join(root, "AGENTS.md")):
+        c.status = STATUS_FAIL
+        c.detail.append("实例根目录缺 AGENTS.md（共享规约的入口）")
+    return c
+
+
+def check_l33_hc_template(root):
+    """启用角色要能生成 hc 模板。
+
+    安装器拼模板时要三样东西：角色名合法、cli 合法、权限模式是该 cli
+    认识的。少一样，安装器会直接报错退出，角色就起不来。
+    """
+    c = Check("L33", "hc 模板可生成", source="roles.json")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("roles.json 读不了，跳过")
+        return c
+    fails = []
+    for role in enabled_roles(roles):
+        name = role.get("name", "")
+        if not RE_ROLE_NAME.match(str(name)):
+            fails.append("角色名不合法：{}（1-20 位 a-z 0-9 - _，以字母开头）".format(name))
+        cli = role.get("cli") or "claude"
+        if not re.match(r"^[A-Za-z0-9/._-]+$", str(cli)):
+            fails.append("角色 {} 的 cli 不合法：{}（只允许单个可执行文件名或路径）"
+                         .format(name, cli))
+        elif str(cli).startswith("-"):
+            fails.append("角色 {} 的 cli 不能以 - 开头：{}".format(name, cli))
+        elif "/../" in "/" + str(cli) + "/":
+            fails.append("角色 {} 的 cli 路径不能包含 ..：{}".format(name, cli))
+        mode = role.get("permissionMode") or "default"
+        if os.path.basename(str(cli)) in ("claude", "codex") and mode not in PERMISSION_MODES:
+            fails.append("角色 {} 的 permissionMode 不合法：{}".format(name, mode))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
     return c
 
 
@@ -1368,18 +1670,25 @@ def run_checks(root, strict=False, words_file=None):
     else:
         skipped = Check("SKIP", "模版侧规则跳过", source="这是实例仓库")
         skipped.status = STATUS_SKIP
-        skipped.detail.append("L1–L12 是模版侧规则，在实例里跑没有意义")
+        skipped.detail.append("L1–L12、L15、L17–L23 是模版侧内容规则，"
+                              "在实例里跑没有意义：实例的角色正文归 owner 管")
         checks.append(skipped)
         if policy is not None:
             checks.append(check_l13_proposals(root, policy))
             checks.append(check_l14_proposal_private_words(root, policy, words, words_path))
         checks.append(check_l16_instance(root, policy))
-        # 实例里跑的就是这些角色模板：角色一启动就自己开题，
-        # 根子在实例自己的 agents/*.md，模版侧的规则管不到，得在这里查。
-        checks.append(check_l17_role_startup(root, instance=True))
-        # 同理，取材范围这条也写在模版托管的文件里：实例没同步到就没有，
-        # 实例自己改坏了就该在这里被拦住。
-        checks.append(check_l18_instance_scope(root, instance=True))
+        # 实例侧只查结构：角色目录、路径、描述、技能引用与 frontmatter、
+        # 根 AGENTS.md、hc 模板能不能生成。
+        checks.append(check_l24_roles_registry(root))
+        checks.append(check_l25_role_paths(root))
+        checks.append(check_l26_role_entry_files(root))
+        checks.append(check_l27_role_descriptions(root))
+        checks.append(check_l28_skill_names(root))
+        checks.append(check_l29_skill_frontmatter(root))
+        checks.append(check_l30_skill_name_matches_dir(root))
+        checks.append(check_l31_skill_available(root))
+        checks.append(check_l32_root_agents(root))
+        checks.append(check_l33_hc_template(root))
 
     if policy is not None:
         if template_mode:

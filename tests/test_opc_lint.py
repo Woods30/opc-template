@@ -96,6 +96,8 @@ ROLES = {
             "enabled": True,
             "cli": "claude",
             "template": "agents/gm/AGENTS.md",
+            "description": "OPC 公司总经理。",
+            "skills": [],
             "permissionMode": "default",
             "scope": ["knowledge/work/gm"],
         }
@@ -198,6 +200,8 @@ class LintTestCase(unittest.TestCase):
                 "enabled": True,
                 "cli": "claude",
                 "template": "agents/{}/AGENTS.md".format(name),
+                "description": "角色 {}。".format(name),
+                "skills": [],
                 "permissionMode": "default",
                 "scope": ["knowledge/work/{}".format(name)],
             }
@@ -499,33 +503,30 @@ class LintTestCase(unittest.TestCase):
             checks["L17"].detail,
         )
 
-    def test_role_startup_is_checked_in_instance_mode(self):
-        # 实例里跑的是实例自己的 agents/ 与 AGENTS.md：这条规则要在这里也生效，
-        # 否则实例改了提示词就没有任何东西拦得住。
+    def test_role_content_rules_are_template_side_only(self):
+        # 实例里的角色正文归 owner 管：内容规则（L17/L18）只在模版侧跑。
+        # owner 把角色简报改写成别的样子，实例 lint 不该拦。
         instance = self.instance_copy("instance")
 
         checks = run_lint(instance)
-        self.assertIn("L17", checks)
-        self.assertEqual(lint.STATUS_OK, checks["L17"].status)
+        self.assertNotIn("L17", checks)
+        self.assertNotIn("L18", checks)
+        self.assertEqual([], [c.id for c in checks.values() if c.status == lint.STATUS_FAIL])
 
         with open(
             os.path.join(instance, "agents", "gm", "AGENTS.md"), "w", encoding="utf-8"
         ) as fh:
-            fh.write(
-                "## 启动\n\n先读 AGENTS.md，"
-                "然后告诉我你打算先做什么。\n"
-            )
+            fh.write("# 我自己的角色规约\n\n想怎么写就怎么写。\n")
         checks = run_lint(instance)
-        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+        self.assertEqual([], [c.id for c in checks.values() if c.status == lint.STATUS_FAIL])
 
-    def test_instance_missing_role_template_warns_not_fails(self):
-        # 实例还没同步到最新模版时，角色模板可能不在：那是「还没同步」，
-        # 不是「写错了」，只警告。真正写错的（否定句）才失败。
+    def test_instance_missing_role_entry_file_fails(self):
+        # 启用角色的入口文件不在：hc 模板渲染不出来，是结构错误，必须失败。
         instance = self.instance_copy("instance2")
         os.remove(os.path.join(instance, "agents", "gm", "AGENTS.md"))
 
         checks = run_lint(instance)
-        self.assertEqual(lint.STATUS_WARN, checks["L17"].status)
+        self.assertEqual(lint.STATUS_FAIL, checks["L26"].status)
 
     # ---- L18 只在本实例内取材 ----
 
@@ -711,19 +712,6 @@ class LintTestCase(unittest.TestCase):
         self.assertTrue(
             any("冲突" in d for d in checks["L18"].detail), checks["L18"].detail)
 
-    def test_instance_scope_rule_is_checked_in_instance_mode(self):
-        instance = self.instance_copy("instance-scope")
-        checks = run_lint(instance)
-        self.assertIn("L18", checks)
-        self.assertEqual(lint.STATUS_OK, checks["L18"].status)
-
-        with open(os.path.join(instance, "agents", "gm", "AGENTS.md"), "w", encoding="utf-8") as fh:
-            fh.write(
-                "## 启动\n\n先读 AGENTS.md，"
-                "然后与 owner 对齐方向，等 owner 确认后再派工。\n"
-            )
-        checks = run_lint(instance)
-        self.assertEqual(lint.STATUS_FAIL, checks["L18"].status)
 
     # ---- L9 未归类 ----
 
@@ -868,6 +856,128 @@ class LintTestCase(unittest.TestCase):
             fh.write("---\nname: demo\ndescription: 说明。\n---\n\n正文。\n")
         self.assertEqual([], lint.skill_frontmatter_problems(path, "demo"))
         self.assertTrue(lint.skill_frontmatter_problems(path, "other"))
+
+    # ---- 实例侧结构规则 L24–L33 ----
+
+    def instance_with_roles(self, name, roles):
+        """造一个实例，并把 roles.json 换成给定的角色列表。"""
+        instance = self.instance_copy(name)
+        with open(os.path.join(instance, "roles.json"), "w", encoding="utf-8") as fh:
+            json.dump({"roles": roles}, fh, ensure_ascii=False)
+        return instance
+
+    def role_entry(self, **overrides):
+        role = {
+            "name": "gm",
+            "enabled": True,
+            "cli": "claude",
+            "template": "agents/gm/AGENTS.md",
+            "description": "OPC 公司总经理。",
+            "skills": [],
+            "permissionMode": "default",
+            "scope": ["knowledge/work/gm"],
+        }
+        role.update(overrides)
+        return role
+
+    def write_skill(self, instance, name, text):
+        path = os.path.join(instance, "skills", name, "SKILL.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def test_l24_missing_roles_json_fails(self):
+        instance = self.instance_copy("l24")
+        os.remove(os.path.join(instance, "roles.json"))
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L24"].status)
+
+    def test_l25_illegal_role_path_fails(self):
+        instance = self.instance_with_roles(
+            "l25", [self.role_entry(template="../outside/AGENTS.md")])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L25"].status)
+
+    def test_l25_absolute_role_path_fails(self):
+        instance = self.instance_with_roles(
+            "l25b", [self.role_entry(template="/etc/passwd")])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L25"].status)
+
+    def test_l26_disabled_role_without_entry_file_passes(self):
+        instance = self.instance_with_roles(
+            "l26", [self.role_entry(enabled=False)])
+        os.remove(os.path.join(instance, "agents", "gm", "AGENTS.md"))
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_OK, checks["L26"].status)
+
+    def test_l27_empty_description_fails(self):
+        instance = self.instance_with_roles(
+            "l27", [self.role_entry(description="  ")])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L27"].status)
+
+    def test_l28_illegal_skill_name_fails(self):
+        instance = self.instance_with_roles(
+            "l28", [self.role_entry(skills=["../escape"])])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L28"].status)
+
+    def test_l29_broken_skill_frontmatter_fails(self):
+        instance = self.instance_with_roles(
+            "l29", [self.role_entry(skills=["demo"])])
+        self.write_skill(instance, "demo", "没有 frontmatter 的正文。\n")
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L29"].status)
+
+    def test_l29_skill_without_description_fails(self):
+        instance = self.instance_with_roles(
+            "l29b", [self.role_entry(skills=["demo"])])
+        self.write_skill(instance, "demo", "---\nname: demo\n---\n\n正文。\n")
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L29"].status)
+
+    def test_l30_skill_name_mismatch_fails(self):
+        instance = self.instance_with_roles(
+            "l30", [self.role_entry(skills=["demo"])])
+        self.write_skill(instance, "demo", "---\nname: other\ndescription: 说明。\n---\n\n正文。\n")
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L30"].status)
+
+    def test_l31_missing_skill_warns_not_fails(self):
+        # 技能缺失只告警：安装器也是告警并跳过，别的角色仍要能启动。
+        instance = self.instance_with_roles(
+            "l31", [self.role_entry(skills=["demo"])])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_WARN, checks["L31"].status)
+        self.assertEqual([], [c.id for c in checks.values() if c.status == lint.STATUS_FAIL])
+
+    def test_l32_missing_root_agents_fails(self):
+        instance = self.instance_copy("l32")
+        os.remove(os.path.join(instance, "AGENTS.md"))
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L32"].status)
+
+    def test_l33_illegal_cli_fails(self):
+        instance = self.instance_with_roles(
+            "l33", [self.role_entry(cli="--danger")])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L33"].status)
+
+    def test_l33_illegal_permission_mode_fails(self):
+        instance = self.instance_with_roles(
+            "l33b", [self.role_entry(permissionMode="乱写")])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L33"].status)
+
+    def test_instance_structure_rules_pass_on_clean_instance(self):
+        instance = self.instance_with_roles(
+            "clean", [self.role_entry(skills=["demo"])])
+        self.write_skill(instance, "demo", "---\nname: demo\ndescription: 说明。\n---\n\n正文。\n")
+        checks = run_lint(instance)
+        for rule in ("L24", "L25", "L26", "L27", "L28", "L29", "L30", "L31", "L32", "L33"):
+            self.assertEqual(lint.STATUS_OK, checks[rule].status, rule)
 
     # ---- 退出码 ----
 
