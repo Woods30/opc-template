@@ -385,6 +385,25 @@ class LintTestCase(unittest.TestCase):
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
 
+    def test_role_startup_directive_with_autonomy_in_same_sentence_fails(self):
+        # 有正面表述、也没有否定词，但同一句里又让角色自己开工——照样是自相矛盾。
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "等 gm 派工后再自己开题。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_gm_startup_directive_with_autonomy_in_same_sentence_fails(self):
+        self.write(
+            "agents/opc-gm.md",
+            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "与 owner 对齐后自行决定方向即可。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
     def test_gm_startup_contradictory_section_fails(self):
         self.write(
             "agents/opc-gm.md",

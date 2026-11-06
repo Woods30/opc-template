@@ -79,6 +79,10 @@ RE_NEGATED_OWNER = re.compile(
 RE_DISPATCH = re.compile(r"等[^。\n；;]{0,12}派工")
 RE_OWNER_ALIGN = re.compile(r"(?:与|和|跟)[^。\n；;]{0,10}owner[^。\n；;]{0,10}对齐")
 RE_STARTUP_HEADING = re.compile(r"^#{1,6}[ \t]*启动不自主开工[ \t]*$", re.MULTILINE)
+# 同一条正面指令所在的那句里又让角色自己开工，一样是自相矛盾：
+# 「等 gm 派工后再自己开题」既有「等 gm 派工」，也没有否定词。
+RE_AUTONOMY = re.compile(r"(?:自己|自行|直接)(?:开题|开工|找活|决定|做主|上手)|自选选题")
+SENTENCE_BREAKS = "。！？\n；;"
 
 
 @dataclass
@@ -559,11 +563,27 @@ def role_startup_section(text):
     return body
 
 
+def sentence_bounds(text, index):
+    """index 所在那一句的起止位置。句号、换行、分号都算句子边界。"""
+    start = 0
+    for ch in SENTENCE_BREAKS:
+        pos = text.rfind(ch, 0, index)
+        if pos + 1 > start:
+            start = pos + 1
+    end = len(text)
+    for ch in SENTENCE_BREAKS:
+        pos = text.find(ch, index)
+        if pos != -1 and pos < end:
+            end = pos
+    return start, end
+
+
 def startup_instruction(section, pattern, negation):
     """小节里有没有一条没被否定的正面指令。
 
     光出现关键词不算：「不用等 gm 派工」里也有「等 gm 派工」，意思正好相反。
-    所以每处命中都要看它前面对不对得上否定词，整段分句里出现的否定也算。
+    所以每处命中都要看它前面对不对得上否定词，整段分句里出现的否定也算，
+    指令后面同一句里再让角色自己开工也算。
 
     返回 (有正面表述, 有被否定的表述)。调用方只要看到否定的表述就判失败：
     同一小节里前后矛盾，读的人只会记住对自己有利的那句。
@@ -572,7 +592,8 @@ def startup_instruction(section, pattern, negation):
     negated = negation.search(section) is not None
     for m in pattern.finditer(section):
         head = section[max(0, m.start() - 8):m.start()].strip()
-        if RE_NEGATED_TAIL.search(head):
+        _, end = sentence_bounds(section, m.start())
+        if RE_NEGATED_TAIL.search(head) or RE_AUTONOMY.search(section[m.end():end]):
             negated = True
             continue
         positive = True
