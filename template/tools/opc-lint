@@ -660,15 +660,17 @@ def check_l8_roles(root):
     return c
 
 
+RE_ROLE_STARTUP_HEADING = re.compile(r"^##[ \t]*启动[ \t]*$", re.MULTILINE)
+
+
 def role_startup_section(text):
     """取角色模板里「## 启动」小节的正文；没有这一节返回 None。"""
     if not text:
         return None
-    marker = "\n## 启动"
-    index = text.find(marker)
-    if index < 0:
+    m = RE_ROLE_STARTUP_HEADING.search(text)
+    if not m:
         return None
-    body = text[index + len(marker):]
+    body = text[m.end():]
     next_section = body.find("\n## ")
     if next_section >= 0:
         body = body[:next_section]

@@ -219,9 +219,10 @@ for role in $roles; do
   # 模板路径会被拼进 $ROOT：带 .. 就能读到实例外的文件，而那内容会变成这个
   # 角色的简报，被对应终端当成指令执行。和下面的 cli 一样，先拒绝再读。
   tpl="$(opc_role_template "$role")"
-  case "/$tpl/" in
-    */../*) echo "角色 $role 的模板路径不能包含 ..：$tpl" >&2; exit 1 ;;
-  esac
+  opc_safe_rel_path "$tpl" "$ROOT" || {
+    echo "角色 $role 的模板路径不合法：${tpl}（必须是实例内的相对路径）" >&2
+    exit 1
+  }
   src="$ROOT/$tpl"
   [[ -f "$src" ]] || { echo "缺少角色简报：$src" >&2; exit 1; }
 
@@ -288,9 +289,25 @@ exit 127
 EOF
   chmod +x "$ROOT/.opc/run/$role.sh"
 
-  sed -e "s/{{PREFIX}}/$PREFIX/g" \
-      -e "s#^command:.*#command: $ROOT/.opc/run/$role.sh#" \
-      "$src" > "$TEMPLATES/$PREFIX-$role.md"
+  # hc 模板由三段拼成：frontmatter（来自 roles.json）、角色正文、技能索引。
+  # frontmatter 的 description 只能有一行，且 hc 按行解析、不去引号，
+  # 所以描述里的换行要压平、首尾引号要剥掉，否则会解析成带引号的字面量。
+  desc="$(opc_role_description "$role" "$src")"
+  desc="$(printf '%s' "$desc" | tr '\n' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  desc="${desc#\"}"; desc="${desc%\"}"
+  [[ -n "$desc" ]] || desc="OPC 角色 $role"
+
+  # 角色正文：旧的单文件角色简报带 frontmatter，新版的 AGENTS.md 是纯
+  # Markdown。两种都要只取正文，前缀占位符在这里替换。
+  {
+    printf -- '---\n'
+    printf 'name: %s-%s\n' "$PREFIX" "$role"
+    printf 'description: %s\n' "$desc"
+    printf 'command: %s\n' "$ROOT/.opc/run/$role.sh"
+    printf -- '---\n\n'
+    opc_role_body "$src" | sed -e "s/{{PREFIX}}/$PREFIX/g"
+    opc_skill_index "$role" "$ROOT"
+  } > "$TEMPLATES/$PREFIX-$role.md"
 done
 
 # 1b. 已停用的角色：删掉旧模板，否则 hc templates 里还看得见

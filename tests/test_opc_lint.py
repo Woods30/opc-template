@@ -92,7 +92,7 @@ ROLES = {
             "name": "gm",
             "enabled": True,
             "cli": "claude",
-            "template": "agents/opc-gm.md",
+            "template": "agents/gm/AGENTS.md",
             "permissionMode": "default",
             "scope": ["knowledge/work/gm"],
         }
@@ -139,9 +139,10 @@ def build_template_repo(base):
             "## 通用工作约定\n\n"
             "- **只在本实例目录内取材**：实例目录外的东西不是本实例的业务，不读。\n"
         )
-    with open(os.path.join(payload, "agents", "opc-gm.md"), "w", encoding="utf-8") as fh:
+    os.makedirs(os.path.join(payload, "agents", "gm"), exist_ok=True)
+    with open(os.path.join(payload, "agents", "gm", "AGENTS.md"), "w", encoding="utf-8") as fh:
         fh.write(
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：实例目录外的东西不是本实例的业务，不读。\n"
@@ -193,13 +194,13 @@ class LintTestCase(unittest.TestCase):
                 "name": name,
                 "enabled": True,
                 "cli": "claude",
-                "template": "agents/opc-{}.md".format(name),
+                "template": "agents/{}/AGENTS.md".format(name),
                 "permissionMode": "default",
                 "scope": ["knowledge/work/{}".format(name)],
             }
         )
         self.write("roles.json", json.dumps(roles, ensure_ascii=False))
-        self.write("agents/opc-{}.md".format(name), template_text)
+        self.write("agents/{}/AGENTS.md".format(name), template_text)
 
     def instance_copy(self, name):
         """造一个实例：载荷从 template/ 铺到根目录，有实例元数据。"""
@@ -347,14 +348,14 @@ class LintTestCase(unittest.TestCase):
     def test_role_startup_without_dispatch_instruction_fails(self):
         # 角色启动时如果只说「告诉我你打算做什么」，就会自己开题、自己修 bug。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，然后告诉我你打算先做什么。\n",
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，然后告诉我你打算先做什么。\n",
         )
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
 
     def test_role_startup_without_section_fails(self):
-        self.write("agents/opc-gm.md", "---\nname: {{PREFIX}}-gm\n---\n\n没有启动小节。\n")
+        self.write("agents/gm/AGENTS.md", "没有启动小节。\n")
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
 
@@ -366,7 +367,7 @@ class LintTestCase(unittest.TestCase):
     def test_role_startup_with_dispatch_instruction_passes(self):
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "然后停下来等 gm 派工：汇报现状。\n",
         )
         checks = run_lint(self.repo)
@@ -376,7 +377,7 @@ class LintTestCase(unittest.TestCase):
         # 出现「等 gm 派工」这几个字不等于说了要等——否定句同样能骗过关键词检查。
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "不用等 gm 派工，自己开题。\n",
         )
         checks = run_lint(self.repo)
@@ -387,7 +388,7 @@ class LintTestCase(unittest.TestCase):
         # 这种句子说的是要等，不能被误判成否定句。
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "先不要自己开题，等 gm 派工。\n",
         )
         checks = run_lint(self.repo)
@@ -397,7 +398,7 @@ class LintTestCase(unittest.TestCase):
         # 否定词后面隔着一个词（「不需要再等 gm 派工」）仍然是否定。
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "不需要再等 gm 派工，自己开题。\n",
         )
         checks = run_lint(self.repo)
@@ -408,7 +409,7 @@ class LintTestCase(unittest.TestCase):
         # 只要小节里出现否定的等待指令，就算另外还有一句正面表述也失败。
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "然后停下来等 gm 派工。\n\n不用等 gm 派工，自己开题更快。\n",
         )
         checks = run_lint(self.repo)
@@ -418,7 +419,7 @@ class LintTestCase(unittest.TestCase):
         # 否定词不紧贴关键词，但仍在同一个分句里（「没必要再等 gm 派工」）。
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "没必要再等 gm 派工，自己开题。\n",
         )
         checks = run_lint(self.repo)
@@ -428,7 +429,7 @@ class LintTestCase(unittest.TestCase):
         # 同义词也要认：「不能等 gm 派工」和「不用等 gm 派工」是一个意思。
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "不能等 gm 派工，先做起来。\n",
         )
         checks = run_lint(self.repo)
@@ -438,7 +439,7 @@ class LintTestCase(unittest.TestCase):
         # 有正面表述、也没有否定词，但同一句里又让角色自己开工——照样是自相矛盾。
         self.add_role(
             "content",
-            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "## 启动\n\n先读 AGENTS.md，"
             "等 gm 派工后再自己开题。\n",
         )
         checks = run_lint(self.repo)
@@ -446,8 +447,8 @@ class LintTestCase(unittest.TestCase):
 
     def test_gm_startup_directive_with_autonomy_in_same_sentence_fails(self):
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "与 owner 对齐后自行决定方向即可。\n",
         )
         checks = run_lint(self.repo)
@@ -455,8 +456,8 @@ class LintTestCase(unittest.TestCase):
 
     def test_gm_startup_contradictory_section_fails(self):
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "先与 owner 对齐方向。\n\n但直接派工也行，不必与 owner 对齐。\n",
         )
         checks = run_lint(self.repo)
@@ -464,8 +465,8 @@ class LintTestCase(unittest.TestCase):
 
     def test_gm_startup_negated_owner_alignment_fails(self):
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "不用与 owner 对齐，直接派工。\n",
         )
         checks = run_lint(self.repo)
@@ -505,10 +506,10 @@ class LintTestCase(unittest.TestCase):
         self.assertEqual(lint.STATUS_OK, checks["L17"].status)
 
         with open(
-            os.path.join(instance, "agents", "opc-gm.md"), "w", encoding="utf-8"
+            os.path.join(instance, "agents", "gm", "AGENTS.md"), "w", encoding="utf-8"
         ) as fh:
             fh.write(
-                "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+                "## 启动\n\n先读 AGENTS.md，"
                 "然后告诉我你打算先做什么。\n"
             )
         checks = run_lint(instance)
@@ -518,7 +519,7 @@ class LintTestCase(unittest.TestCase):
         # 实例还没同步到最新模版时，角色模板可能不在：那是「还没同步」，
         # 不是「写错了」，只警告。真正写错的（否定句）才失败。
         instance = self.instance_copy("instance2")
-        os.remove(os.path.join(instance, "agents", "opc-gm.md"))
+        os.remove(os.path.join(instance, "agents", "gm", "AGENTS.md"))
 
         checks = run_lint(instance)
         self.assertEqual(lint.STATUS_WARN, checks["L17"].status)
@@ -541,8 +542,8 @@ class LintTestCase(unittest.TestCase):
 
     def test_role_brief_without_instance_scope_rule_fails(self):
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n",
         )
         checks = run_lint(self.repo)
@@ -551,8 +552,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_in_prose_only_fails(self):
         # 关键词出现在散文里不算数：规范句式必须逐字落在行首的加粗项目符号上。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n我们只在本实例目录内取材，请知悉。\n",
         )
@@ -562,8 +563,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_negated_fails(self):
         # 否定句能骗过关键词检查：必须被当成违规。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -577,8 +578,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_permissive_wording_fails(self):
         # 明说「可以读实例目录外」也是冲突，跟规范句式并存也不行。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -592,8 +593,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_paraphrases_fail(self):
         # 「其他实例」「读取」「实例之外」都是同一件事的改写，一律算冲突。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -608,8 +609,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_unknown_permissive_wording_fails(self):
         # 认不出来的放行说法默认拦下（fail-closed），不靠枚举坏句式。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -623,8 +624,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_prohibited_out_of_scope_passes(self):
         # 提到实例外但说了「不读」：这是限制，不是冲突。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例、旧实例残留目录都不在本实例的"
@@ -636,8 +637,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_authorized_out_of_scope_passes(self):
         # 允许读实例外，但要求同分句里先拿到授权：不算冲突。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -650,8 +651,8 @@ class LintTestCase(unittest.TestCase):
         # 「别的实例，可以读」：地点在前一分句、动作用后一分句 —— 主题要递过去，
         # 否则两个分句各缺一半，谁都抓不到。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -665,8 +666,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_negation_with_filler_fails(self):
         # 否定与动词之间夹着别的字，不算绑在这个动作上。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -680,8 +681,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_split_authorization_fails(self):
         # 授权写在另一个分句里，够不着前面那个动作——不能算放行。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -695,8 +696,8 @@ class LintTestCase(unittest.TestCase):
     def test_instance_scope_rule_negation_split_fails(self):
         # 前半句的「不要」豁免不了后半句的放行。
         self.write(
-            "agents/opc-gm.md",
-            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "agents/gm/AGENTS.md",
+            "## 启动\n\n先读 AGENTS.md，"
             "然后与 owner 对齐方向，等 owner 确认后再派工。\n\n"
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：别的实例不读。\n"
@@ -713,9 +714,9 @@ class LintTestCase(unittest.TestCase):
         self.assertIn("L18", checks)
         self.assertEqual(lint.STATUS_OK, checks["L18"].status)
 
-        with open(os.path.join(instance, "agents", "opc-gm.md"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(instance, "agents", "gm", "AGENTS.md"), "w", encoding="utf-8") as fh:
             fh.write(
-                "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+                "## 启动\n\n先读 AGENTS.md，"
                 "然后与 owner 对齐方向，等 owner 确认后再派工。\n"
             )
         checks = run_lint(instance)

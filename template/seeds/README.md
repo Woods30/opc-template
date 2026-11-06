@@ -69,8 +69,10 @@ owner 负责实际对外发布；gm 只把 approval 决定、发布时间与 URL
 - 模版来源记在 `.opc/instance.json`；模版本体缓存在
   `~/.local/share/opc/template`，`opc install` / `opc upgrade` 会自动拉取最新版。
 - 升级是单向的：模版 → 实例。升级不会碰 `knowledge/` 里你写的业务内容。
-- 机制文件（`scripts/`、`tools/`、`agents/`、`AGENTS.md`）按指纹管理：本地直接改过
-  会被升级拒绝并打印 diff。想改模版，**不要直接改这些文件**——写提案到
+- 机制文件（`scripts/`、`tools/`）按指纹管理：本地直接改过会被升级拒绝并打印 diff。
+- 起始材料（根 `AGENTS.md`、`agents/<角色>/`、`skills/`）装一次就归你：升级只更新你没改过
+  的文件，改过的保留并告警，删掉的不复活，模版新增的才补入。
+  想改模版的角色职责或技能，写提案到
   `knowledge/work/<角色>/template-proposals/`，格式见 `AGENTS.md` 的
   「模版与实例」一节。
 - 骨架文件（README、LESSONS、`knowledge/business/` 下的初始文档）只在缺失时物化；

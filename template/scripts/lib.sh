@@ -54,11 +54,166 @@ opc_role_scope() {
   jq -r --arg n "$1" '.roles[] | select(.name==$n) | .scope[]?' "$(opc_roles_file)"
 }
 
-# 角色模板源路径，默认 agents/opc-<name>.md
+# 角色简报源路径，默认 agents/<角色名>/AGENTS.md
+# 角色材料是目录：AGENTS.md 是入口，目录里还可以放角色专属参考文件。
 opc_role_template() {
   local t
   t="$(opc_role_field "$1" template)"
-  printf '%s' "${t:-agents/opc-$1.md}"
+  printf '%s' "${t:-agents/$1/AGENTS.md}"
+}
+
+# 角色的一句职责描述。roles.json 是唯一事实来源；旧实例还没迁移时，
+# 退回旧角色文件 frontmatter 里的那一行，升级过程中也不至于把描述丢掉。
+opc_role_description() {
+  local role="$1" src="${2:-}" desc
+  desc="$(opc_role_field "$role" description)"
+  if [[ -z "$desc" && -n "$src" ]]; then
+    desc="$(opc_frontmatter_value "$src" description)"
+  fi
+  printf '%s' "$desc"
+}
+
+# 角色在根级技能库里选中的技能（roles.json 的 skills）
+opc_role_skills() {
+  jq -r --arg n "$1" '.roles[] | select(.name==$n) | .skills[]? // empty' "$(opc_roles_file)"
+}
+
+# 路径安全：相对路径、不含 .. 、软链接展开后仍在实例内。
+# 角色简报会被拼成这个角色的启动提示，等于交给终端执行；
+# 路径一旦能读出实例外的文件，那内容就可能被当成指令。
+opc_safe_rel_path() {
+  local rel="$1" root="$2"
+  [[ -n "$rel" ]] || return 1
+  case "$rel" in
+    /*) return 1 ;;
+    ../*|*/../*|*/..) return 1 ;;
+  esac
+  local root_resolved
+  root_resolved="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
+  local resolved
+  resolved="$(opc_resolved_path "$root_resolved" "$rel")" || return 1
+  case "$resolved" in
+    "$root_resolved"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 逐段展开软链接，得到相对 root 的最终落点。
+# 目标不存在时退到最深的存在祖先，剩余部分原样接在后面。
+opc_resolved_path() {
+  local root="$1" rel="$2" cur part rest depth=0
+  cur="$root"
+  rest="$rel"
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$part" == "$rest" ]]; then rest=""; else rest="${rest#*/}"; fi
+    [[ -n "$part" ]] || continue
+    cur="$cur/$part"
+    while [[ -L "$cur" && $depth -lt 32 ]]; do
+      depth=$((depth + 1))
+      local target
+      target="$(readlink "$cur")" || return 1
+      case "$target" in
+        /*) cur="$target" ;;
+        *) cur="$(dirname "$cur")/$target" ;;
+      esac
+    done
+  done
+  local probe="$cur" tail=""
+  while [[ ! -e "$probe" ]]; do
+    tail="/$(basename "$probe")$tail"
+    probe="$(dirname "$probe")"
+    [[ "$probe" == "/" ]] && break
+  done
+  local real
+  if [[ -d "$probe" ]]; then
+    real="$(cd "$probe" 2>/dev/null && pwd -P)" || return 1
+  else
+    real="$(cd "$(dirname "$probe")" 2>/dev/null && pwd -P)/$(basename "$probe")" || return 1
+  fi
+  printf '%s%s' "$real" "$tail"
+}
+
+# 技能名：只允许普通标识符，挡住路径穿越。
+opc_safe_skill_name() {
+  local name="$1"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$name" == *..* ]] && return 1
+  return 0
+}
+
+# frontmatter 里的一个字段值。只认文件开头那一段 --- ... ---，
+# 且只取首行匹配，避免正文里的同名行被当成字段。
+opc_frontmatter_value() {
+  local file="$1" key="$2" line
+  [[ -f "$file" ]] || return 0
+  line="$(awk -v key="$key" '
+    NR==1 { if ($0 !~ /^---[[:space:]]*$/) exit; next }
+    /^---[[:space:]]*$/ { exit }
+    {
+      pat = "^" key ":[[:space:]]*"
+      if ($0 ~ pat) { sub(pat, ""); print; exit }
+    }
+  ' "$file")"
+  line="${line%$'\r'}"
+  line="${line%\"}"; line="${line#\"}"
+  printf '%s' "$line"
+}
+
+# 技能 frontmatter 里的一句话描述
+opc_skill_description() {
+  opc_frontmatter_value "$1" description
+}
+
+# 角色简报正文：旧版单文件把描述写在自己的 frontmatter 里，
+# 新版正文是纯 Markdown。取正文时把那层 frontmatter 摘掉。
+opc_role_body() {
+  local file="$1"
+  # 只有「开头有 ---、中间全是 key: value、后面有配对的 ---」才算 frontmatter。
+  # 纯 Markdown 里也可能出现分隔线，误当成 frontmatter 会把正文吃掉。
+  if head -n 1 "$file" 2>/dev/null | grep -q '^---[[:space:]]*$' \
+     && awk '
+          NR==1 { next }
+          /^---[[:space:]]*$/ { closed=1; exit }
+          /^[[:space:]]*$/ { next }
+          /^[A-Za-z][A-Za-z0-9_-]*:/ { next }
+          { bad=1; exit }
+          END { exit !(closed && !bad) }
+        ' "$file" 2>/dev/null; then
+    awk '
+      NR==1 { next }
+      !inbody && /^---[[:space:]]*$/ { inbody=1; next }
+      inbody { print }
+    ' "$file"
+  else
+    cat "$file"
+  fi
+}
+
+# 技能索引：只列 roles.json 里选中、且实例里确实存在的技能。
+# 缺失的技能只告警并跳过——别的角色仍要能启动。
+opc_skill_index() {
+  local role="$1" root="$2" name file desc
+  local lines=()
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if ! opc_safe_skill_name "$name"; then
+      echo "警告：角色 $role 选了非法技能名，已跳过：$name" >&2
+      continue
+    fi
+    file="$root/skills/$name/SKILL.md"
+    if [[ ! -f "$file" ]]; then
+      echo "警告：角色 $role 选中的技能不存在，已跳过：$name" >&2
+      continue
+    fi
+    desc="$(opc_skill_description "$file")"
+    # 索引每条必须是一行：描述里的换行会把它拆成两条。
+    desc="$(printf '%s' "$desc" | tr '\n' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    lines+=("- $name — $desc — \`skills/$name/SKILL.md\`")
+  done < <(opc_role_skills "$role")
+  [[ ${#lines[@]} -gt 0 ]] || return 0
+  printf '\n## 技能索引\n\n'
+  printf '%s\n' "${lines[@]}"
 }
 
 # 角色级权限扩展：roles.json 里每个角色可带

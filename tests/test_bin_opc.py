@@ -106,11 +106,11 @@ class BinOpcTestCase(unittest.TestCase):
         self.assertNotIn("AGENTS.md", mech)
         self.assertFalse([k for k in mech if k.startswith(("agents/", "skills/"))])
         # 起始材料单独记基线：路径 + SHA-256
-        for rel in ("AGENTS.md", "agents/opc-gm.md", "README.md"):
+        for rel in ("AGENTS.md", "agents/gm/AGENTS.md", "README.md"):
             self.assertIn(rel, starters)
             self.assertEqual(64, len(starters[rel]["sha256"]))
         self.assertTrue((target / "AGENTS.md").is_file())
-        self.assertTrue((target / "agents" / "opc-gm.md").is_file())
+        self.assertTrue((target / "agents" / "gm" / "AGENTS.md").is_file())
 
     def test_install_refuses_non_empty_target(self):
         target = self.tmp / "instance"

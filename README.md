@@ -106,13 +106,15 @@ opc upgrade --all          # 升级注册表里的所有实例
 ## 一个实例长什么样
 
 ```
-roles.json           角色注册表：启用/停用、CLI、可写子树、权限模式
+roles.json           角色注册表：启用/停用、CLI、一句话描述、可写子树、权限模式、技能选择
 channels.json        频道清单：id / 中文名 / 是否启用
 AGENTS.md            各角色共用的规约（Claude Code 自动加载）
 LESSONS.md           全局经验教训库（gm 维护；角色写各自的 work/<角色>/LESSONS.md）
 CLAUDE.md            一行：@AGENTS.md
 INSTANCE.md          本实例专属信息（前缀、频道、运行参数、待办）
-agents/              各角色的 hc 模板源（唯一事实来源）
+agents/              各角色的材料目录：`agents/<角色>/AGENTS.md` 是入口，
+                     目录里还可以放角色专属参考文件
+skills/              统一技能库：`skills/<名字>/SKILL.md`，角色按 roles.json 选用
 knowledge/           唯一事实来源：
                      ├── content/   canonical 内容包：内容卡、主稿、publications/
                      ├── business/  结果、常驻口径与 generated 只读视图
@@ -167,7 +169,7 @@ bin/opc lint --private-words ~/.config/opc/private-words.txt
 具体日期/链接/大数、频道清单为空、角色注册表字段合法、`install-manifest.json`
 覆盖每个载荷文件、守卫本身在位、模版里没有本机路径、载荷里没有已删除的同步机制引用、
 全局 UI 名称固定、脚本指向全局布局、提案格式完整。角色启动那条规则两边都查：
-模版里的 `agents/*.md` 与实例里自己的 `agents/*.md` 都要写明「等 gm 派工」
+模版里的 `agents/<角色>/AGENTS.md` 与实例里自己的角色目录都要写明「等 gm 派工」
 （gm 是「先与 owner 对齐方向」）；写成「不用等 gm 派工」这种否定句、
 或同一小节里前后矛盾，一样算违规。
 私词表**永远不进版本库**，放在实例的 `.opc/private-words.txt` 或
@@ -217,12 +219,15 @@ tools/opc-smoke --json   # 机器可读的结果
   "name": "growth",
   "enabled": true,
   "cli": "claude",
-  "template": "agents/opc-growth.md",
+  "description": "OPC 增长经理。渠道组合与投放计划、增长实验、漏斗复盘。",
+  "template": "agents/growth/AGENTS.md",
+  "skills": ["knowledge-writing", "opc-workflow"],
   "permissionMode": "default",
   "scope": [
     "knowledge/work/growth",
     "knowledge/business/growth"
-  ]
+  ],
+  "approvedSkills": []
 }
 ```
 
@@ -230,9 +235,12 @@ tools/opc-smoke --json   # 机器可读的结果
 |---|---|
 | `enabled` | 停用后不生成模板、不启动、不进名册 |
 | `cli` | 该角色用哪个 CLI，默认 `claude` |
-| `permissionMode` | `default` / `manual` / `auto` / `acceptEdits` / `plan` / `dontAsk`；`bypassPermissions` 被拒绝 |
+| `description` | 一句话职责描述，写进该角色的 hc 模板 frontmatter |
+| `permissionMode` | `default` / `manual` / `auto` / `acceptEdits` / `plan` / `dontAsk` / `bypassPermissions` |
 | `scope` | 允许自动写入的路径：**目录**表示整棵子树（拼 `/**`），**文件**（`.md` 等）表示精确文件 |
-| `template` | 角色简报路径 |
+| `template` | 角色入口文件路径，指向 `agents/<角色>/AGENTS.md` |
+| `skills` | 该角色在根级技能库里选中的技能；只有选中且文件存在的才进 hc 模板的技能索引 |
+| `approvedSkills` | 逐个批准的 **CLI 原生**技能名；与 `skills` 是两回事 |
 
 用命令改：
 
@@ -242,7 +250,11 @@ scripts/opc-role.sh disable growth
 scripts/opc-role.sh enable growth
 scripts/opc-role.sh add editor --desc "负责润色与事实核查" --scope knowledge/work/editor
 scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowledge/work/reviewer
+scripts/opc-role.sh add analyst --desc "做数据分析" --skills knowledge-writing
 ```
+
+`add` 会在 `agents/<角色>/AGENTS.md` 建一份纯 Markdown 的角色简报，并把 `description`
+与 `skills` 写进 `roles.json`。改完重跑安装脚本，hc 模板随之更新。
 
 启动时也可以只挑一部分：`scripts/opc-up.sh gm content`。
 

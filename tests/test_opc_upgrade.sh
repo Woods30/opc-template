@@ -107,7 +107,7 @@ fi
 
 # 4. 起始材料的分层：机制指纹不覆盖它，基线单独记
 check_starter "$INST" "机制指纹不覆盖起始材料" mech-clean
-check_starter "$INST" "基线记了根规约、角色文件与种子" base-has AGENTS.md agents/opc-gm.md README.md
+check_starter "$INST" "基线记了根规约、角色文件与种子" base-has AGENTS.md agents/gm/AGENTS.md README.md
 
 # 5. owner 改过的起始材料：保留并告警
 printf '\n# owner 的补充\n' >> "$INST/AGENTS.md"
@@ -131,24 +131,26 @@ check "删掉业务种子后升级仍成功" "0" "$?"
 expect "删掉的业务种子不被补回" test ! -e "$INST/knowledge/business/品牌口径.md"
 
 # 7. owner 自己加的文件永不被触碰
-printf '# owner 自己加的\n' > "$INST/agents/opc-owner.md"
+mkdir -p "$INST/agents/owner"
+printf '# owner 自己加的\n' > "$INST/agents/owner/AGENTS.md"
 "$ROOT/bin/opc" upgrade "$INST" --template "$ROOT" --skip-smoke >/dev/null 2>&1
-expect "owner 新增的文件还在" test -f "$INST/agents/opc-owner.md"
-check "owner 新增的文件内容不变" "# owner 自己加的" "$(cat "$INST/agents/opc-owner.md")"
+expect "owner 新增的文件还在" test -f "$INST/agents/owner/AGENTS.md"
+check "owner 新增的文件内容不变" "# owner 自己加的" "$(cat "$INST/agents/owner/AGENTS.md")"
 
 # 8. 模版新增的起始材料补入
 TPL2="$WORK/tpl2"
 mkdir -p "$TPL2"
 cp -R "$ROOT/template" "$TPL2/template"
-printf '# 新角色简报\n' > "$TPL2/template/agents/opc-new.md"
+mkdir -p "$TPL2/template/agents/new"
+printf '# 新角色简报\n' > "$TPL2/template/agents/new/AGENTS.md"
 "$ROOT/bin/opc" upgrade "$INST" --template "$TPL2" --skip-smoke >/dev/null 2>&1
 check "带新起始材料的模版升级成功" "0" "$?"
-expect "模版新增的起始材料被补入" test -f "$INST/agents/opc-new.md"
+expect "模版新增的起始材料被补入" test -f "$INST/agents/new/AGENTS.md"
 
 # 9. 模版移除的起始材料只提示，不从实例删
 out="$("$ROOT/bin/opc" upgrade "$INST" --template "$ROOT" --skip-smoke 2>&1)"
 expect "模版移除的起始材料被提示" grep -q "模版已移除" <<< "$out"
-expect "模版移除的起始材料没有从实例删除" test -f "$INST/agents/opc-new.md"
+expect "模版移除的起始材料没有从实例删除" test -f "$INST/agents/new/AGENTS.md"
 
 # 10. 缺失根规约视为错误
 mv "$INST/AGENTS.md" "$WORK/AGENTS.md.bak"
@@ -162,15 +164,15 @@ fi
 mv "$WORK/AGENTS.md.bak" "$INST/AGENTS.md"
 
 # 11. 启用角色缺入口文件视为错误
-mv "$INST/agents/opc-gm.md" "$WORK/gm.md.bak"
+mv "$INST/agents/gm/AGENTS.md" "$WORK/gm.md.bak"
 out="$("$ROOT/bin/opc" upgrade "$INST" --template "$ROOT" --skip-smoke 2>&1)"
 rc=$?
-if [[ "$rc" != "0" ]] && grep -q "agents/opc-gm.md" <<< "$out"; then
+if [[ "$rc" != "0" ]] && grep -q "agents/gm/AGENTS.md" <<< "$out"; then
   ok "启用角色缺入口文件时升级失败"
 else
   bad "启用角色缺入口文件时升级没有失败（rc=${rc}）"
 fi
-mv "$WORK/gm.md.bak" "$INST/agents/opc-gm.md"
+mv "$WORK/gm.md.bak" "$INST/agents/gm/AGENTS.md"
 
 # 12. 停用角色缺入口文件不阻断升级，也不补回
 python3 - "$INST/roles.json" <<'PY'
@@ -185,10 +187,10 @@ for role in data["roles"]:
 with open(path, "w") as fh:
     json.dump(data, fh, ensure_ascii=False, indent=2)
 PY
-rm -f "$INST/agents/opc-dev.md"
+rm -f "$INST/agents/dev/AGENTS.md"
 "$ROOT/bin/opc" upgrade "$INST" --template "$ROOT" --skip-smoke >/dev/null 2>&1
 check "停用角色缺入口文件不阻断升级" "0" "$?"
-expect "停用角色的入口文件不被补回" test ! -e "$INST/agents/opc-dev.md"
+expect "停用角色的入口文件不被补回" test ! -e "$INST/agents/dev/AGENTS.md"
 
 # 13. 技能目录整体冻结：目录里任一文件被改，整个技能跳过更新
 TPL3="$WORK/tpl3"
@@ -240,7 +242,7 @@ def sha(path):
 # 老实例把起始材料当机制记了指纹：回退成那个样子
 mech_path = pathlib.Path(inst) / ".opc" / "mechanism.json"
 mech = json.loads(mech_path.read_text(encoding="utf-8"))
-for rel in ("AGENTS.md", "agents/opc-gm.md"):
+for rel in ("AGENTS.md", "agents/gm/AGENTS.md"):
     mech["files"][rel] = sha(pathlib.Path(root) / "template" / rel)
 mech_path.write_text(json.dumps(mech, ensure_ascii=False, indent=2), encoding="utf-8")
 (pathlib.Path(inst) / ".opc" / "starters.json").unlink()
@@ -251,7 +253,7 @@ rc=$?
 check "老实例升级不被机制指纹拦住" "0" "$rc"
 expect "老实例改过的起始材料有告警" grep -q "已本地修改" <<< "$out"
 expect "老实例改过的起始材料被保留" grep -q "老实例里 owner 改的" "$INST4/AGENTS.md"
-expect "老实例的角色文件还在" test -f "$INST4/agents/opc-gm.md"
+expect "老实例的角色文件还在" test -f "$INST4/agents/gm/AGENTS.md"
 expect "老实例升级后有了起始材料基线" test -f "$INST4/.opc/starters.json"
 
 # 16. 注册表记录实例

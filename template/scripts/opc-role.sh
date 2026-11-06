@@ -2,7 +2,7 @@
 # 角色管理：列出、增加、启用、停用。改完会自动重跑安装脚本。
 # 用法：
 #   scripts/opc-role.sh list
-#   scripts/opc-role.sh add <角色> [--cli claude] [--scope a,b] [--desc "一句话"]
+#   scripts/opc-role.sh add <角色> [--cli claude] [--scope a,b] [--desc "一句话"] [--skills a,b]
 #   scripts/opc-role.sh enable <角色>
 #   scripts/opc-role.sh disable <角色>
 set -euo pipefail
@@ -31,12 +31,13 @@ case "$cmd" in
 
   add)
     name="${1:-}"; [[ -n "$name" ]] || usage; shift || true
-    cli="claude"; scope="knowledge/work/$name"; desc="TODO：这个角色负责什么"
+    cli="claude"; scope="knowledge/work/$name"; desc="TODO：这个角色负责什么"; skills=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --cli)   cli="${2:?}"; shift 2 ;;
         --scope) scope="${2:?}"; shift 2 ;;
         --desc)  desc="${2:?}"; shift 2 ;;
+        --skills) skills="${2:?}"; shift 2 ;;
         *) echo "未知参数：$1" >&2; exit 1 ;;
       esac
     done
@@ -50,8 +51,12 @@ case "$cmd" in
     esac
     opc_role_exists "$name" && { echo "角色已存在：$name" >&2; exit 1; }
 
-    tpl="agents/opc-$name.md"
+    # 角色材料是目录：agents/<角色名>/AGENTS.md 是入口，目录里还可以放
+    # 角色专属参考文件。入口是纯 Markdown，frontmatter 由安装器按
+    # roles.json 生成，不写进角色材料。
+    tpl="agents/$name/AGENTS.md"
     if [[ ! -f "$ROOT/$tpl" ]]; then
+      mkdir -p "$ROOT/agents/$name"
       # 新角色的启动小节必须写明「等 gm 派工」（gm 自己先与 owner 对齐），
       # 否则角色一启动就自己开题——这正是 tools/opc-lint 的 L17 要拦的。
       if [[ "$name" == "gm" ]]; then
@@ -60,12 +65,6 @@ case "$cmd" in
         startup='**然后停下来等 gm 派工**：汇报当前状态与能承接的任务即可。'
       fi
       cat > "$ROOT/$tpl" <<EOF
----
-name: {{PREFIX}}-$name
-description: $desc
-command: zsh -lic claude
----
-
 你现在是 **OPC 公司的 $name**。
 
 ## 你的职责
@@ -102,6 +101,16 @@ EOF
 
     scope_json=$(printf '%s' "$scope" | tr ',' '\n' | sed '/^$/d' \
       | jq -R . | jq -s .)
+    # 技能名要能安全地拼进 skills/<name>/SKILL.md，挡住路径穿越。
+    skills_json="[]"
+    if [[ -n "$skills" ]]; then
+      skill_names=()
+      for s in $(printf '%s' "$skills" | tr ',' '\n' | sed '/^$/d'); do
+        opc_safe_skill_name "$s" || { echo "技能名不合法：$s" >&2; exit 1; }
+        skill_names+=("$s")
+      done
+      skills_json=$(printf '%s\n' "${skill_names[@]}" | jq -R . | jq -s .)
+    fi
     for s in $(printf '%s' "$scope" | tr ',' '\n' | sed '/^$/d'); do
       # scope 必须是实例内的相对路径
       case "$s" in
@@ -116,8 +125,9 @@ EOF
     done
 
     tmp="$(mktemp)"
-    jq --arg n "$name" --arg cli "$cli" --arg tpl "$tpl" --argjson scope "$scope_json" \
-      '.roles += [{name:$n, enabled:true, cli:$cli, template:$tpl, permissionMode:"bypassPermissions", scope:$scope, approvedSkills:[]}]' \
+    jq --arg n "$name" --arg cli "$cli" --arg tpl "$tpl" --arg desc "$desc" \
+       --argjson scope "$scope_json" --argjson skills "$skills_json" \
+      '.roles += [{name:$n, enabled:true, cli:$cli, description:$desc, template:$tpl, skills:$skills, permissionMode:"bypassPermissions", scope:$scope, approvedSkills:[]}]' \
       "$REG" > "$tmp" && mv "$tmp" "$REG"
     echo "已加入 roles.json：${name}（CLI ${cli}）"
     reinstall

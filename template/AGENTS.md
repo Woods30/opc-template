@@ -2,8 +2,8 @@
 
 本文件是 **OPC 各角色 agent 的统一入口**。默认角色是 gm / content / growth / dev，
 但角色是配置：以 `roles.json` 为准，当前启用了哪些、各自终端名叫什么，见
-`knowledge/team.md`。`CLAUDE.md` 转发到这里；角色专属的职责与边界写在各自模板
-正文里，不在此重复。
+`knowledge/team.md`。`CLAUDE.md` 转发到这里；角色专属的职责与边界写在
+`agents/<角色>/AGENTS.md` 正文里，不在此重复。
 
 ## 公司定位
 
@@ -40,7 +40,18 @@ knowledge/
 ├── inbox/        # 任务投递：gm.md / content.md / growth.md / dev.md
 └── work/<角色>/  # 过程：草稿、提案、实验记录、LESSONS.md
     └── template-proposals/  # 给模版提的改进提案（见「模版与实例」）
+
+agents/<角色>/    # 角色材料目录
+└── AGENTS.md     # 角色入口：职责、边界、工作方式、启动小节
+skills/<名字>/    # 统一技能库
+└── SKILL.md      # 技能说明；角色按 roles.json 的 skills 选用
 ```
+
+- `agents/<角色>/AGENTS.md` 是该角色的入口文件，纯 Markdown，不带 hc frontmatter。
+  目录里还可以放角色专属参考文件（清单、示例、参考稿），按路径读取即可。
+- `skills/<名字>/SKILL.md` 是**根级统一技能库**：所有角色共用一份事实源。角色
+  启动提示里只列出自己选中的技能（名字、一句话用途、路径），需要时再读具体文件，
+  不用把全部技能塞进上下文。
 
 - `content/` 是**事实**：每条内容从 proposed 起固定在 `<content_id>/内容卡.md`，不靠移动目录表达状态。
   主稿固定在 `<content_id>/主稿.md`，渠道稿固定在

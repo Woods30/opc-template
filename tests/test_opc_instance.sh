@@ -88,6 +88,32 @@ expect "全局布局只装一套" test -f "$HERDR_APP_HOME/layouts/opc.json"
 expect "全局看板 mod 已安装" test -d "$HERDR_APP_HOME/mods/opc-dashboard"
 expect "实例已登记到注册表" grep -q "$INST" "$OPC_CONFIG_DIR/instances.json"
 
+# ---- 1b. 角色目录与 hc 模板 ----
+for role in gm content growth dev; do
+  expect "角色 $role 有自己的目录" test -d "$INST/agents/$role"
+  expect "角色 $role 的入口文件在" test -f "$INST/agents/$role/AGENTS.md"
+  expect "角色 $role 的 hc 模板已生成" test -f "$HERDR_CORE_HOME/templates/t-$role.md"
+done
+expect "角色正文不带 hc frontmatter" \
+  bash -c "! head -n 1 '$INST/agents/gm/AGENTS.md' | grep -q '^---$'"
+expect "hc 模板的 frontmatter 带前缀名" grep -q "^name: t-gm$" "$HERDR_CORE_HOME/templates/t-gm.md"
+expect "hc 模板的 frontmatter 带描述" \
+  grep -q "^description: [^ ]" "$HERDR_CORE_HOME/templates/t-gm.md"
+expect "hc 模板的 frontmatter 带启动命令" \
+  grep -q "^command: $INST/.opc/run/gm.sh$" "$HERDR_CORE_HOME/templates/t-gm.md"
+expect "hc 模板带角色正文" grep -q "只在本实例目录内取材" "$HERDR_CORE_HOME/templates/t-gm.md"
+expect "hc 模板里的占位符已替换" \
+  bash -c "! grep -q '{{PREFIX}}' '$HERDR_CORE_HOME/templates/t-gm.md'"
+
+# 实例里的角色正文改了，重跑安装器后 hc 模板跟着变，正文本身不被改写
+printf '\n# owner 的补充说明\n' >> "$INST/agents/gm/AGENTS.md"
+before="$(shasum "$INST/agents/gm/AGENTS.md" | awk '{print $1}')"
+(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
+check "重跑安装器不改写实例的角色正文" "$before" \
+  "$(shasum "$INST/agents/gm/AGENTS.md" | awk '{print $1}')"
+expect "hc 模板反映改后的正文" \
+  grep -q "owner 的补充说明" "$HERDR_CORE_HOME/templates/t-gm.md"
+
 # ---- 2. 完整生命周期：proposed → ready → publication → published → metrics → reviewed → closed ----
 cd "$INST" || exit 1
 created="$(tools/opc-workflow create-content --title "集成测试内容" --target-date 2026-12-01 --actor content 2>&1)"
@@ -180,8 +206,19 @@ expect "生成视图无需 Herdr 即可读取" test -s knowledge/business/选题
 # opc-role.sh add 生成的简报如果只写「告诉我你打算先做什么」，
 # 角色一启动就会自己开题——那正是 L17 要拦的。
 (cd "$INST" && scripts/opc-role.sh add tester --scope knowledge/work/tester >/dev/null 2>&1) || true
-expect "新角色的简报已生成" test -f "$INST/agents/opc-tester.md"
-expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/opc-tester.md"
+expect "新角色的简报已生成" test -f "$INST/agents/tester/AGENTS.md"
+expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/tester/AGENTS.md"
+expect "新角色的 roles.json 里有描述" \
+  test -n "$(jq -r '.roles[] | select(.name=="tester") | .description' "$INST/roles.json")"
+expect "新角色的 roles.json 里有技能列表" \
+  test -n "$(jq -r '.roles[] | select(.name=="tester") | .skills | type' "$INST/roles.json")"
+expect "新角色的 hc 模板已生成" test -f "$HERDR_CORE_HOME/templates/t-tester.md"
+expect "新角色的 hc 模板带前缀名" grep -q "^name: t-tester$" "$HERDR_CORE_HOME/templates/t-tester.md"
+expect "新角色的 hc 模板带启动命令" grep -q "^command: " "$HERDR_CORE_HOME/templates/t-tester.md"
+expect "新角色的 hc 模板带角色正文" grep -q "等 gm 派工" "$HERDR_CORE_HOME/templates/t-tester.md"
+expect "没有选中技能时不生成技能索引" \
+  bash -c "! grep -q '技能索引' '$HERDR_CORE_HOME/templates/t-tester.md'"
+
 lint_out="$(cd "$INST" && python3 tools/opc-lint --root . --quiet 2>&1)"
 if grep -q "角色启动不自主开工" <<< "$lint_out"; then
   bad "新角色的简报没过 L17：$(grep -A 3 "角色启动不自主开工" <<< "$lint_out" | tr '\n' ' ')"
@@ -224,6 +261,35 @@ before="$(jq -c . "$INST/roles.json")"
 printf '' | PATH="$FAKEBIN:/usr/bin:/bin" XDG_CONFIG_HOME="$WORK/config" \
   "$INST/scripts/opc-install.sh" --no-input i >/dev/null 2>&1
 check "非交互安装不改角色配置" "$before" "$(jq -c . "$INST/roles.json")"
+
+# ---- 7. 技能索引：只列选中且存在的技能，缺失的只告警不失败 ----
+mkdir -p "$INST/skills/demo"
+printf -- '---\nname: demo\ndescription: 演示技能的一句话说明\n---\n\n正文。\n' \
+  > "$INST/skills/demo/SKILL.md"
+jq '.roles += [{name:"demoer", enabled:true, cli:"claude",
+  description:"演示角色", template:"agents/demoer/AGENTS.md", skills:["demo","ghost"],
+  permissionMode:"bypassPermissions", scope:["knowledge/work/demoer"], approvedSkills:[]}]' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+mkdir -p "$INST/agents/demoer"
+printf '你是 demoer。\n\n## 启动\n\n等 gm 派工。\n' > "$INST/agents/demoer/AGENTS.md"
+out="$( (cd "$INST" && scripts/opc-install.sh --no-input t) 2>&1 )"
+rc=$?
+check "选中技能缺失时安装仍成功" "0" "$rc"
+expect "选中技能缺失时有告警" grep -q "ghost" <<< "$out"
+expect "hc 模板里有技能索引" grep -q "## 技能索引" "$HERDR_CORE_HOME/templates/t-demoer.md"
+expect "技能索引列出技能名" grep -q "demo" "$HERDR_CORE_HOME/templates/t-demoer.md"
+expect "技能索引带技能描述" \
+  grep -q "演示技能的一句话说明" "$HERDR_CORE_HOME/templates/t-demoer.md"
+expect "技能索引带技能路径" \
+  grep -q "skills/demo/SKILL.md" "$HERDR_CORE_HOME/templates/t-demoer.md"
+expect "技能索引不含缺失的技能" \
+  bash -c "! grep -q 'ghost' '$HERDR_CORE_HOME/templates/t-demoer.md'"
+
+# 停用角色后旧的 hc 模板要清掉，否则全局模板目录里还留着失效入口
+jq '(.roles[] | select(.name=="demoer") | .enabled) = false' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
+expect "停用角色的 hc 模板被清理" test ! -e "$HERDR_CORE_HOME/templates/t-demoer.md"
 
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"

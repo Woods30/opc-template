@@ -22,7 +22,7 @@ opc-template/
 ├── template/                # 运行载荷：会被复制/安装到实例与本机的东西
 │   ├── install-manifest.json
 │   ├── AGENTS.md            # 公司共享规约（起始材料，物化到每个实例）
-│   ├── agents/ skills/      # 起始材料：角色简报与技能，装一次就归 owner
+│   ├── agents/ skills/      # 起始材料：角色目录与统一技能库，装一次就归 owner
 │   ├── scripts/ tools/      # 机制：按指纹分发
 │   ├── layouts/ mods/       # 全局 UI，只安装一份
 │   └── seeds/               # 起始材料：业务种子，只补不覆盖
@@ -57,13 +57,18 @@ bin/opc paths --json                # 诊断本机路径
    `upgrade` 整目录覆盖；实例本地改过会被拒绝，所以不要依赖实例侧的手工修补。
 3. **起始材料按基线更新**：`AGENTS.md`、`agents/`、`skills/` 与 `seeds/` 装一次
    就归 owner。实例用 `.opc/starters.json` 记基线：没改过的跟随模版更新，
-   改过的保留并告警，删掉的不复活，模版新增的补入。技能目录整目录冻结。
-4. **UI 全局唯一**：布局名固定为 `opc` / `opc-focus` / `opc-grid` /
+   改过的保留并告警，删掉的不复活，模版新增的补入。技能目录整目录冻结，
+   角色目录按文件管理。
+4. **角色是目录**：角色材料在 `template/agents/<角色>/AGENTS.md`，纯 Markdown，
+   目录里可放角色专属参考文件。角色元数据（描述、技能选择、权限）都在
+   `template/roles.json`；hc 模板的 frontmatter 由安装器按它拼出来，不要
+   写回角色文件。
+5. **UI 全局唯一**：布局名固定为 `opc` / `opc-focus` / `opc-grid` /
    `opc-monitor`，mod 名固定为 `opc-dashboard` / `opc-tabs`。布局与 mod 里
    不得留 `{{...}}` 占位，也不得带实例前缀。
-5. **不写实例状态**：本仓库不产生 `.opc/`、`knowledge/`、`template.lock.json`；
+6. **不写实例状态**：本仓库不产生 `.opc/`、`knowledge/`、`template.lock.json`；
    它们只属于实例。
-6. **改完跑自检**：`bin/opc lint --strict` 必须全绿；涉及安装/升级的改动再加
+7. **改完跑自检**：`bin/opc lint --strict` 必须全绿；涉及安装/升级的改动再加
    沙箱测试（`tests/`）。提交只包含本次改动，不要顺手带上无关文件。
 
 ## 语言与格式
