@@ -354,6 +354,46 @@ class LintTestCase(unittest.TestCase):
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
 
+    def test_role_startup_contradictory_section_fails(self):
+        # 前后矛盾最危险：读的人只会记住对自己有利的那句。
+        # 只要小节里出现否定的等待指令，就算另外还有一句正面表述也失败。
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "然后停下来等 gm 派工。\n\n不用等 gm 派工，自己开题更快。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_role_startup_clause_negation_fails(self):
+        # 否定词不紧贴关键词，但仍在同一个分句里（「没必要再等 gm 派工」）。
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "没必要再等 gm 派工，自己开题。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_role_startup_cannot_wait_fails(self):
+        # 同义词也要认：「不能等 gm 派工」和「不用等 gm 派工」是一个意思。
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "不能等 gm 派工，先做起来。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_gm_startup_contradictory_section_fails(self):
+        self.write(
+            "agents/opc-gm.md",
+            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "先与 owner 对齐方向。\n\n但直接派工也行，不必与 owner 对齐。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
     def test_gm_startup_negated_owner_alignment_fails(self):
         self.write(
             "agents/opc-gm.md",

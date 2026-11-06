@@ -61,13 +61,21 @@ RE_ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,19}$")
 # 角色启动小节里必须出现的正面指令：
 #   普通角色 —— 等 gm 派工；gm 自己 —— 先与 owner 对齐方向。
 # 关键词出现不等于说了这句话：「不用等 gm 派工」里同样有「等 gm 派工」，
-# 意思正好相反，所以命中之后还要看它前面有没有否定词。
-NEGATION_MARKERS = ("不需要", "不用", "无需", "不必", "不要", "别", "甭")
-# 否定词要紧挨着关键词才算数：「先不要跑，等 gm 派工」是等派工，
-# 「不用等 gm 派工」才是不等。
+# 意思正好相反。所以命中之后还要看它前面有没有否定词，并且单列分句里
+# 隔着几个字的否定也算——「没必要自己先开一稿再等 gm 派工」同样是否定。
+NEGATION_MARKERS = ("不需要", "没必要", "不用", "无需", "不必", "不要", "不能",
+                    "不得", "不应", "不可", "禁止", "无权", "拒绝", "别", "甭")
+# 单字否定词（「别」）夹在别的词里容易误判（区别、分别），所以只要求它们
+# 紧贴关键词；多字否定词才放宽到同一分句。
+CLAUSE_NEGATIONS = ("不需要", "没必要", "不用", "无需", "不必", "不要", "不能",
+                    "不得", "不应", "不可", "禁止", "无权", "拒绝")
 RE_NEGATED_TAIL = re.compile(
-    r"(?:{markers})(?:再|先|就|才|自己|自行|自选)?$".format(markers="|".join(NEGATION_MARKERS))
-)
+    "(?:" + "|".join(NEGATION_MARKERS) + r")(?:再|先|就|才|自己|自行|自选)?$")
+RE_NEGATED_DISPATCH = re.compile(
+    "(?:" + "|".join(CLAUSE_NEGATIONS) + r")[^。\n；;，,]{0,16}等[^。\n；;]{0,12}派工")
+RE_NEGATED_OWNER = re.compile(
+    "(?:" + "|".join(CLAUSE_NEGATIONS)
+    + r")[^。\n；;，,]{0,16}(?:与|和|跟)[^。\n；;]{0,10}owner[^。\n；;]{0,10}对齐")
 RE_DISPATCH = re.compile(r"等[^。\n；;]{0,12}派工")
 RE_OWNER_ALIGN = re.compile(r"(?:与|和|跟)[^。\n；;]{0,10}owner[^。\n；;]{0,10}对齐")
 RE_STARTUP_HEADING = re.compile(r"^#{1,6}[ \t]*启动不自主开工[ \t]*$", re.MULTILINE)
@@ -551,17 +559,17 @@ def role_startup_section(text):
     return body
 
 
-def startup_instruction(section, pattern):
+def startup_instruction(section, pattern, negation):
     """小节里有没有一条没被否定的正面指令。
 
     光出现关键词不算：「不用等 gm 派工」里也有「等 gm 派工」，意思正好相反。
-    所以每处命中都要看它前面有没有否定词——否定词得紧挨着关键词才算，
-    否则「先不要跑，等 gm 派工」会被误判成否定。
+    所以每处命中都要看它前面对不对得上否定词，整段分句里出现的否定也算。
 
-    返回 (有正面表述, 有被否定的表述)。
+    返回 (有正面表述, 有被否定的表述)。调用方只要看到否定的表述就判失败：
+    同一小节里前后矛盾，读的人只会记住对自己有利的那句。
     """
     positive = False
-    negated = False
+    negated = negation.search(section) is not None
     for m in pattern.finditer(section):
         head = section[max(0, m.start() - 8):m.start()].strip()
         if RE_NEGATED_TAIL.search(head):
@@ -624,16 +632,16 @@ def check_l17_role_startup(root, instance=False):
             fails.append("角色 {} 的模板缺少「## 启动」小节：{}".format(name, template))
             continue
         if name == "gm":
-            positive, negated = startup_instruction(section, RE_OWNER_ALIGN)
-            if negated and not positive:
-                fails.append("角色 gm 的启动小节写成了否定句：必须写明先与 owner 对齐方向")
+            positive, negated = startup_instruction(section, RE_OWNER_ALIGN, RE_NEGATED_OWNER)
+            if negated:
+                fails.append("角色 gm 的启动小节出现了否定的表述：必须写明先与 owner 对齐方向")
             elif not positive:
                 fails.append("角色 gm 的启动小节必须写明先与 owner 对齐方向"
                              + ("（跑 scripts/opc-sync.sh pull 同步模版）" if instance else ""))
         else:
-            positive, negated = startup_instruction(section, RE_DISPATCH)
-            if negated and not positive:
-                fails.append("角色 {} 的启动小节写成了否定句：必须写明等 gm 派工：{}".format(name, template))
+            positive, negated = startup_instruction(section, RE_DISPATCH, RE_NEGATED_DISPATCH)
+            if negated:
+                fails.append("角色 {} 的启动小节出现了否定的表述：必须写明等 gm 派工：{}".format(name, template))
             elif not positive:
                 fails.append("角色 {} 的启动小节必须写明等 gm 派工：{}".format(name, template)
                              + ("（跑 scripts/opc-sync.sh pull 同步模版）" if instance else ""))
