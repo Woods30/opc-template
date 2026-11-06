@@ -183,7 +183,8 @@ def install(payload, manifest, instance, entries=None):
             # 父目录是软链接或落点在实例外：一律不写。
             continue
         if not dst.exists():
-            safefile.copy_from(instance, src, entry["target"])
+            safefile.copy_from(payload, entry["source"], instance,
+                               entry["target"])
             added.append(entry["target"])
         _record(files, entry, sha256_file(src))
     return {"version": BASELINE_VERSION, "files": files}, added
@@ -267,6 +268,7 @@ def plan(payload, manifest, instance, baseline, entries=None):
         "frozen": sorted(frozen),
         "missing": [],
         "instance": str(instance),
+        "payload": str(payload),
     }
     new_files = {}
 
@@ -314,7 +316,7 @@ def plan(payload, manifest, instance, baseline, entries=None):
                 result["skipped"].append(rel)
                 new_files[rel] = dict(record)
             else:
-                result["copy"].append((src, dst, rel))
+                result["copy"].append((entry["source"], dst, rel))
                 result["added"].append(rel)
                 _record(new_files, entry, sha256_file(src))
             continue
@@ -327,7 +329,7 @@ def plan(payload, manifest, instance, baseline, entries=None):
                     result["skipped"].append(rel)
                     new_files[rel] = dict(record)
             else:
-                result["copy"].append((src, dst, rel))
+                result["copy"].append((entry["source"], dst, rel))
                 result["added"].append(rel)
                 _record(new_files, entry, sha256_file(src))
             continue
@@ -352,7 +354,7 @@ def plan(payload, manifest, instance, baseline, entries=None):
             continue
         # 与基线一致：可以用模版版本刷新。
         if sha256_file(src) != record["sha256"]:
-            result["copy"].append((src, dst, rel))
+            result["copy"].append((entry["source"], dst, rel))
             result["updated"].append(rel)
             _record(new_files, entry, sha256_file(src))
         else:
@@ -489,5 +491,5 @@ def apply(result):
         if instance and (_symlink_component(instance, dst)
                          or not _resolves_inside(instance, dst)):
             continue
-        safefile.copy_from(instance, src, rel)
+        safefile.copy_from(result.get("payload"), src, instance, rel)
     return result

@@ -86,28 +86,30 @@ def write_text(root, rel, text, mode=0o644):
         os.close(parent)
 
 
-def copy_from(root, src_path, rel, mode=None):
-    """把实例外的文件复制进实例。
+def copy_from(src_root, src_rel, dst_root, dst_rel):
+    """把一份受信任目录下的文件复制到目标目录里的相对路径。
 
-    来源按普通路径读（模版侧可信），落点在实例内按目录描述符写。
+    来源与落点都按目录描述符逐段打开：来源不跟随软链接，落点写不出去。
     """
-    parts = split_rel(rel)
-    parent = _open_dir(root, parts[:-1], create=True)
+    sparts = split_rel(src_rel)
+    dparts = split_rel(dst_rel)
+    src_parent = _open_dir(src_root, sparts[:-1])
+    try:
+        sfd = os.open(sparts[-1], os.O_RDONLY | O_NOFOLLOW, dir_fd=src_parent)
+    finally:
+        os.close(src_parent)
+    with os.fdopen(sfd, "rb") as source:
+        data = source.read()
+        mode = os.fstat(source.fileno()).st_mode & 0o777
+    parent = _open_dir(dst_root, dparts[:-1], create=True)
     tmp = _tmp_name()
     try:
-        with open(str(src_path), "rb") as source:
-            data = source.read()
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW,
                      0o600, dir_fd=parent)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        if mode is None:
-            try:
-                mode = os.stat(str(src_path)).st_mode & 0o777
-            except OSError:
-                mode = 0o644
-        os.chmod(tmp, mode, dir_fd=parent)
-        os.replace(tmp, parts[-1], src_dir_fd=parent, dst_dir_fd=parent)
+        os.chmod(tmp, mode or 0o644, dir_fd=parent)
+        os.replace(tmp, dparts[-1], src_dir_fd=parent, dst_dir_fd=parent)
     except BaseException:
         _unlink_quiet(parent, tmp)
         raise
