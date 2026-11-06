@@ -45,6 +45,15 @@ jq '.channels = [{"id":"wechat","name":"公众号","enabled":true}]' \
   "$INST/channels.json" > "$INST/channels.json.tmp" && mv "$INST/channels.json.tmp" "$INST/channels.json"
 XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
 
+# 开实例这条路径本身必须返回 0：安装成功时脚本不能以非零退出，
+# 否则调用方（脚本、CI、agent）会把一次成功当失败。
+INST2="$WORK/inst2"
+XDG_CONFIG_HOME="$WORK/config" "$TPL/scripts/opc-new.sh" "$INST2" --prefix t2 \
+  --source "$TPL" >/dev/null 2>&1
+check "opc-new 建实例并安装返回 0" "0" "$?"
+expect "第二个实例的目录结构已建好" test -f "$INST2/knowledge/team.md"
+expect "第二个实例没有 review 与 daily 目录" test ! -e "$INST2/knowledge/review"
+
 # ---- 1. 安装结构：canonical 内容区、规则、生成视图入口、工具 ----
 expect "新实例有 canonical 内容区" test -d "$INST/knowledge/content"
 expect "新实例有业务规则种子" test -f "$INST/knowledge/business/品牌口径.md"

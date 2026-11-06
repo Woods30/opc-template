@@ -94,7 +94,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "  模版来源：$SOURCE"
   echo "  复制内容：除 .git/.opc/.opc-template-repo/.github/docs/sync-policy.json/knowledge 外的全部"
   [[ "$DO_GIT" == "1" ]] && echo "  git：init + 首次提交"
-  [[ "$DO_INSTALL" == "1" ]] && echo "  安装：scripts/opc-install.sh $PREFIX"
+  if [[ "$DO_INSTALL" == "1" ]]; then
+    echo "  安装：scripts/opc-install.sh $PREFIX"
+  fi
   exit 0
 fi
 
@@ -137,5 +139,8 @@ echo
 echo "新实例已建好：$TARGET"
 echo "  前缀：$PREFIX"
 echo "  模版来源：$SOURCE"
-[[ "$DO_INSTALL" == "1" ]] && echo "  下一步：cd \"$TARGET\" && scripts/opc-up.sh"
-[[ "$DO_INSTALL" == "0" ]] && echo "  下一步：cd \"$TARGET\" && scripts/opc-install.sh $PREFIX && scripts/opc-up.sh"
+if [[ "$DO_INSTALL" == "1" ]]; then
+  echo "  下一步：cd \"$TARGET\" && scripts/opc-up.sh"
+else
+  echo "  下一步：cd \"$TARGET\" && scripts/opc-install.sh $PREFIX && scripts/opc-up.sh"
+fi
