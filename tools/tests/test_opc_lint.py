@@ -109,9 +109,12 @@ def build_template_repo(base):
     with open(os.path.join(base, "seeds", "knowledge", "business", "品牌口径.md"), "w", encoding="utf-8") as fh:
         fh.write(SEED)
     with open(os.path.join(base, "AGENTS.md"), "w", encoding="utf-8") as fh:
-        fh.write("# 共有规约\n")
+        fh.write("# 共有规约\n\n## 启动不自主开工\n\n启动后先汇报现状，等 gm 派工。\n")
     with open(os.path.join(base, "agents", "opc-gm.md"), "w", encoding="utf-8") as fh:
-        fh.write("---\nname: {{PREFIX}}-gm\n---\n")
+        fh.write(
+            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "然后与 owner 对齐方向，等 owner 确认后再派工。\n"
+        )
     with open(os.path.join(base, "scripts", "lib.sh"), "w", encoding="utf-8") as fh:
         fh.write('# 判断是不是模版仓库\nopc_is_template_repo() {\n  [[ -f "$1/.opc-template-repo" ]]\n}\n')
     with open(os.path.join(base, "scripts", "opc-install.sh"), "w", encoding="utf-8") as fh:
@@ -260,6 +263,27 @@ class LintTestCase(unittest.TestCase):
         self.write("roles.json", json.dumps(roles, ensure_ascii=False))
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L8"].status)
+
+    # ---- L17 角色启动不自主开工 ----
+
+    def test_role_startup_without_dispatch_instruction_fails(self):
+        # 角色启动时如果只说「告诉我你打算做什么」，就会自己开题、自己修 bug。
+        self.write(
+            "agents/opc-gm.md",
+            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，然后告诉我你打算先做什么。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_role_startup_without_section_fails(self):
+        self.write("agents/opc-gm.md", "---\nname: {{PREFIX}}-gm\n---\n\n没有启动小节。\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_shared_rules_without_startup_section_fails(self):
+        self.write("AGENTS.md", "# 共有规约\n\n没有启动小节。\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
 
     # ---- L9 未归类 ----
 

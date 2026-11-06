@@ -517,6 +517,67 @@ def check_l8_roles(root):
     return c
 
 
+def role_startup_section(text):
+    """取角色模板里「## 启动」小节的正文；没有这一节返回 None。"""
+    if not text:
+        return None
+    marker = "\n## 启动"
+    index = text.find(marker)
+    if index < 0:
+        return None
+    body = text[index + len(marker):]
+    next_section = body.find("\n## ")
+    if next_section >= 0:
+        body = body[:next_section]
+    return body
+
+
+def check_l17_role_startup(root):
+    """角色启动不自主开工：先汇报现状，等 gm 派工（gm 自己先与 owner 对齐）。"""
+    c = Check("L17", "角色启动不自主开工", source="AGENTS.md 与 agents/*.md")
+    rules = read_text(os.path.join(root, "AGENTS.md"))
+    if rules is None:
+        c.status = STATUS_FAIL
+        c.detail.append("找不到 AGENTS.md")
+        return c
+    if "启动不自主开工" not in rules:
+        c.status = STATUS_FAIL
+        c.detail.append(
+            "AGENTS.md 缺少「启动不自主开工」小节：角色启动后先汇报现状，再等 gm 派工"
+        )
+    roles_path = os.path.join(root, "roles.json")
+    try:
+        with open(roles_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        c.status = STATUS_FAIL
+        c.detail.append("roles.json 读不了：{}".format(exc))
+        return c
+    for role in data.get("roles", []):
+        name = role.get("name", "")
+        template = role.get("template")
+        if not template:
+            continue
+        text = read_text(os.path.join(root, template))
+        section = role_startup_section(text)
+        if section is None:
+            c.status = STATUS_FAIL
+            c.detail.append(
+                "角色 {} 的模板缺少「## 启动」小节：{}".format(name, template)
+            )
+            continue
+        if name == "gm":
+            if "owner" not in section:
+                c.status = STATUS_FAIL
+                c.detail.append("角色 gm 的启动小节必须写明先与 owner 对齐方向")
+        elif "派工" not in section:
+            c.status = STATUS_FAIL
+            c.detail.append(
+                "角色 {} 的启动小节必须写明等 gm 派工：{}".format(name, template)
+            )
+    return c
+
+
 def check_l9_policy_covers(root, policy, tracked):
     c = Check("L9", "策略覆盖全部模版文件", source="sync-policy.json 的 rules")
     unclassified = []
@@ -726,6 +787,7 @@ def run_checks(root, strict=False, words_file=None):
             check_l11_guards(root),
             check_l12_no_local_paths(root, tracked),
             check_l15_deny_list(root),
+            check_l17_role_startup(root),
         ]
         if policy is not None:
             checks.append(check_l13_proposals(root, policy))

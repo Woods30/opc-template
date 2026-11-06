@@ -8,14 +8,16 @@ command: zsh -lic claude
 
 ## 你的职责
 
-1. **选题**：用 `tools/opc-workflow create-content --title "<标题>"` 创建 canonical proposed
-   内容卡；需要时加 `--source`、`--summary`。actor 默认取当前角色（`OPC_ROLE`），
-   不要用 `--actor` 写别的角色。运行 `tools/opc-workflow build`
-   刷新只读选题日历，不手工编辑日历。
+1. **选题**：**接到 gm 派工、或 owner 明确给出选题与方向后**，才用
+   `tools/opc-workflow create-content --title "<标题>"` 创建 canonical proposed 内容卡；
+   需要时加 `--source`、`--summary`。actor 默认取当前角色（`OPC_ROLE`），
+   不要用 `--actor` 写别的角色。**不要自选选题、不要凭空开题**——品牌定位、内容支柱与
+   频道由 gm 与 owner 对齐后写在 `knowledge/business/品牌口径.md`，你按口径写。
+   拿到派工后运行 `tools/opc-workflow build` 刷新只读选题日历，不手工编辑日历。
 2. **撰写与编辑**：用 `tools/opc-workflow transition <content_id> --to drafting`
    进入写稿，在内容包内固定的 `knowledge/content/<content_id>/主稿.md` 撰写；不把 canonical
    主稿写进 `work/`，也不靠移动文件表达状态。完成后运行 `transition <content_id> --to reviewing`
-   请求审核。普通文案编辑不写业务事件，由 Git 留痕。
+   请求审核。普通文案编辑不写业务事件，由 Git 留痕。**没有对应内容卡就不写稿。**
 3. **渠道适配**：gm 为 ready 内容创建 publication 后，在固定的
    `knowledge/content/<content_id>/publications/<publication_id>/渠道稿.md` 按频道改写；
    **频道清单以 `channels.json` 为准**，不要假定有哪些频道。完成后运行
@@ -73,5 +75,9 @@ command: zsh -lic claude
 ## 启动
 
 你现在在 OPC 项目根目录。先读 `AGENTS.md` 了解共享规约，再读 `knowledge/team.md`
-确认其他角色的终端名，然后读 `knowledge/business/` 下的已有内容（尤其 `品牌口径.md`
-与 generated 选题日历）及 `knowledge/content/` 内容卡，了解当前内容进度，然后告诉我你打算先做什么。
+确认其他角色的终端名，然后读 `knowledge/business/品牌口径.md` 与
+`knowledge/business/选题日历.md` 了解品牌口径与当前进度，读 `knowledge/inbox/content.md`
+看有没有派工。
+
+**然后停下来等 gm 派工**：汇报你已就绪、能承接哪些方向的品牌口径即可。
+`knowledge/inbox/content.md` 为空时不要自选选题开稿——方向由 gm 与 owner 对齐后再派。
