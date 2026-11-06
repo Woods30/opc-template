@@ -48,7 +48,7 @@ check "模版内所有 agent 默认 bypassPermissions" "bypassPermissions" \
 jq '(.roles[] | select(.name == "gm") | .permissionMode) = "dontAsk"
   | (.roles[] | select(.name == "gm") | .approvedSkills) = ["humanizer-zh"]' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 check "批准的技能生成精确规则" "Skill(humanizer-zh)" \
   "$(jq -r '.permissions.allow[] | select(. == "Skill(humanizer-zh)")' "$INST/.opc/settings-gm.json")"
 if jq -e '.permissions.allow | index("Skill")' "$INST/.opc/settings-gm.json" >/dev/null; then
@@ -59,7 +59,7 @@ fi
 
 jq '.channels = [{"id":"wechat","name":"公众号","enabled":true}]' \
   "$INST/channels.json" > "$INST/channels.json.tmp" && mv "$INST/channels.json.tmp" "$INST/channels.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 if grep -q 'GENERATED FILE — READ ONLY' "$INST/knowledge/business/wechat/发布记录.md"; then
   ok "安装器创建的渠道发布记录可由 workflow 安全接管"
 else
@@ -103,7 +103,7 @@ for cmd in jq python3 git bash sed grep cp mkdir rm chmod cat basename dirname t
   [[ -n "$real" ]] && ln -sf "$real" "$WORK/bin/$cmd"
 done
 no_herdr_out="$(PATH="$WORK/bin:/usr/bin:/bin" XDG_CONFIG_HOME="$WORK/config" \
-  "$INST/scripts/opc-install.sh" t 2>&1)"
+  "$INST/scripts/opc-install.sh" --no-input t 2>&1)"
 no_herdr_code=$?
 if [[ "$no_herdr_code" -eq 0 ]] && grep -q "没找到 herdr-app" <<< "$no_herdr_out"; then
   ok "没装 Herdr 时安装器给出清楚结果且不失败"
@@ -137,7 +137,7 @@ jq --arg cli "$FAKE_CODEX" '
   (.roles[] | select(.name == "gm") | .cli) = $cli
   | (.roles[] | select(.name == "gm") | .permissionMode) = "dontAsk"
 ' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 "$INST/.opc/run/gm.sh" </dev/null
 codex_args="$(join_args "$WORK/codex-args")"
 check "Codex dontAsk 映射为 never + workspace-write" \
@@ -162,7 +162,7 @@ jq -n --arg cmd "/bin/sh '$INST/.opc/hooks/scope-gm.sh'" \
   > "$INST/.codex/hooks.json"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$INST/.opc/hooks/scope-gm.sh"
 chmod +x "$INST/.opc/hooks/scope-gm.sh"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 if [[ -e "$INST/.codex/hooks.json" || -e "$INST/.opc/hooks/scope-gm.sh" ]]; then
   bad "安装器没有清理 OPC 旧版生成的 codex hook"
 else
@@ -171,7 +171,7 @@ fi
 
 custom_hooks='{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"my-user-hook"}]}]}}'
 printf '%s\n' "$custom_hooks" > "$INST/.codex/hooks.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 check "安装器保留用户自己的 codex hook" "$custom_hooks" \
   "$(jq -c . "$INST/.codex/hooks.json")"
 
@@ -192,7 +192,7 @@ check "没有 zsh 时回退到 bash 仍能启动" \
 
 jq '(.roles[] | select(.name == "gm") | .permissionMode) = "default"' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 "$INST/.opc/run/gm.sh" </dev/null
 codex_args="$(join_args "$WORK/codex-args")"
 check "Codex default 映射为 on-request + workspace-write" \
@@ -209,7 +209,7 @@ jq '
 # 这里只验证模版承诺的两层确实生成，不把它们冒充完整隔离。
 jq '(.roles[] | select(.name == "gm") | .permissionMode) = "bypassPermissions"' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 launcher="$(cat "$INST/.opc/run/gm.sh")"
 case "$launcher" in
   *"--permission-mode bypassPermissions"*) ok "bypassPermissions 传给 claude" ;;
@@ -228,7 +228,7 @@ check "写操作被锁在实例目录内" "true" \
 # 角色级扩展：roles.json 里可以给某个角色单独加 deny / allow
 jq '(.roles[] | select(.name == "gm") | .deny) = ["Bash(curl:*)"]' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 if jq -e '.permissions.deny | index("Bash(curl:*)")' "$INST/.opc/settings-gm.json" >/dev/null; then
   ok "角色级 deny 扩展生效"
 else
@@ -240,7 +240,7 @@ jq --arg cli "$FAKE_CODEX" '
   (.roles[] | select(.name == "gm") | .cli) = $cli
   | (.roles[] | select(.name == "gm") | .permissionMode) = "bypassPermissions"
 ' "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 "$INST/.opc/run/gm.sh" </dev/null
 codex_args="$(join_args "$WORK/codex-args")"
 check "Codex bypass 映射为 dangerously-bypass-approvals-and-sandbox" \
@@ -249,7 +249,7 @@ check "Codex bypass 映射为 dangerously-bypass-approvals-and-sandbox" \
 # Codex 的 auto 等价物：--approve-for-me
 jq '(.roles[] | select(.name == "gm") | .permissionMode) = "auto"' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 "$INST/.opc/run/gm.sh" </dev/null
 codex_args="$(join_args "$WORK/codex-args")"
 check "Codex auto 映射为 approve-for-me" \
@@ -258,11 +258,24 @@ check "Codex auto 映射为 approve-for-me" \
 # cli 路径里带相对跳转的也要拒绝：它会被写进启动器并被执行
 jq --arg cli "../evil" '(.roles[] | select(.name == "gm") | .cli) = $cli' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
-if XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1; then
+if XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1; then
   bad "带 .. 的 cli 路径被放行了"
 else
   ok "带 .. 的 cli 路径被拒绝"
 fi
+
+# 模板路径同样被拼进 $ROOT：带跳转就等于让安装器把实例外的文件装成角色简报，
+# 而角色简报会被那个终端当成指令执行。
+printf 'SECRET-OUTSIDE\n' > "$WORK/evil.md"
+jq '(.roles[] | select(.name == "gm") | .template) = "../evil.md"' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+if XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1; then
+  bad "带 .. 的模版路径被放行了"
+else
+  ok "带 .. 的模版路径被拒绝"
+fi
+jq '(.roles[] | select(.name == "gm") | .template) = "agents/opc-gm.md"' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
 
 jq '
   (.roles[] | select(.name == "gm") | .cli) = "claude"

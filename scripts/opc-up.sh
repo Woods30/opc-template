@@ -92,7 +92,8 @@ done
 if [[ $need_install -eq 1 ]]; then
   if [[ $install_first -eq 1 ]]; then
     echo "模板或启动器缺失，按 --install 执行安装"
-    "$ROOT/scripts/opc-install.sh" || { echo "安装失败" >&2; exit 1; }
+    # 这里只是补装模板，不是选角色的时机：角色由 roles.json 决定，别弹提问。
+    "$ROOT/scripts/opc-install.sh" --no-input || { echo "安装失败" >&2; exit 1; }
   else
     echo "模板或启动器缺失。先跑 scripts/opc-install.sh，或 opc-up.sh --install" >&2
     exit 1

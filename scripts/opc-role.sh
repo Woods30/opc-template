@@ -14,7 +14,7 @@ command -v jq >/dev/null || { echo "缺少 jq" >&2; exit 1; }
 
 usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
-reinstall() { "$ROOT/scripts/opc-install.sh" >/dev/null && echo "已重新安装（模板、权限、名册已更新）"; }
+reinstall() { "$ROOT/scripts/opc-install.sh" --no-input >/dev/null && echo "已重新安装（模板、权限、名册已更新）"; }
 
 cmd="${1:-}"; shift || true
 

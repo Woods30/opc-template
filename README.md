@@ -39,7 +39,20 @@ scripts/opc-down.sh           # 停止
 ```sh
 scripts/opc-new.sh ~/Documents/my-opc acme --prefix acme   # 指定前缀
 scripts/opc-new.sh ~/Documents/my-opc --dry-run            # 只看要做什么
+scripts/opc-new.sh ~/Documents/my-opc --no-input           # 安装时不提问
 ```
+
+安装会**先检测本机装了哪些 CLI**（`claude`、`codex`、`opencode`、`gemini`，以及
+`roles.json` 里已经在用的），再逐个角色问「启用吗」「用哪个 CLI」。终端里第一次安装
+会问一次，之后重装不再打扰；想再改就跑 `--interactive`。重定向或管道里跑默认不问——
+脚本、测试、CI 用 `--no-input` 关掉：
+
+```sh
+scripts/opc-install.sh --interactive     # 强制提问
+scripts/opc-install.sh --no-input        # 强制不问
+```
+
+一个 CLI 都没检测到时会直接拒绝安装，避免把角色配到一个不存在的命令上。
 
 **不要在模版仓库里跑 `opc-install.sh`**——安装脚本会检测到 `.opc-template-repo`
 标记并直接拒绝。模版里也不该出现任何业务文件，`scripts/opc-lint.sh` 会持续检查。

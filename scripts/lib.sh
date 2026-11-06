@@ -78,6 +78,25 @@ opc_role_cli() {
   printf '%s' "${c:-claude}"
 }
 
+# OPC 认得的 CLI。装没装只看 PATH：没装的不该出现在选择清单里。
+opc_known_clis() {
+  printf '%s\n' claude codex opencode gemini
+}
+
+# 本机装了哪些 CLI，一行一个。roles.json 里已经用到的 CLI 也算认得，
+# 自定义的 CLI 不会被漏掉。
+# 末尾的 read 读到 EOF 会返回非零：调用方都在 set -e 下，这里兜住，
+# 免得「没找到」被当成「函数失败」。
+opc_detect_clis() {
+  {
+    opc_known_clis
+    jq -r '.roles[]?.cli // empty' "$(opc_roles_file)" 2>/dev/null || true
+  } | sort -u | while IFS= read -r cli; do
+    [[ -n "$cli" ]] || continue
+    command -v "$cli" >/dev/null 2>&1 && printf '%s\n' "$cli"
+  done || true
+}
+
 opc_templates_dir() { printf '%s/herdr-core/templates' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 opc_layouts_dir()   { printf '%s/herdr-app/layouts'   "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 opc_mods_dir()      { printf '%s/herdr-app/mods'      "${XDG_CONFIG_HOME:-$HOME/.config}"; }

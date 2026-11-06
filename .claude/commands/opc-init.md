@@ -42,7 +42,9 @@ command -v hc herdr-app claude jq
 
 1. **项目前缀**：默认取目录名的小写 slug（`OPC` → `opc`）。前缀决定终端名与模板名。
 2. **启用哪些角色**：默认 `roles.json` 里现有的全部。
-3. **每个角色用哪个 CLI**：默认 `claude`。**选 `codex` 前先说清差异**——两者的
+3. **每个角色用哪个 CLI**：只列本机实际装了的（`scripts/opc-install.sh` 的检测逻辑
+   看 `command -v`，清单见 `scripts/lib.sh` 的 `opc_known_clis`）。默认 `claude`。
+   **选 `codex` 前先说清差异**——两者的
    技能来源不同（claude 看 `.claude/skills/` 与 `~/.claude/skills/`，codex 看
    `.agents/skills/` 与 `~/.agents/skills/`），权限模型也不同（claude 由 OPC 生成
    `settings-<角色>.json`；codex 用 `--sandbox` / `--ask-for-approval` /
@@ -70,9 +72,10 @@ command -v hc herdr-app claude jq
 ## 5. 安装
 
 ```sh
-scripts/opc-install.sh <前缀>
+scripts/opc-install.sh --no-input <前缀>
 ```
 
+这里的角色与 CLI 已经在第 3 步问过了，所以用 `--no-input` 免得再问一遍。
 失败就把错误原样贴给用户，不要自己改脚本绕过。
 
 ## 6. 跑一次初始化测试（接真实任务之前）

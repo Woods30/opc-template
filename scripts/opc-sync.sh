@@ -670,7 +670,7 @@ cmd_pull() {
     if [[ "$no_install" != "1" ]]; then
       echo
       echo "重装模板与权限（脚本与角色简报变了才需要）…"
-      "$ROOT/scripts/opc-install.sh" "$(opc_prefix "$ROOT")" || echo "安装失败：手动跑一次 scripts/opc-install.sh" >&2
+      "$ROOT/scripts/opc-install.sh" --no-input "$(opc_prefix "$ROOT")" || echo "安装失败：手动跑一次 scripts/opc-install.sh" >&2
     fi
   fi
 

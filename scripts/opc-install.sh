@@ -1,13 +1,44 @@
 #!/usr/bin/env bash
 # 安装 OPC 实例：按 roles.json 生成 hc 模板、权限白名单、启动器与团队名册。
-# 用法：scripts/opc-install.sh [前缀]
+#
+# 用法：
+#   scripts/opc-install.sh [前缀] [选项]
+#
+# 选项：
+#   --interactive   先检测本机装了哪些 CLI，再逐个选角色与 CLI
+#   --no-input      不提问（脚本、测试、CI 用）
+#   两个都不给时：终端里跑就问，重定向/管道里跑就不问。
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 ROOT="$(opc_root)"
-PREFIX="${1:-$(opc_prefix "$ROOT")}"
+PREFIX=""
+INPUT_MODE=auto   # auto | yes | no
 TEMPLATES="$(opc_templates_dir)"
 LAYOUTS="$(opc_layouts_dir)"
+
+usage() {
+  cat <<'EOF'
+用法：scripts/opc-install.sh [前缀] [选项]
+
+选项：
+  --interactive   先检测本机装了哪些 CLI，再逐个选角色与 CLI
+  --no-input      不提问（脚本、测试、CI 用）
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --interactive) INPUT_MODE=yes; shift ;;
+    --no-input) INPUT_MODE=no; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --*) echo "未知选项：$1" >&2; usage >&2; exit 2 ;;
+    *)
+      if [[ -n "$PREFIX" ]]; then echo "多余参数：$1" >&2; usage >&2; exit 2; fi
+      PREFIX="$1"; shift ;;
+  esac
+done
+[[ -n "$PREFIX" ]] || PREFIX="$(opc_prefix "$ROOT")"
 
 # 模版仓库不承载业务数据：在这里装实例等于把业务写进模版，直接拒绝
 if opc_is_template_repo "$ROOT"; then
@@ -32,6 +63,123 @@ case "$ROOT" in
     echo "项目路径不能包含单引号或换行：$ROOT" >&2
     exit 1 ;;
 esac
+
+# ---- 交互式选择：本机装了什么 CLI，就只让选什么 ----
+
+# 提示写 stderr、答案走 stdout；读到 EOF 就中止，绝不半途改配置。
+ask() {
+  local prompt="$1" answer=""
+  printf '%s' "$prompt" >&2
+  if ! IFS= read -r answer; then
+    printf '\n' >&2
+    echo "输入结束，已中止（roles.json 未改动）" >&2
+    exit 2
+  fi
+  printf '%s' "$answer"
+}
+
+# 逐个角色问「启用吗」「用哪个 CLI」，答案写回 roles.json。
+# 默认值取当前配置：现在的 CLI 装着就还是它，否则用检测到的第一个。
+choose_roles() {
+  local roles_file clis cli role answer enable chosen default_index
+  local total i enabled_names sel current_cli
+
+  roles_file="$(opc_roles_file)"
+  clis="$(opc_detect_clis | paste -sd ' ' -)"
+  if [[ -z "$clis" ]]; then
+    echo "没有检测到任何可用的 CLI，先装一个再来。OPC 认得：" >&2
+    opc_known_clis | sed 's/^/  - /' >&2
+    exit 1
+  fi
+
+  total=0
+  echo "检测到的 CLI：" >&2
+  for cli in $clis; do
+    total=$((total + 1))
+    printf '  %d) %s\n' "$total" "$cli" >&2
+  done
+  # roles.json 里写了但没装的 CLI 不会出现在选项里，说一声免得以为丢了配置
+  for current_cli in $(jq -r '.roles[]?.cli // empty' "$roles_file" | sort -u); do
+    case " $clis " in
+      *" $current_cli "*) ;;
+      *) echo "提示：roles.json 里的 ${current_cli} 没装，选项里没有它。" >&2 ;;
+    esac
+  done
+  echo >&2
+
+  enable=false
+  enabled_names=""
+  sel='[]'
+  for role in $(opc_all_roles); do
+    if [[ "$(opc_role_field "$role" enabled)" == "true" ]]; then
+      answer="$(ask "启用角色 ${role}？[y] ")"
+      [[ -n "$answer" ]] || answer="y"
+    else
+      answer="$(ask "启用角色 ${role}？[n] ")"
+      [[ -n "$answer" ]] || answer="n"
+    fi
+    case "$answer" in
+      y|Y|yes|是) enable=true ;;
+      *) enable=false ;;
+    esac
+
+    chosen=""
+    if [[ "$enable" == "true" ]]; then
+      default_index=1
+      i=0
+      current_cli="$(opc_role_cli "$role")"
+      for cli in $clis; do
+        i=$((i + 1))
+        [[ "$cli" == "$current_cli" ]] && default_index="$i"
+      done
+      while :; do
+        answer="$(ask "  ${role} 用哪个 CLI？[${default_index}] ")"
+        [[ -n "$answer" ]] || answer="$default_index"
+        # 10# 前缀：避免「08」被当成八进制
+        if [[ "$answer" =~ ^[0-9]+$ ]] && (( 10#$answer >= 1 && 10#$answer <= total )); then
+          break
+        fi
+        echo "  请输入 1 到 ${total} 之间的编号。" >&2
+      done
+      i=0
+      for cli in $clis; do
+        i=$((i + 1))
+        [[ "$i" == "$((10#$answer))" ]] && chosen="$cli"
+      done
+      enabled_names="${enabled_names} ${role}(${chosen})"
+    fi
+
+    sel="$(jq -c --arg n "$role" --argjson e "$enable" --arg c "$chosen" \
+      '. + [{name: $n, enabled: $e, cli: $c}]' <<< "$sel")"
+  done
+
+  if [[ -z "$enabled_names" ]]; then
+    echo "至少要启用一个角色，已中止（roles.json 未改动）。" >&2
+    exit 1
+  fi
+
+  jq --argjson sel "$sel" '
+    .roles |= map(. as $r |
+      ($sel | map(select(.name == $r.name)) | .[0]) as $s |
+      if $s == null then .
+      elif $s.enabled then . + {enabled: true, cli: $s.cli}
+      else . + {enabled: false}
+      end)
+  ' "$roles_file" > "$roles_file.tmp" && mv "$roles_file.tmp" "$roles_file"
+
+  # 问过一次就不再自动问：重装是常事（改白名单、换权限），每次都要按回车太烦。
+  # 想再改就跑 scripts/opc-install.sh --interactive。
+  mkdir -p "$ROOT/.opc"
+  : > "$ROOT/.opc/roles-asked"
+
+  echo "将启用：${enabled_names# }" >&2
+  echo >&2
+}
+
+if [[ "$INPUT_MODE" == "yes" ]] \
+   || { [[ "$INPUT_MODE" == "auto" ]] && [[ -t 0 ]] && [[ ! -f "$ROOT/.opc/roles-asked" ]]; }; then
+  choose_roles
+fi
 
 mkdir -p "$TEMPLATES" "$ROOT/.opc/run"
 printf '%s' "$PREFIX" > "$ROOT/.opc/prefix"
@@ -65,7 +213,13 @@ for role in $roles; do
     echo "角色名不合法：${role}（1-20 位 a-z 0-9 - _，以字母开头）" >&2
     exit 1
   }
-  src="$ROOT/$(opc_role_template "$role")"
+  # 模板路径会被拼进 $ROOT：带 .. 就能读到实例外的文件，而那内容会变成这个
+  # 角色的简报，被对应终端当成指令执行。和下面的 cli 一样，先拒绝再读。
+  tpl="$(opc_role_template "$role")"
+  case "/$tpl/" in
+    */../*) echo "角色 $role 的模板路径不能包含 ..：$tpl" >&2; exit 1 ;;
+  esac
+  src="$ROOT/$tpl"
   [[ -f "$src" ]] || { echo "缺少角色简报：$src" >&2; exit 1; }
 
   # cli 是单个可执行文件名或路径，不接受参数——它会被写进启动器

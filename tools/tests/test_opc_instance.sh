@@ -43,13 +43,13 @@ printf '模版本地业务数据\n' > "$TPL/knowledge/local-only.md"
 "$TPL/scripts/opc-new.sh" "$INST" --prefix t --source "$TPL" --no-install >/dev/null 2>&1
 jq '.channels = [{"id":"wechat","name":"公众号","enabled":true}]' \
   "$INST/channels.json" > "$INST/channels.json.tmp" && mv "$INST/channels.json.tmp" "$INST/channels.json"
-XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" t >/dev/null 2>&1
+XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --no-input t >/dev/null 2>&1
 
 # 开实例这条路径本身必须返回 0：安装成功时脚本不能以非零退出，
 # 否则调用方（脚本、CI、agent）会把一次成功当失败。
 INST2="$WORK/inst2"
 XDG_CONFIG_HOME="$WORK/config" "$TPL/scripts/opc-new.sh" "$INST2" --prefix t2 \
-  --source "$TPL" >/dev/null 2>&1
+  --source "$TPL" --no-input >/dev/null 2>&1
 check "opc-new 建实例并安装返回 0" "0" "$?"
 expect "第二个实例的目录结构已建好" test -f "$INST2/knowledge/team.md"
 expect "第二个实例没有 review 与 daily 目录" test ! -e "$INST2/knowledge/review"
@@ -172,6 +172,42 @@ if grep -q "角色启动不自主开工" <<< "$lint_out"; then
 else
   ok "新角色的简报过了 L17"
 fi
+
+# ---- 6. 交互式安装：先看本机装了哪些 CLI，再选角色与 CLI ----
+# 只放 claude 与 codex 两个假 CLI——检测只看 PATH，别的都不该出现。
+FAKEBIN="$WORK/bin"
+mkdir -p "$FAKEBIN"
+for fake in claude codex; do
+  printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/$fake"
+  chmod +x "$FAKEBIN/$fake"
+done
+ln -sf "$(command -v jq)" "$FAKEBIN/jq"
+# 答问顺序跟 roles.json 一致：gm(启用,第 2 个 CLI)、content(启用,第 1 个)、
+# growth(停用)、dev(停用)、tester(第 5 节加的角色，停用)。
+printf 'y\n2\ny\n1\nn\nn\nn\n' | PATH="$FAKEBIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  XDG_CONFIG_HOME="$WORK/config" "$INST/scripts/opc-install.sh" --interactive i >/dev/null 2>&1
+check "交互式安装按编号选中第 2 个 CLI" "codex" \
+  "$(jq -r '.roles[] | select(.name=="gm") | .cli' "$INST/roles.json")"
+check "交互式安装启用 content" "true" \
+  "$(jq -r '.roles[] | select(.name=="content") | .enabled' "$INST/roles.json")"
+check "交互式安装停用 growth" "false" \
+  "$(jq -r '.roles[] | select(.name=="growth") | .enabled' "$INST/roles.json")"
+
+# 一个 CLI 都没装时不猜，直接拒绝，别把角色配到不存在的命令上
+out="$(PATH="/usr/bin:/bin:/usr/sbin:/sbin" XDG_CONFIG_HOME="$WORK/config" \
+  "$INST/scripts/opc-install.sh" --interactive i 2>&1)"
+rc=$?
+if [[ "$rc" != "0" ]] && grep -q "没有检测到" <<< "$out"; then
+  ok "没有可用的 CLI 时安装被拒绝"
+else
+  bad "没有可用的 CLI 时安装没有被拒绝（退出码 ${rc}）"
+fi
+
+# 非交互安装不读 stdin，也不改角色配置
+before="$(jq -c . "$INST/roles.json")"
+printf '' | PATH="$FAKEBIN:/usr/bin:/bin" XDG_CONFIG_HOME="$WORK/config" \
+  "$INST/scripts/opc-install.sh" --no-input i >/dev/null 2>&1
+check "非交互安装不改角色配置" "$before" "$(jq -c . "$INST/roles.json")"
 
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"

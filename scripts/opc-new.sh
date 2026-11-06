@@ -10,6 +10,8 @@
 #   --git-init            在实例里 git init 并做首次提交（默认开）
 #   --no-git-init         不初始化 git
 #   --no-install          不自动跑安装
+#   --interactive         安装时先选角色与 CLI（终端里默认就会问）
+#   --no-input            安装时不提问
 #   --dry-run             只打印将要做什么，不落盘
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib.sh"
@@ -21,6 +23,7 @@ SOURCE="$SRC"
 DO_GIT=1
 DO_INSTALL=1
 DRY_RUN=0
+INSTALL_INPUT=""
 
 usage() {
   cat <<'EOF'
@@ -33,6 +36,8 @@ usage() {
   --git-init            在实例里 git init 并做首次提交（默认开）
   --no-git-init         不初始化 git
   --no-install          不自动跑安装
+  --interactive         安装时先选角色与 CLI（终端里默认就会问）
+  --no-input            安装时不提问
   --dry-run             只打印将要做什么，不落盘
 EOF
 }
@@ -44,6 +49,8 @@ while [[ $# -gt 0 ]]; do
     --git-init) DO_GIT=1; shift ;;
     --no-git-init) DO_GIT=0; shift ;;
     --no-install) DO_INSTALL=0; shift ;;
+    --interactive) INSTALL_INPUT="--interactive"; shift ;;
+    --no-input) INSTALL_INPUT="--no-input"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --*) echo "未知选项：$1" >&2; usage >&2; exit 2 ;;
@@ -100,7 +107,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   [[ "$DO_GIT" == "1" ]] && echo "  git：init + 首次提交"
   echo "  基线：写 .opc/sync-base（建实例这一刻的模版内容）"
   if [[ "$DO_INSTALL" == "1" ]]; then
-    echo "  安装：scripts/opc-install.sh $PREFIX"
+    if [[ -n "$INSTALL_INPUT" ]]; then
+      echo "  安装：scripts/opc-install.sh $INSTALL_INPUT $PREFIX"
+    else
+      echo "  安装：scripts/opc-install.sh $PREFIX（终端里跑会先问角色与 CLI）"
+    fi
   fi
   exit 0
 fi
@@ -147,7 +158,10 @@ if [[ -x "$TARGET/scripts/opc-sync.sh" ]]; then
 fi
 
 if [[ "$DO_INSTALL" == "1" ]]; then
-  "$TARGET/scripts/opc-install.sh" "$PREFIX"
+  case "$INSTALL_INPUT" in
+    "") "$TARGET/scripts/opc-install.sh" "$PREFIX" ;;
+    *)  "$TARGET/scripts/opc-install.sh" "$INSTALL_INPUT" "$PREFIX" ;;
+  esac
 fi
 
 echo
