@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from . import install as install_mod
-from . import gitutil, manifest as manifest_mod, registry, starters, ui
+from . import gitutil, manifest as manifest_mod, registry, role_migrate, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_bytes, sha256_file
 from .upgrade import apply_payload, load_instance, starter_lines
@@ -124,6 +124,14 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
             "要删除的路径有未提交改动，先提交或 stash：\n  "
             + "\n  ".join(line.strip() for line in dirty))
 
+    # 角色单文件迁移：旧实例的 roles.json 还指向 agents/ 下的单文件简报。
+    # 旧指纹留着那些文件的哈希，用来分辨旧简报被 owner 改过没有。
+    fingerprint = (install_mod.load_json(
+        instance / ".opc" / "mechanism.json", {}) or {}).get("files", {})
+    roles = starters.instance_roles(instance)
+    role_result = role_migrate.plan(instance, roles, fingerprint)
+    role_lines = role_migrate.lines(role_result)
+
     if args.dry_run:
         print("将迁移旧实例：{}（前缀 {}）".format(instance, prefix))
         print("  检测到旧结构：" + "、".join(legacy))
@@ -133,6 +141,8 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
         for rel in deletions:
             print("    - {}".format(rel))
         print("  全局清理：~/.config/herdr-app 下 {} 前缀的旧布局与 mod".format(prefix))
+        for line in role_lines:
+            print(line)
         print("  然后：复制新机制、合并配置、补起始材料、单个提交、重跑安装器")
         return 0
 
@@ -149,11 +159,14 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
     if not baseline.get("files"):
         baseline = _legacy_starter_baseline(instance, payload, manifest)
     plan = starters.plan(payload, manifest, instance, baseline, entries=entries)
+    # 角色单文件迁移：旧实例的 roles.json 还指向 agents/ 下的单文件简报。
+    role_migrate.detach(plan, role_result)
     planned = [rel for _src, _dst, rel in plan["copy"]]
+    planned.extend(role_migrate.written_targets(role_result))
     missing = list(plan.get("missing") or [])
     missing.extend(starters.missing_required_files(instance, entries, planned))
     missing.extend(starters.missing_role_entries(
-        instance, starters.instance_roles(instance), planned))
+        instance, role_migrate.effective_roles(roles, role_result), planned))
     if missing:
         raise OpcError("起始材料缺失：\n  " + "\n  ".join(missing))
 
@@ -165,12 +178,14 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
         elif path.exists():
             path.unlink()
 
+    role_migrate.apply(instance, role_result)
     apply_payload(instance, template_root, manifest, args.upstream, data)
 
     starters.apply(plan)
     starters.write_baseline(instance, plan["baseline"])
 
     touched = list(plan["added"]) + list(plan["updated"])
+    touched.extend(role_migrate.paths(role_result))
     commit_list = list(deletions) + manifest_mod.commit_paths(manifest, extra=touched)
     gitutil.commit_paths(
         instance, commit_list,
@@ -186,6 +201,8 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
 
     print("已迁移：{}".format(instance))
     for line in starter_lines(plan):
+        print(line)
+    for line in role_lines:
         print(line)
     if backup.exists():
         print("  旧文件备份：{}".format(backup))

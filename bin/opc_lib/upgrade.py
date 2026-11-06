@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from . import install as install_mod
-from . import gitutil, manifest as manifest_mod, registry, starters, ui
+from . import gitutil, manifest as manifest_mod, registry, role_migrate, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_file
 
@@ -207,12 +207,18 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
     # 不再是机制的旧文件里，属于起始材料的那部分不删：它归 owner 了。
     obsolete = sorted((set(old_files) - new_files) - starter_targets)
 
+    # 角色单文件迁移：旧实例的 roles.json 还指向 agents/ 下的单文件简报。
+    roles = starters.instance_roles(instance)
+    role_result = role_migrate.plan(instance, roles, old_files)
+
     plan = starter_plan(instance, payload, manifest, old_files, entries=entries)
+    role_migrate.detach(plan, role_result)
     planned = [rel for _src, _dst, rel in plan["copy"]]
+    planned.extend(role_migrate.written_targets(role_result))
     missing = list(plan.get("missing") or [])
     missing.extend(starters.missing_required_files(instance, entries, planned))
     missing.extend(starters.missing_role_entries(
-        instance, starters.instance_roles(instance), planned))
+        instance, role_migrate.effective_roles(roles, role_result), planned))
     if missing:
         raise OpcError("起始材料缺失：\n  " + "\n  ".join(missing))
 
@@ -223,9 +229,12 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
             print("  删除机制文件：{}".format("、".join(obsolete)))
         for line in starter_lines(plan):
             print(line)
+        for line in role_migrate.lines(role_result):
+            print(line)
         print("  重跑实例安装器")
         return 0
 
+    role_migrate.apply(instance, role_result)
     apply_payload(instance, template_root, manifest, args.upstream, data)
     starters.apply(plan)
     starters.write_baseline(instance, plan["baseline"])
@@ -239,6 +248,7 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
     if install_ui:
         ui.install(payload, manifest, force=args.force_ui, dry_run=False)
     touched = list(plan["added"]) + list(plan["updated"])
+    touched.extend(role_migrate.paths(role_result))
     gitutil.commit_paths(
         instance, manifest_mod.commit_paths(manifest, extra=touched),
         "chore: opc upgrade -> {}".format(gitutil.head_commit(template_root)[:12]),
@@ -246,6 +256,8 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
     )
     registry.upsert(instance, prefix, gitutil.head_commit(template_root), args.upstream)
     for line in starter_lines(plan):
+        print(line)
+    for line in role_migrate.lines(role_result):
         print(line)
     print("已升级：{}".format(instance))
     return 0

@@ -98,6 +98,162 @@ check "迁移只产生一个提交（安装 + 旧结构 + 迁移）" "3" "$commi
 "$ROOT/bin/opc" upgrade "$INST" --template "$ROOT" --skip-smoke >/dev/null 2>&1
 check "迁移后再升级返回 0" "0" "$?"
 
+say "角色单文件迁移"
+
+# 旧角色布局：roles.json 指向 agents/ 下的单文件简报，机制指纹里留着那些文件
+INST2="$WORK/inst-roles"
+"$ROOT/bin/opc" install "$INST2" t2 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+check "角色迁移用例的实例准备就绪" "0" "$?"
+
+python3 - "$INST2" <<'PY'
+import hashlib
+import json
+import pathlib
+import shutil
+import sys
+
+inst = pathlib.Path(sys.argv[1])
+
+
+def sha_text(text):
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+# 角色 -> (描述, 正文, owner 追加的段落)
+OLD = {
+    "gm": ("OPC 公司总经理。旧实例的描述。",
+           "你现在是 **OPC 公司的总经理（gm）**。\n\n"
+           "旧实例里的 gm 正文，通知走 {{PREFIX}}-gm。\n", ""),
+    "content": ("OPC 内容经理。旧实例的描述。",
+                "你现在是 **OPC 公司的内容经理（content）**。\n\n"
+                "旧实例里的 content 正文。\n", "\nowner 的补充。\n"),
+}
+
+roles = json.loads((inst / "roles.json").read_text(encoding="utf-8"))
+mech_path = inst / ".opc" / "mechanism.json"
+mech = json.loads(mech_path.read_text(encoding="utf-8"))
+
+for role in roles["roles"]:
+    name = role["name"]
+    if name not in OLD:
+        continue
+    desc, body, owner = OLD[name]
+    brief = ("---\nname: {{PREFIX}}-%s\ndescription: %s\ncommand: zsh -lic claude\n---\n\n%s"
+             % (name, desc, body))
+    old_rel = "agents/opc-%s.md" % name
+    (inst / old_rel).write_text(brief + owner, encoding="utf-8")
+    shutil.rmtree(inst / "agents" / name)
+    role["template"] = old_rel
+    role.pop("description", None)
+    role.pop("skills", None)
+    # 旧指纹记的是装进来时那份的哈希：owner 改过的角色就对不上号了
+    mech["files"][old_rel] = sha_text(brief)
+
+(inst / "roles.json").write_text(
+    json.dumps(roles, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+mech_path.write_text(
+    json.dumps(mech, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+(inst / ".opc" / "starters.json").unlink()
+PY
+check "旧角色布局造好" "0" "$?"
+
+(
+  cd "$INST2" || exit 1
+  git add -A
+  git -c user.name="$OPC_GIT_NAME" -c user.email="$OPC_GIT_EMAIL" \
+    commit -m "旧角色布局" >/dev/null 2>&1
+)
+check "旧角色布局已提交" "0" "$?"
+
+# dry-run 零写入
+out="$("$ROOT/bin/opc" upgrade "$INST2" --template "$ROOT" --dry-run 2>&1)"
+check "角色迁移 --dry-run 返回 0" "0" "$?"
+expect "dry-run 打印角色迁移" grep -q "角色迁移" <<< "$out"
+expect "dry-run 打印要建的角色目录" grep -q "agents/gm/AGENTS.md" <<< "$out"
+expect "dry-run 打印备份位置" grep -q ".opc/backups/agents/opc-gm.md" <<< "$out"
+expect "dry-run 不建角色目录" test ! -e "$INST2/agents/gm"
+expect "dry-run 不动旧简报" test -f "$INST2/agents/opc-gm.md"
+expect "dry-run 不写备份" test ! -e "$INST2/.opc/backups"
+expect "dry-run 不写基线" test ! -e "$INST2/.opc/starters.json"
+expect "dry-run 不改 roles.json" grep -q "agents/opc-gm.md" "$INST2/roles.json"
+expect "dry-run 后工作区干净" test -z "$(git -C "$INST2" status --porcelain)"
+
+knowledge_before="$(find "$INST2/knowledge" -type f -exec shasum {} + | sort | shasum | awk '{print $1}')"
+
+# 正式升级
+out="$("$ROOT/bin/opc" upgrade "$INST2" --template "$ROOT" --skip-smoke 2>&1)"
+check "角色迁移升级返回 0" "0" "$?"
+expect "升级打印了角色迁移" grep -q "角色迁移" <<< "$out"
+
+expect "角色目录建出来了" test -f "$INST2/agents/gm/AGENTS.md"
+expect "旧正文保留" grep -q "旧实例里的 gm 正文" "$INST2/agents/gm/AGENTS.md"
+expect "占位符原样保留" grep -q "{{PREFIX}}-gm" "$INST2/agents/gm/AGENTS.md"
+expect "frontmatter 已摘掉" bash -c "! head -n 1 '$INST2/agents/gm/AGENTS.md' | grep -q '^---$'"
+expect "owner 改过的正文也保留" grep -q "owner 的补充" "$INST2/agents/content/AGENTS.md"
+
+expect "旧简报已移除" test ! -e "$INST2/agents/opc-gm.md"
+expect "旧简报已备份" test -f "$INST2/.opc/backups/agents/opc-gm.md"
+expect "备份保留原始 frontmatter" grep -q "^description: OPC 公司总经理。旧实例的描述。$" \
+  "$INST2/.opc/backups/agents/opc-gm.md"
+
+check "描述迁进 roles.json" "OPC 公司总经理。旧实例的描述。" \
+  "$(jq -r '.roles[]|select(.name=="gm")|.description' "$INST2/roles.json")"
+check "模板路径指向角色目录" "agents/gm/AGENTS.md" \
+  "$(jq -r '.roles[]|select(.name=="gm")|.template' "$INST2/roles.json")"
+check "迁移后 skills 是空数组" "0" \
+  "$(jq -r '.roles[]|select(.name=="gm")|.skills|length' "$INST2/roles.json")"
+check "迁移后 skills 仍是数组" "array" \
+  "$(jq -r '.roles[]|select(.name=="gm")|.skills|type' "$INST2/roles.json")"
+check "别的角色没被套上默认技能" "knowledge-writing" \
+  "$(jq -r '.roles[]|select(.name=="growth")|.skills[0]' "$INST2/roles.json")"
+
+check "基线记了迁移出来的角色文件" "role" \
+  "$(jq -r '.files["agents/gm/AGENTS.md"].kind' "$INST2/.opc/starters.json")"
+check "owner 改过的角色被钉住" "true" \
+  "$(jq -r '.files["agents/content/AGENTS.md"].pinned' "$INST2/.opc/starters.json")"
+check "没改过的角色不钉住" "null" \
+  "$(jq -r '.files["agents/gm/AGENTS.md"].pinned // "null"' "$INST2/.opc/starters.json")"
+
+knowledge_after="$(find "$INST2/knowledge" -type f -exec shasum {} + | sort | shasum | awk '{print $1}')"
+check "knowledge/ 哈希不变" "$knowledge_before" "$knowledge_after"
+
+expect "hc 模板用上迁移后的描述" grep -q "OPC 公司总经理。旧实例的描述。" \
+  "$HERDR_CORE_HOME/templates/t2-gm.md"
+expect "hc 模板里没有技能索引" bash -c "! grep -q '技能索引' '$HERDR_CORE_HOME/templates/t2-gm.md'"
+
+committed="$(git -C "$INST2" diff-tree --no-commit-id --name-only -r --no-renames HEAD \
+  | sort | tr '\n' ' ')"
+check "升级提交只含迁移相关文件" \
+  "agents/content/AGENTS.md agents/gm/AGENTS.md agents/opc-content.md agents/opc-gm.md roles.json " \
+  "$committed"
+
+# 幂等：再升级一次不重做迁移
+content_before="$(shasum "$INST2/agents/content/AGENTS.md" | awk '{print $1}')"
+out="$("$ROOT/bin/opc" upgrade "$INST2" --template "$ROOT" --skip-smoke 2>&1)"
+check "再次升级返回 0" "0" "$?"
+if grep -q "角色迁移" <<< "$out"; then
+  bad "再次升级不该再做角色迁移"
+else
+  ok "再次升级不再做角色迁移"
+fi
+check "再次升级不覆盖 owner 改过的角色" "$content_before" \
+  "$(shasum "$INST2/agents/content/AGENTS.md" | awk '{print $1}')"
+expect "再次升级不多备份" test "$(find "$INST2/.opc/backups" -type f | wc -l | tr -d ' ')" = "2"
+expect "再次升级不重建角色目录" test -f "$INST2/agents/gm/AGENTS.md"
+
+# 换模版升级：owner 改过的角色不被覆盖，没改过的跟随模版
+TPL2="$WORK/tpl2"
+mkdir -p "$TPL2"
+cp -R "$ROOT/template" "$TPL2/template"
+printf '\n模版侧的新版本。\n' >> "$TPL2/template/agents/gm/AGENTS.md"
+printf '\n模版侧的新版本。\n' >> "$TPL2/template/agents/content/AGENTS.md"
+"$ROOT/bin/opc" upgrade "$INST2" --template "$TPL2" --skip-smoke >/dev/null 2>&1
+check "换模版升级成功" "0" "$?"
+expect "owner 改过的角色不被模版覆盖" \
+  bash -c "! grep -q '模版侧的新版本' '$INST2/agents/content/AGENTS.md'"
+expect "owner 改过的角色内容还在" grep -q "owner 的补充" "$INST2/agents/content/AGENTS.md"
+expect "没改过的角色跟随模版更新" grep -q "模版侧的新版本" "$INST2/agents/gm/AGENTS.md"
+
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"
 [[ "$FAIL" -eq 0 ]]
