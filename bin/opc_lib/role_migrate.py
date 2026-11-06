@@ -13,8 +13,10 @@ description 写进 `roles.json`，旧文件连同原始 frontmatter 备份到
 跟随模版更新；对不上说明 owner 改过，记成 pinned，之后升级不再覆盖它。
 """
 
+import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 from . import install as install_mod
@@ -44,6 +46,27 @@ def _inside(instance, path):
     except OSError:
         return False
     return resolved == base or base in resolved.parents
+
+
+def _symlink_component(instance, path):
+    """路径的任一层（含自己）是不是软链接。
+
+    只看最后一段不够：父目录是软链接时，写进去的文件照样落在实例外。
+    """
+    root = Path(instance)
+    try:
+        rel = Path(path).relative_to(root)
+    except ValueError:
+        return True
+    cur = root
+    for part in rel.parts:
+        cur = cur / part
+        try:
+            if cur.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def split_frontmatter(text):
@@ -130,12 +153,19 @@ def plan(instance, roles, fingerprint=None):
             items.append(item)
             continue
         old_path = instance / old_rel
+        have_body = False
         if not old_path.is_file():
             item["warnings"].append("旧角色文件 {} 不存在，只改元数据".format(old_rel))
+        elif old_path.is_symlink() or not _inside(instance, old_path):
+            # 旧简报是软链接或指向实例外：读它等于把实例外的文件抄进角色
+            # 提示词，所以不读，只改元数据。
+            item["warnings"].append(
+                "旧角色文件 {} 指向实例外，不读取内容".format(old_rel))
         else:
             text = old_path.read_text(encoding="utf-8", errors="replace")
             meta, body = split_frontmatter(text)
             item["body"] = body.lstrip("\n")
+            have_body = True
             description = meta.get("description") or ""
             if description:
                 item["description"] = description
@@ -157,7 +187,7 @@ def plan(instance, roles, fingerprint=None):
             item["write"] = False
             item["record"] = {
                 "sha256": sha256_file(target_path), "kind": KIND_ROLE, "pinned": True}
-        elif old_path.is_file():
+        elif have_body:
             item["write"] = True
             record = {"sha256": sha256_bytes(item["body"].encode("utf-8")),
                       "kind": KIND_ROLE}
@@ -257,6 +287,20 @@ def paths(result):
     return out
 
 
+def _copy_file(src, dst):
+    """复制文件：先写临时文件再 replace，replace 不会顺着软链接写。"""
+    dst = Path(dst)
+    fd, tmp_name = tempfile.mkstemp(dir=str(dst.parent), prefix=".opc-tmp-")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copy2(str(src), str(tmp))
+        os.replace(str(tmp), str(dst))
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
 def apply(instance, result):
     """执行迁移：写角色目录、改 roles.json、备份并移除旧简报。
 
@@ -269,14 +313,14 @@ def apply(instance, result):
         old_path = instance / item["old"]
         if item["write"]:
             target = instance / item["target"]
-            if not target.exists():
+            if not target.exists() and not _symlink_component(instance, target):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(item["body"], encoding="utf-8")
-        if old_path.is_file():
+        if old_path.is_file() and not old_path.is_symlink() and _inside(instance, old_path):
             backup = instance / item["backup"]
-            if not backup.exists():
+            if not backup.exists() and not _symlink_component(instance, backup):
                 backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(old_path, backup)
+                _copy_file(old_path, backup)
             old_path.unlink()
     _apply_roles(instance, result)
     return result

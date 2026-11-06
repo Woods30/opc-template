@@ -254,6 +254,46 @@ expect "owner 改过的角色不被模版覆盖" \
 expect "owner 改过的角色内容还在" grep -q "owner 的补充" "$INST2/agents/content/AGENTS.md"
 expect "没改过的角色跟随模版更新" grep -q "模版侧的新版本" "$INST2/agents/gm/AGENTS.md"
 
+say "角色简报是软链接"
+
+# 旧简报是指向实例外的软链接：迁移不能把实例外的内容抄进角色提示词
+INST3="$WORK/inst-link"
+"$ROOT/bin/opc" install "$INST3" t3 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+check "软链接用例的实例准备就绪" "0" "$?"
+OUTSIDE="$WORK/outside-brief.md"
+printf '实例外的机密内容。\n' > "$OUTSIDE"
+rm -f "$INST3/agents/opc-gm.md"
+ln -s "$OUTSIDE" "$INST3/agents/opc-gm.md"
+python3 - "$INST3" <<'PY'
+import json
+import pathlib
+import sys
+
+inst = pathlib.Path(sys.argv[1])
+roles = json.loads((inst / "roles.json").read_text(encoding="utf-8"))
+for role in roles["roles"]:
+    if role["name"] == "gm":
+        role["template"] = "agents/opc-gm.md"
+        role.pop("description", None)
+(inst / "roles.json").write_text(
+    json.dumps(roles, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+rm -f "$INST3/.opc/starters.json"
+(
+  cd "$INST3" || exit 1
+  git add -A
+  git -c user.name="$OPC_GIT_NAME" -c user.email="$OPC_GIT_EMAIL" \
+    commit -m "旧简报是软链接" >/dev/null 2>&1
+)
+
+out="$("$ROOT/bin/opc" upgrade "$INST3" --template "$ROOT" --skip-smoke 2>&1)"
+check "软链接旧简报的升级返回 0" "0" "$?"
+expect "升级提示旧简报指向实例外" grep -q "指向实例外" <<< "$out"
+expect "实例外的内容没进角色提示词" \
+  bash -c "! grep -rq '实例外的机密内容' '$INST3/agents' 2>/dev/null"
+expect "实例外的文件没有被改写" grep -q "实例外的机密内容" "$OUTSIDE"
+expect "软链接本身没被删掉" test -L "$INST3/agents/opc-gm.md"
+
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"
 [[ "$FAIL" -eq 0 ]]
