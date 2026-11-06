@@ -153,6 +153,20 @@ class BinOpcTestCase(unittest.TestCase):
         self.run_opc("upgrade", str(target), "--template", str(ROOT), "--skip-smoke")
         self.assertEqual("原来的内容\n", outside.read_text(encoding="utf-8"))
 
+    def test_upgrade_does_not_write_through_symlinked_parent(self):
+        # 父目录是软链接时，写进去的文件会落在实例外：一律不写。
+        target = self.tmp / "instance"
+        proc = self.run_opc(
+            "install", str(target), "t", "--template", str(ROOT),
+            "--no-input", "--skip-smoke")
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        outside = self.tmp / "outside-dir"
+        outside.mkdir()
+        shutil.rmtree(str(target / "agents"))
+        (target / "agents").symlink_to(outside)
+        self.run_opc("upgrade", str(target), "--template", str(ROOT), "--skip-smoke")
+        self.assertEqual([], sorted(p.name for p in outside.iterdir()))
+
 
 if __name__ == "__main__":
     unittest.main()

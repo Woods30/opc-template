@@ -176,6 +176,11 @@ def install(payload, manifest, instance, entries=None):
             continue
         if dst.is_symlink():
             # 目标是软链接：不顺着它写，否则会改到别处的文件。
+            # 校验与拷贝之间仍有竞态；能往实例目录里写符号链接的人本来就能
+            # 改这个实例，这里防的是「实例里已有的链接把改动带到实例外」。
+            continue
+        if _symlink_component(instance, dst) or not _resolves_inside(instance, dst):
+            # 父目录是软链接或落点在实例外：一律不写。
             continue
         if not dst.exists():
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -293,6 +298,13 @@ def plan(payload, manifest, instance, baseline, entries=None):
                 new_files[rel] = dict(record)
             continue
 
+        if _symlink_component(instance, dst):
+            # 父目录是软链接：落点可能落在实例外，同样不写。
+            result["kept"].append((rel, "父目录是软链接，已保留"))
+            if record:
+                new_files[rel] = dict(record)
+            continue
+
         if entry["kind"] in ADD_ONLY_KINDS:
             # 种子只补不覆盖：实例里有就留着，owner 删掉的不再补。
             if dst.exists():
@@ -377,6 +389,27 @@ def _inside(root, path):
     except OSError:
         return False
     return resolved == base or base in resolved.parents
+
+
+def _symlink_component(instance, path):
+    """路径的任一层（含自己）是不是软链接。
+
+    只看最后一段不够：父目录是软链接时，写进去的文件照样落在实例外。
+    """
+    root = Path(instance)
+    try:
+        rel = Path(path).relative_to(root)
+    except ValueError:
+        return True
+    cur = root
+    for part in rel.parts:
+        cur = cur / part
+        try:
+            if cur.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def _check_entry(entry):
