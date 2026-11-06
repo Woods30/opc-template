@@ -1555,7 +1555,8 @@ def check_l30_skill_name_matches_dir(root):
 def check_l31_skill_available(root):
     """选中技能要用得上：文件在实例里，且没被软链接指到实例外。
 
-    技能文件缺失只告警——安装器也是告警并跳过，别的角色仍要能启动。
+    两种缺失不是一回事：技能文件不在只是「还没装上」，只告警——安装器也是
+    告警并跳过，别的角色仍要能启动；技能路径指到实例外是越界，直接失败。
     """
     c = Check("L31", "选中的技能可用", source="skills/<名字>/SKILL.md")
     roles, err = instance_roles(root)
@@ -1564,17 +1565,21 @@ def check_l31_skill_available(root):
         c.detail.append("roles.json 读不了，跳过")
         return c
     warns = []
+    fails = []
     for name in selected_skills(roles):
         if not legal_skill_name(name):
             continue
         rel = "skills/{}/SKILL.md".format(name)
         path = resolve_inside(root, rel)
         if path is None:
-            warns.append("选中的技能 {} 指向实例外：{}".format(name, rel))
+            fails.append("选中的技能 {} 指向实例外：{}".format(name, rel))
         elif not os.path.isfile(path):
             warns.append("选中的技能 {} 不存在：{}".format(name, rel))
+    c.detail.extend(fails)
     c.detail.extend(warns)
-    if warns:
+    if fails:
+        c.status = STATUS_FAIL
+    elif warns:
         c.status = STATUS_WARN
     return c
 

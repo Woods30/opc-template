@@ -953,6 +953,19 @@ class LintTestCase(unittest.TestCase):
         self.assertEqual(lint.STATUS_WARN, checks["L31"].status)
         self.assertEqual([], [c.id for c in checks.values() if c.status == lint.STATUS_FAIL])
 
+    def test_l31_skill_outside_instance_fails(self):
+        # 技能文件是指向实例外的软链接：越界是失败，不只是告警。
+        instance = self.instance_with_roles(
+            "l31b", [self.role_entry(skills=["demo"])])
+        outside = os.path.join(self.tmp, "outside-skill.md")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("---\nname: demo\ndescription: 说明。\n---\n\n正文。\n")
+        skill_dir = os.path.join(instance, "skills", "demo")
+        os.makedirs(skill_dir, exist_ok=True)
+        os.symlink(outside, os.path.join(skill_dir, "SKILL.md"))
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L31"].status)
+
     def test_l32_missing_root_agents_fails(self):
         instance = self.instance_copy("l32")
         os.remove(os.path.join(instance, "AGENTS.md"))
