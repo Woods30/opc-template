@@ -1129,7 +1129,8 @@ def validate_approval(
         if approval_status == "approved" and content_status not in ("ready", "closed"):
             errors.append(Diagnostic(source, "approved approval 要求内容状态为 ready"))
         if approval_status in ("changes_requested", "rejected"):
-            if content_status != "drafting":
+            # 退回后内容回到 drafting 等改；也可以直接作废（cancelled 是终态）。
+            if content_status not in ("drafting", "cancelled"):
                 errors.append(Diagnostic(source, f"{approval_status} 后内容状态必须回到 drafting"))
             if not is_nonempty_string(approval.get("note")):
                 errors.append(Diagnostic(source, f"{approval_status} 必须记录 note"))

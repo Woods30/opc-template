@@ -2700,6 +2700,30 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(1, restarted.returncode)
         self.assertIn("cancelled", restarted.stderr)
 
+    def test_rejected_draft_can_be_cancelled_and_stays_valid(self):
+        # 退回后的稿子要作废时，只能走 changes_requested → drafting → cancelled。
+        # 走完这条路径，记录必须仍然合法：cancelled 是终态，不是「没回到 drafting」。
+        content_id, _card = self.create_content(title="退回后作废")
+        self.advance_to_reviewing(content_id)
+
+        rejected = self.transition(
+            content_id,
+            "--decision",
+            "changes_requested",
+            "--note",
+            "方向不对，退回",
+            actor="gm",
+        )
+        self.assertEqual(0, rejected.returncode, rejected.stderr)
+
+        cancelled = self.transition(
+            content_id, "--to", "cancelled", "--note", "选题不再做", actor="gm"
+        )
+        self.assertEqual(0, cancelled.returncode, cancelled.stderr)
+
+        result = self.run_workflow("validate")
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_validate_requires_cancellation_metadata_for_cancelled_content(self):
         content_id, content_card = self.create_content(title="缺取消记录")
         record, _ = parse_frontmatter(content_card)
