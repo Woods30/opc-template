@@ -98,6 +98,8 @@ layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
   `knowledge/business/`；物化之后那份文件就归业务所有。
 - `opc-new.sh` 不复制模版的 `knowledge/`（sync-policy 里是 `local`）。实例的内容区由安装器
   创建，业务规则与 generated 视图入口从 `seeds/` 物化，不携带模版工作区的真实业务数据。
+- `opc-new.sh` 建实例时写基线快照 `.opc/sync-base/`：没有基线就判不出本地改没改过，
+  模版后续的机制更新传不进实例。老实例补基线跑 `scripts/opc-sync.sh baseline --from <模版>`。
 - 实例仓库建议**不推任何远端**；业务数据只在本机，另做一个本地裸库镜像备份。
 - 模版迭代后同步到实例：`scripts/opc-sync.sh check` 看差异，
   `scripts/opc-sync.sh pull` 拉更新。冲突时业务文件不会被改动，产物在
@@ -111,6 +113,7 @@ layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
 scripts/opc-sync.sh status     # 实例摘要：模版来源、上次同步、pinned 数
 scripts/opc-sync.sh check      # 这次的变更计划（只读）
 scripts/opc-sync.sh pull       # 拉取模版更新
+scripts/opc-sync.sh baseline   # 固化基线快照（老实例接入模版时用；不改业务文件）
 scripts/opc-sync.sh seeds      # 骨架差异；--merge <目标> 做三方合并
 scripts/opc-sync.sh mark <路径> # 固化本地定制，模版此后不覆盖
 ```
@@ -576,6 +579,7 @@ OPC **不为 codex 生成项目级权限 hook 或角色 scope 守卫**。模版�
 | `opc-lint.sh` 报「模版里出现 knowledge/ 下的文件」 | 有人把业务写进了模版仓库。把它挪回实例仓库，并删掉模版里那份 |
 | `opc-lint.sh` 报「种子没有占位了」 | 种子被填成了真实内容。恢复成占位骨架，真实内容放实例 |
 | `opc-sync.sh check` 报 `local-modified` | 实例本地改过、模版没动。要么提交本地改动，要么 `opc-sync.sh mark <路径>` 固化 |
+| `opc-sync.sh check` 报 `unknown` | 没有基线快照，判不出本地是否改过。跑 `opc-sync.sh baseline --from <模版>` 固化基线后重跑 check |
 | `opc-sync.sh pull` 退出码 3（冲突） | 本地与模版都改了同一文件。业务文件**没被改动**；合并结果在 `.opc/sync-conflicts/`，手改后重跑 |
 | `opc-sync.sh pull` 说「将被覆盖的路径有未提交改动」 | 先提交或 stash 那些路径，或加 `--force` |
 | 同步后角色行为没变 | `agents/` 与 `AGENTS.md` 是提示词，改动要重启才生效：`scripts/opc-down.sh && scripts/opc-up.sh` |

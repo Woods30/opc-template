@@ -94,6 +94,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "  模版来源：$SOURCE"
   echo "  复制内容：除 .git/.opc/.opc-template-repo/.github/docs/sync-policy.json/knowledge 外的全部"
   [[ "$DO_GIT" == "1" ]] && echo "  git：init + 首次提交"
+  echo "  基线：写 .opc/sync-base（建实例这一刻的模版内容）"
   if [[ "$DO_INSTALL" == "1" ]]; then
     echo "  安装：scripts/opc-install.sh $PREFIX"
   fi
@@ -128,6 +129,16 @@ if [[ "$DO_GIT" == "1" ]]; then
     echo "已初始化业务 git 仓库并完成首次提交"
   else
     echo "git 仓库已初始化，但首次提交失败（检查 git user.name/user.email 配置）" >&2
+  fi
+fi
+
+# 基线快照：实例建立这一刻的模版内容。有基线，模版后续的机制更新才能被
+# check 检出、被 pull 落地；没有基线，实例会永远停在建实例那天的版本上。
+if [[ -x "$TARGET/scripts/opc-sync.sh" ]]; then
+  if "$TARGET/scripts/opc-sync.sh" baseline --from "$SOURCE" >/dev/null 2>&1; then
+    echo "已写入基线快照（.opc/sync-base）"
+  else
+    echo "提示：基线快照没建成，之后跑 scripts/opc-sync.sh baseline --from <模版> 补上" >&2
   fi
 fi
 

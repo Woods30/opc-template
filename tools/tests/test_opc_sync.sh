@@ -395,6 +395,68 @@ scripts/opc-sync.sh status --from "$TPL" >/dev/null 2>&1
 grep -q "模版对同步脚本的改动" scripts/opc-sync.sh && ok "下次运行自动替换为新版" || bad "下次运行没有替换"
 [[ -f "$INST/.opc/sync-stage/scripts/opc-sync.sh" ]] && bad "暂存区没有清理" || ok "暂存区已清理"
 
+# ---- 15. 新实例自带基线：模版后续更新能被 check 检出并 pull 落地 ----
+# 没有基线时，模版改了机制文件，check 会因为「无法判断本地是否改过」而静默，
+# 实例就永远停在旧版本上。新建实例必须自带基线快照。
+FRESH="$WORK/fresh"
+FRESH_TPL="$WORK/fresh-tpl"
+cp -R "$TEMPLATE" "$FRESH_TPL"
+rm -rf "$FRESH_TPL/.git" "$FRESH_TPL/.opc"
+"$FRESH_TPL/scripts/opc-new.sh" "$FRESH" --prefix f --source "$FRESH_TPL" --no-install >/dev/null 2>&1
+printf '\n建好实例之后模版才加的一节。\n' >> "$FRESH_TPL/AGENTS.md"
+mkdir -p "$FRESH_TPL/tools/__pycache__"
+printf 'x' > "$FRESH_TPL/tools/__pycache__/fake.pyc"
+out="$(cd "$FRESH" && scripts/opc-sync.sh check --from "$FRESH_TPL" 2>&1)"
+rc=$?
+if [[ "$rc" == "1" ]] && grep -q "update.*AGENTS.md" <<< "$out"; then
+  ok "新建实例能检出模版后续更新"
+else
+  bad "新建实例检不出模版后续更新（退出码 ${rc}）"
+fi
+grep -q "__pycache__" <<< "$out" && bad "字节码被当成模版托管文件" || ok "字节码不进同步清单"
+(cd "$FRESH" && scripts/opc-sync.sh pull --from "$FRESH_TPL" --no-install >/dev/null 2>&1)
+grep -q "建好实例之后模版才加的一节" "$FRESH/AGENTS.md" \
+  && ok "新建实例能拉取模版后续更新" || bad "新建实例拉不到模版后续更新"
+
+# ---- 16. 没有基线的实例：check 必须报「无法判断」，不能说「没有待处理差异」 ----
+LEGACY="$WORK/legacy"
+cp -R "$INST" "$LEGACY"
+rm -rf "$LEGACY/.opc/sync-base" "$LEGACY/.opc/sync-state.json"
+printf '\n老实例没有基线时模版又加的一节。\n' >> "$TPL/AGENTS.md"
+out="$(cd "$LEGACY" && scripts/opc-sync.sh check --from "$TPL" 2>&1)"
+rc=$?
+if [[ "$rc" == "1" ]] && grep -q "unknown" <<< "$out"; then
+  ok "没有基线的实例把「无法判断」报出来"
+else
+  bad "没有基线的实例被当成「没有待处理差异」（退出码 ${rc}）"
+fi
+
+# ---- 17. baseline 按实例首次提交还原基线，让模版更新重新可检出 ----
+RECOVER="$WORK/recover"
+RECOVER_TPL="$WORK/recover-tpl"
+cp -R "$TEMPLATE" "$RECOVER_TPL"
+rm -rf "$RECOVER_TPL/.opc" "$RECOVER_TPL/.git"
+git -C "$RECOVER_TPL" init -q -b main
+git -C "$RECOVER_TPL" add -A >/dev/null 2>&1
+git -C "$RECOVER_TPL" -c user.name=test -c user.email=test@example.invalid \
+  commit -q -m "模版初始" >/dev/null 2>&1
+"$RECOVER_TPL/scripts/opc-new.sh" "$RECOVER" --prefix r --source "$RECOVER_TPL" --no-install >/dev/null 2>&1
+rm -rf "$RECOVER/.opc/sync-base" "$RECOVER/.opc/sync-state.json"
+printf '\n恢复路径要带回来的改动。\n' >> "$RECOVER_TPL/AGENTS.md"
+git -C "$RECOVER_TPL" add -A >/dev/null 2>&1
+git -C "$RECOVER_TPL" -c user.name=test -c user.email=test@example.invalid \
+  commit -q -m "模版更新" >/dev/null 2>&1
+(cd "$RECOVER" && scripts/opc-sync.sh baseline --from "$RECOVER_TPL" >/dev/null 2>&1)
+out="$(cd "$RECOVER" && scripts/opc-sync.sh check --from "$RECOVER_TPL" 2>&1)"
+if grep -q "update.*AGENTS.md" <<< "$out"; then
+  ok "baseline 还原后模版更新重新可检出"
+else
+  bad "baseline 还原后模版更新仍检不出"
+fi
+(cd "$RECOVER" && scripts/opc-sync.sh pull --from "$RECOVER_TPL" --no-install >/dev/null 2>&1)
+grep -q "恢复路径要带回来的改动" "$RECOVER/AGENTS.md" \
+  && ok "baseline 之后能拉回模版更新" || bad "baseline 之后拉不回模版更新"
+
 say ""
 say "通过 $PASS 项 / 失败 $FAIL 项"
 [[ "$FAIL" == "0" ]] || exit 1

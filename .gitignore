@@ -1,6 +1,9 @@
 # 安装脚本生成的实例配置（启动器含本机路径），不进版本库
 .opc/
 
+# 同步状态：本地跑出来的基线与锁文件，不进版本库
+template.lock.json
+
 # 安装脚本按需重生成的派生物，跟踪只会产生无意义 diff
 knowledge/team.md
 knowledge/business/README.md

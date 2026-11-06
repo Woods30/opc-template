@@ -9,6 +9,7 @@
 #   scripts/opc-sync.sh seeds [--from <源>]        种子骨架的 diff
 #         [--apply <目标>] [--merge <目标>]
 #   scripts/opc-sync.sh mark <路径> [--unmark]     显式 pin：本地定制，模版此后不覆盖
+#   scripts/opc-sync.sh baseline --from <源>        固化基线快照（不改任何业务文件）
 #   scripts/opc-sync.sh adopt --from <模版路径>    老实例接入（不覆盖任何已有文件）
 #   scripts/opc-sync.sh log [-n N]                 同步流水
 #
@@ -224,13 +225,47 @@ template_managed_files() {
     if [[ "$m" == */ ]]; then
       [[ -d "$src/$m" ]] || continue
       find "$src/$m" -type f -not -path '*/.git/*' \
-        -not -name 'gpui-kit.d.ts' -not -name 'jsconfig.json' | while IFS= read -r f; do
+        -not -name 'gpui-kit.d.ts' -not -name 'jsconfig.json' \
+        -not -path '*/__pycache__/*' -not -name '*.pyc' | while IFS= read -r f; do
         opc_rel "$f" "$src"
       done
     else
       [[ -f "$src/$m" ]] && printf '%s\n' "$m"
     fi
   done | sort -u
+}
+
+# 基线内容 = 实例建立那一刻的模版内容。
+# 找法按可靠度排序：
+#   1. 实例 git 里这个文件**第一次被加入**的那次提交 —— 最准，就是建实例时的快照；
+#   2. 实例记录的模版创建提交（老实例接入时用）；
+#   3. 模版当前内容（实例没有 git、也没有记录时的兜底）。
+# 文件在基线时刻还不存在 → 返回 1，基线里就不该有它（模版后加的文件算 add）。
+baseline_copy() {
+  local rel="$1" src="$2" created_commit="$3" dest="$4"
+  local tmp c
+  tmp="$(mktemp "${TMPDIR:-/tmp}/opc-baseline.XXXXXX")"
+  c="$(git -C "$ROOT" log --diff-filter=A --reverse --format=%H -- "$rel" 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$c" ]] && git -C "$ROOT" show "$c:$rel" > "$tmp" 2>/dev/null; then
+    mkdir -p "$(dirname "$dest")"
+    cp "$tmp" "$dest"
+    rm -f "$tmp"
+    return 0
+  fi
+  if [[ -n "$created_commit" ]] && git -C "$src" cat-file -e "${created_commit}^{commit}" 2>/dev/null; then
+    if git -C "$src" show "${created_commit}:$rel" > "$tmp" 2>/dev/null; then
+      mkdir -p "$(dirname "$dest")"
+      cp "$tmp" "$dest"
+      rm -f "$tmp"
+      return 0
+    fi
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+  [[ -f "$src/$rel" ]] || return 1
+  mkdir -p "$(dirname "$dest")"
+  cp "$src/$rel" "$dest"
 }
 
 # 输出变更计划：每行 "状态|路径|说明"
@@ -281,7 +316,7 @@ compute_plan() {
       continue
     fi
     if [[ -z "$base_hash" ]]; then
-      echo "local-modified|$rel|本地与模版不同，但没有基线可判（首次接入或基线丢失）"
+      echo "unknown|$rel|没有基线，无法判断本地是否改过（跑 baseline 固化基线）"
       continue
     fi
     if [[ "$tpl_hash" == "$base_hash" ]]; then
@@ -404,7 +439,7 @@ apply_plan() {
           conflicts=$((conflicts + 1))
         fi
         ;;
-      local-modified|pinned|deferred)
+      local-modified|pinned|deferred|unknown)
         if [[ "$dry_run" == "1" ]]; then echo "  [计划] $status $rel"; continue; fi
         if [[ "$status" == "deferred" ]]; then
           # 正在被执行的脚本不能在本轮覆盖（bash 会读到乱码）。
@@ -538,9 +573,10 @@ cmd_check() {
   # identical、seed-identical、seed-diverged（只有业务改了）以及本地 pin/定制
   # 都不需要同步处理。check 只报告模版侧真的有变化或缺基线/冲突的项，
   # 否则日常开工检查会永远退出 1。
+  # unknown = 没有基线，判不出本地是否改过：这不是「没有差异」，必须报出来。
   while IFS='|' read -r status rel detail; do
     case "$status" in
-      add|update|conflict|deferred|seed-add|seed-update|seed-diff|seed-unknown|config-add)
+      add|update|conflict|deferred|unknown|seed-add|seed-update|seed-diff|seed-unknown|config-add)
         actionable+="${status}|${rel}|${detail}"$'\n'
         ;;
     esac
@@ -787,6 +823,63 @@ cmd_adopt() {
   echo "  补齐了缺失的 seeds/ 快照，没有覆盖任何已有文件。接着跑 scripts/opc-sync.sh check 看差异。"
 }
 
+cmd_baseline() {
+  local from=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from) from="$2"; shift 2 ;;
+      *) echo "未知选项：$1" >&2; exit 2 ;;
+    esac
+  done
+  local src policy
+  src="$(resolve_source "${from:-}")"
+  [[ -n "$src" && -d "$src" ]] || { echo "找不到模版来源，用 --from <路径> 指定" >&2; exit 2; }
+  ACTIVE_SOURCE="$src"
+  policy="$(load_policy "$src")"
+  validate_policy "$policy" "$src"
+  mkdir -p "$ROOT/.opc"
+  cp "$policy" "$ROOT/.opc/policy.json"
+
+  # 基线 = 实例建立那一刻的模版内容。有基线才谈得上「模版更新了」，
+  # 没有基线时 check 只能报「无法判断」，模版更新也就永远传不进实例。
+  local created_commit=""
+  if [[ -f "$INSTANCE_JSON" ]]; then
+    created_commit="$(jq -r '.template.commit // ""' "$INSTANCE_JSON" 2>/dev/null || true)"
+  fi
+
+  local filled=0 kept=0
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    if [[ -f "$BASE/$rel" ]]; then
+      kept=$((kept + 1))
+      continue
+    fi
+    if baseline_copy "$rel" "$src" "$created_commit" "$BASE/$rel"; then
+      filled=$((filled + 1))
+    fi
+  done < <(template_managed_files "$src" "$policy")
+
+  # seeds 快照：老实例可能没有，缺了就补，判种子差异才有基线可比。
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    if [[ -f "$ROOT/$rel" ]]; then
+      continue
+    fi
+    if baseline_copy "$rel" "$src" "$created_commit" "$ROOT/$rel"; then
+      filled=$((filled + 1))
+    fi
+  done < <(jq -r '.seeds[].source' "$policy")
+
+  local commit
+  commit="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  write_state "$src" "$policy" "baseline" "$commit"
+  write_lock "$src" "$commit"
+  append_log "baseline：模版来源 ${src} @ ${commit}（补齐 ${filled} 个基线，保留 ${kept} 个已有基线）"
+  echo "已固化基线：新增 $filled 个，保留已有 $kept 个。"
+  echo "  基线快照在 .opc/sync-base/；已有基线不会被覆盖，要重新固化就先删掉那个目录。"
+  echo "  接着跑 scripts/opc-sync.sh check 看这次模版有什么变化。"
+}
+
 cmd_log() {
   local n=20
   while [[ $# -gt 0 ]]; do
@@ -812,6 +905,7 @@ case "$SUB" in
   seeds) cmd_seeds "$@" ;;
   mark) cmd_mark "$@" ;;
   adopt) cmd_adopt "$@" ;;
+  baseline) cmd_baseline "$@" ;;
   log) cmd_log "$@" ;;
   -h|--help|help) usage ;;
   *) echo "未知子命令：$SUB" >&2; usage >&2; exit 2 ;;

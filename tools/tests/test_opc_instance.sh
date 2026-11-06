@@ -61,6 +61,7 @@ expect "新实例有生成的选题日历入口" grep -q "GENERATED FILE — REA
   "$INST/knowledge/business/选题日历.md"
 expect "新实例有 workflow" test -x "$INST/tools/opc-workflow"
 expect "新实例有 preflight" test -x "$INST/tools/preflight"
+expect "新实例自带基线快照" test -f "$INST/.opc/sync-base/AGENTS.md"
 expect "新实例有 gm inbox" test -f "$INST/knowledge/inbox/gm.md"
 expect "渠道目录只有发布记录" test -f "$INST/knowledge/business/wechat/发布记录.md"
 expect "渠道发布记录标记 generated" grep -q "GENERATED FILE — READ ONLY" \
