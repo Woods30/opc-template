@@ -133,9 +133,12 @@ scripts/opc-lint.sh --private-words ~/.config/opc/private-words.txt
 
 检查的内容：模版里没有 `knowledge/**`、种子还是占位而不是真实内容、种子里没有
 具体日期/链接/大数、频道清单为空、角色注册表字段合法、策略覆盖了每个文件、
-守卫本身在位、模版里没有本机路径、提案格式完整。私词表**永远不进版本库**，
-放在实例的 `.opc/private-words.txt` 或 `~/.config/opc/private-words.txt`；
-CI 用 secret 注入，没有 secret 时该规则自动跳过而不是失败。
+守卫本身在位、模版里没有本机路径、提案格式完整。角色启动那条规则两边都查：
+模版里的 `agents/*.md` 与实例里自己的 `agents/*.md` 都要写明「等 gm 派工」
+（gm 是「先与 owner 对齐方向」），写成「不用等 gm 派工」这种否定句一样算违规。
+私词表**永远不进版本库**，放在实例的 `.opc/private-words.txt` 或
+`~/.config/opc/private-words.txt`；CI 用 secret 注入，没有 secret 时该规则自动跳过
+而不是失败。
 
 `.github/workflows/lint.yml` 在每次 push 与 PR 上跑它，另跑两组测试：
 

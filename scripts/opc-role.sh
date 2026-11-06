@@ -52,6 +52,13 @@ case "$cmd" in
 
     tpl="agents/opc-$name.md"
     if [[ ! -f "$ROOT/$tpl" ]]; then
+      # 新角色的启动小节必须写明「等 gm 派工」（gm 自己先与 owner 对齐），
+      # 否则角色一启动就自己开题——这正是 tools/opc-lint 的 L17 要拦的。
+      if [[ "$name" == "gm" ]]; then
+        startup='**然后先与 owner 对齐方向**，把结论写进 `knowledge/business/品牌口径.md`，再往其他角色派工。'
+      else
+        startup='**然后停下来等 gm 派工**：汇报当前状态与能承接的任务即可。'
+      fi
       cat > "$ROOT/$tpl" <<EOF
 ---
 name: {{PREFIX}}-$name
@@ -79,7 +86,9 @@ command: zsh -lic claude
 ## 启动
 
 你现在在 OPC 项目根目录。先读 \`AGENTS.md\` 了解共享规约，再读 \`knowledge/team.md\`
-确认其他角色的终端名，然后读 \`knowledge/\` 下的已有内容，最后告诉我你打算先做什么。
+确认其他角色的终端名，然后读 \`knowledge/\` 下的已有内容。
+
+$startup
 EOF
       echo "已创建角色简报：${tpl}（请补全职责与边界）"
     fi

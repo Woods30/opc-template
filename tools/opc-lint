@@ -58,6 +58,20 @@ PERMISSION_MODES = {"default", "manual", "auto", "acceptEdits", "plan", "dontAsk
                     "bypassPermissions"}
 RE_ROLE_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,19}$")
 
+# 角色启动小节里必须出现的正面指令：
+#   普通角色 —— 等 gm 派工；gm 自己 —— 先与 owner 对齐方向。
+# 关键词出现不等于说了这句话：「不用等 gm 派工」里同样有「等 gm 派工」，
+# 意思正好相反，所以命中之后还要看它前面有没有否定词。
+NEGATION_MARKERS = ("不需要", "不用", "无需", "不必", "不要", "别", "甭")
+# 否定词要紧挨着关键词才算数：「先不要跑，等 gm 派工」是等派工，
+# 「不用等 gm 派工」才是不等。
+RE_NEGATED_TAIL = re.compile(
+    r"(?:{markers})(?:再|先|就|才|自己|自行|自选)?$".format(markers="|".join(NEGATION_MARKERS))
+)
+RE_DISPATCH = re.compile(r"等[^。\n；;]{0,12}派工")
+RE_OWNER_ALIGN = re.compile(r"(?:与|和|跟)[^。\n；;]{0,10}owner[^。\n；;]{0,10}对齐")
+RE_STARTUP_HEADING = re.compile(r"^#{1,6}[ \t]*启动不自主开工[ \t]*$", re.MULTILINE)
+
 
 @dataclass
 class Check:
@@ -511,9 +525,14 @@ def check_l8_roles(root):
                 c.status = STATUS_FAIL
                 c.detail.append("角色 {} 的 scope 不合法：{}".format(name, scope))
         tpl = role.get("template")
-        if tpl and not os.path.isfile(os.path.join(root, tpl)):
-            c.status = STATUS_FAIL
-            c.detail.append("角色 {} 的模板文件不存在：{}".format(name, tpl))
+        if tpl:
+            path = safe_join(root, tpl)
+            if path is None:
+                c.status = STATUS_FAIL
+                c.detail.append("角色 {} 的模板路径不合法：{}".format(name, tpl))
+            elif not os.path.isfile(path):
+                c.status = STATUS_FAIL
+                c.detail.append("角色 {} 的模板文件不存在：{}".format(name, tpl))
     return c
 
 
@@ -532,19 +551,48 @@ def role_startup_section(text):
     return body
 
 
-def check_l17_role_startup(root):
-    """角色启动不自主开工：先汇报现状，等 gm 派工（gm 自己先与 owner 对齐）。"""
+def startup_instruction(section, pattern):
+    """小节里有没有一条没被否定的正面指令。
+
+    光出现关键词不算：「不用等 gm 派工」里也有「等 gm 派工」，意思正好相反。
+    所以每处命中都要看它前面有没有否定词——否定词得紧挨着关键词才算，
+    否则「先不要跑，等 gm 派工」会被误判成否定。
+
+    返回 (有正面表述, 有被否定的表述)。
+    """
+    positive = False
+    negated = False
+    for m in pattern.finditer(section):
+        head = section[max(0, m.start() - 8):m.start()].strip()
+        if RE_NEGATED_TAIL.search(head):
+            negated = True
+            continue
+        positive = True
+    return positive, negated
+
+
+def check_l17_role_startup(root, instance=False):
+    """角色启动不自主开工：先汇报现状，等 gm 派工（gm 自己先与 owner 对齐）。
+
+    instance=True 时按实例的实际情况判定：模版还没同步过来的东西只警告，
+    但角色模板里真的写了「不用等 gm 派工」这种话，照样失败——那正是
+    角色一启动就自己开题的源头。
+    """
     c = Check("L17", "角色启动不自主开工", source="AGENTS.md 与 agents/*.md")
+    fails = []
+    warns = []
+
     rules = read_text(os.path.join(root, "AGENTS.md"))
     if rules is None:
-        c.status = STATUS_FAIL
-        c.detail.append("找不到 AGENTS.md")
-        return c
-    if "启动不自主开工" not in rules:
-        c.status = STATUS_FAIL
-        c.detail.append(
-            "AGENTS.md 缺少「启动不自主开工」小节：角色启动后先汇报现状，再等 gm 派工"
-        )
+        msg = "找不到 AGENTS.md"
+        (warns if instance else fails).append(msg)
+    elif not RE_STARTUP_HEADING.search(rules):
+        msg = "AGENTS.md 缺少「启动不自主开工」小节：角色启动后先汇报现状，再等 gm 派工"
+        if instance:
+            warns.append(msg + "（实例可能还没同步模版）")
+        else:
+            fails.append(msg)
+
     roles_path = os.path.join(root, "roles.json")
     try:
         with open(roles_path, encoding="utf-8") as fh:
@@ -553,28 +601,49 @@ def check_l17_role_startup(root):
         c.status = STATUS_FAIL
         c.detail.append("roles.json 读不了：{}".format(exc))
         return c
+
     for role in data.get("roles", []):
         name = role.get("name", "")
         template = role.get("template")
         if not template:
             continue
-        text = read_text(os.path.join(root, template))
+        path = safe_join(root, template)
+        if path is None:
+            fails.append("角色 {} 的模板路径不合法：{}".format(name, template))
+            continue
+        if not os.path.isfile(path):
+            msg = "角色 {} 的模板文件不在实例里：{}".format(name, template)
+            if instance:
+                warns.append(msg)
+            else:
+                fails.append("角色 {} 的模板文件不存在：{}".format(name, template))
+            continue
+        text = read_text(path)
         section = role_startup_section(text)
         if section is None:
-            c.status = STATUS_FAIL
-            c.detail.append(
-                "角色 {} 的模板缺少「## 启动」小节：{}".format(name, template)
-            )
+            fails.append("角色 {} 的模板缺少「## 启动」小节：{}".format(name, template))
             continue
         if name == "gm":
-            if "owner" not in section:
-                c.status = STATUS_FAIL
-                c.detail.append("角色 gm 的启动小节必须写明先与 owner 对齐方向")
-        elif "派工" not in section:
-            c.status = STATUS_FAIL
-            c.detail.append(
-                "角色 {} 的启动小节必须写明等 gm 派工：{}".format(name, template)
-            )
+            positive, negated = startup_instruction(section, RE_OWNER_ALIGN)
+            if negated and not positive:
+                fails.append("角色 gm 的启动小节写成了否定句：必须写明先与 owner 对齐方向")
+            elif not positive:
+                fails.append("角色 gm 的启动小节必须写明先与 owner 对齐方向"
+                             + ("（跑 scripts/opc-sync.sh pull 同步模版）" if instance else ""))
+        else:
+            positive, negated = startup_instruction(section, RE_DISPATCH)
+            if negated and not positive:
+                fails.append("角色 {} 的启动小节写成了否定句：必须写明等 gm 派工：{}".format(name, template))
+            elif not positive:
+                fails.append("角色 {} 的启动小节必须写明等 gm 派工：{}".format(name, template)
+                             + ("（跑 scripts/opc-sync.sh pull 同步模版）" if instance else ""))
+
+    c.detail.extend(fails)
+    c.detail.extend(warns)
+    if fails:
+        c.status = STATUS_FAIL
+    elif warns:
+        c.status = STATUS_WARN
     return c
 
 
@@ -801,6 +870,9 @@ def run_checks(root, strict=False, words_file=None):
             checks.append(check_l13_proposals(root, policy))
             checks.append(check_l14_proposal_private_words(root, policy, words, words_path))
         checks.append(check_l16_instance(root, policy))
+        # 实例里跑的就是这些角色模板：角色一启动就自己开题，
+        # 根子在实例自己的 agents/*.md，模版侧的规则管不到，得在这里查。
+        checks.append(check_l17_role_startup(root, instance=True))
 
     if policy is not None:
         if template_mode:

@@ -144,6 +144,35 @@ class LintTestCase(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(content)
 
+    def add_role(self, name, template_text):
+        """再加一个角色，并把它的模板写进 fixture。"""
+        roles = json.loads(json.dumps(ROLES))
+        roles["roles"].append(
+            {
+                "name": name,
+                "enabled": True,
+                "cli": "claude",
+                "template": "agents/opc-{}.md".format(name),
+                "permissionMode": "default",
+                "scope": ["knowledge/work/{}".format(name)],
+            }
+        )
+        self.write("roles.json", json.dumps(roles, ensure_ascii=False))
+        self.write("agents/opc-{}.md".format(name), template_text)
+
+    def instance_copy(self, name):
+        """造一个实例：没有模版标记与根级策略，有实例元数据与缓存策略。"""
+        instance = os.path.join(self.tmp, name)
+        shutil.copytree(self.repo, instance)
+        os.remove(os.path.join(instance, ".opc-template-repo"))
+        os.remove(os.path.join(instance, "sync-policy.json"))
+        os.makedirs(os.path.join(instance, ".opc"), exist_ok=True)
+        with open(os.path.join(instance, ".opc", "policy.json"), "w", encoding="utf-8") as fh:
+            json.dump(POLICY, fh, ensure_ascii=False, indent=2)
+        with open(os.path.join(instance, ".opc", "instance.json"), "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "kind": "opc-instance", "prefix": "t"}, fh)
+        return instance
+
     # ---- 真实仓库回归 ----
 
     def test_real_template_repo_passes(self):
@@ -284,6 +313,107 @@ class LintTestCase(unittest.TestCase):
         self.write("AGENTS.md", "# 共有规约\n\n没有启动小节。\n")
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_role_startup_with_dispatch_instruction_passes(self):
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "然后停下来等 gm 派工：汇报现状。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_OK, checks["L17"].status)
+
+    def test_role_startup_negated_dispatch_instruction_fails(self):
+        # 出现「等 gm 派工」这几个字不等于说了要等——否定句同样能骗过关键词检查。
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "不用等 gm 派工，自己开题。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_role_startup_dispatch_with_other_negation_passes(self):
+        # 「先不要跑，等 gm 派工」里的「不要」挨的是「跑」，不是「等」——
+        # 这种句子说的是要等，不能被误判成否定句。
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "先不要自己开题，等 gm 派工。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_OK, checks["L17"].status)
+
+    def test_role_startup_negated_with_verb_fails(self):
+        # 否定词后面隔着一个词（「不需要再等 gm 派工」）仍然是否定。
+        self.add_role(
+            "content",
+            "---\nname: {{PREFIX}}-content\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "不需要再等 gm 派工，自己开题。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_gm_startup_negated_owner_alignment_fails(self):
+        self.write(
+            "agents/opc-gm.md",
+            "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+            "不用与 owner 对齐，直接派工。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_role_template_path_escape_fails_in_l8(self):
+        # roles.json 是数据文件：模板路径不能读出仓库之外。
+        roles = json.loads(json.dumps(ROLES))
+        roles["roles"][0]["template"] = "../../etc/passwd"
+        self.write("roles.json", json.dumps(roles, ensure_ascii=False))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L8"].status)
+        self.assertTrue(
+            any("路径不合法" in d for d in checks["L8"].detail),
+            checks["L8"].detail,
+        )
+
+    def test_role_template_path_escape_fails_in_l17(self):
+        # 同一个坏路径也要在读模板的规则上被挡住，不能只靠 L8 兜底。
+        roles = json.loads(json.dumps(ROLES))
+        roles["roles"][0]["template"] = "../../etc/passwd"
+        self.write("roles.json", json.dumps(roles, ensure_ascii=False))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+        self.assertTrue(
+            any("路径不合法" in d for d in checks["L17"].detail),
+            checks["L17"].detail,
+        )
+
+    def test_role_startup_is_checked_in_instance_mode(self):
+        # 实例里跑的是实例自己的 agents/ 与 AGENTS.md：这条规则要在这里也生效，
+        # 否则实例改了提示词就没有任何东西拦得住。
+        instance = self.instance_copy("instance")
+
+        checks = run_lint(instance)
+        self.assertIn("L17", checks)
+        self.assertEqual(lint.STATUS_OK, checks["L17"].status)
+
+        with open(
+            os.path.join(instance, "agents", "opc-gm.md"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write(
+                "---\nname: {{PREFIX}}-gm\n---\n\n## 启动\n\n先读 AGENTS.md，"
+                "然后告诉我你打算先做什么。\n"
+            )
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L17"].status)
+
+    def test_instance_missing_role_template_warns_not_fails(self):
+        # 实例还没同步到最新模版时，角色模板可能不在：那是「还没同步」，
+        # 不是「写错了」，只警告。真正写错的（否定句）才失败。
+        instance = self.instance_copy("instance2")
+        os.remove(os.path.join(instance, "agents", "opc-gm.md"))
+
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_WARN, checks["L17"].status)
 
     # ---- L9 未归类 ----
 

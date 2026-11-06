@@ -160,6 +160,19 @@ check "看板内容状态为 closed" "closed" \
 # 上面每一步都成功即证明这一点。
 expect "生成视图无需 Herdr 即可读取" test -s knowledge/business/选题日历.md
 
+# ---- 5. 新角色的简报也要守住「启动不自主开工」 ----
+# opc-role.sh add 生成的简报如果只写「告诉我你打算先做什么」，
+# 角色一启动就会自己开题——那正是 L17 要拦的。
+(cd "$INST" && scripts/opc-role.sh add tester --scope knowledge/work/tester >/dev/null 2>&1) || true
+expect "新角色的简报已生成" test -f "$INST/agents/opc-tester.md"
+expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/opc-tester.md"
+lint_out="$(cd "$INST" && python3 tools/opc-lint --root . --quiet 2>&1)"
+if grep -q "角色启动不自主开工" <<< "$lint_out"; then
+  bad "新角色的简报没过 L17：$(grep -A 3 "角色启动不自主开工" <<< "$lint_out" | tr '\n' ' ')"
+else
+  ok "新角色的简报过了 L17"
+fi
+
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"
 [[ "$FAIL" -eq 0 ]]
