@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""tools/opc-smoke —— 主流程冒烟检查。
+
+验的是**工具链**通不通，不是这家公司的业务配得对不对。所以它不读实例的
+knowledge/：自己在临时目录里造一份最小实例（一个假频道、一个假指标、
+一份空名册），把本实例的 tools/opc-workflow 拷进去，走一遍完整闭环：
+
+    create-content → drafting → reviewing → approved → ready
+    → create-publication → reviewing → approved → scheduled → published
+    → record-metrics → reviewed → closed → build
+
+跑完检查落盘结果（内容卡、publication、指标窗口、看板 JSON），再删掉临时目录。
+
+因此「有些目录可能不存在」不影响冒烟：fixture 自带目录，实例少什么都能跑。
+反过来，实例的工具坏了、workflow 改坏了，这里就会红。
+
+用法：
+    tools/opc-smoke            # 跑一遍，退出码 0 表示通过
+    tools/opc-smoke --keep     # 保留临时目录，便于排查
+    tools/opc-smoke --json     # 输出机器可读的结果
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+CHANNEL = "smoke"
+METRIC_KEY = "smoke_read"
+DRAFT_TEXT = "# 主稿\n\n冒烟正文。\n"
+PUBLICATION_DRAFT_TEXT = "# 渠道稿\n\n冒烟渠道稿。\n"
+PLANNED_AT = "2026-11-20T09:00:00+08:00"
+ACTUAL_AT = "2026-11-20T09:05:00+08:00"
+OBSERVED_AT = "2026-11-22T09:00:00+08:00"
+
+
+class SmokeError(Exception):
+    """冒烟失败：带一句人能看懂的原因。"""
+
+
+def instance_root() -> Path:
+    """实例根 = 工具所在目录的父目录。工具只在实例里工作。"""
+    return Path(__file__).resolve().parent.parent
+
+
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def build_fixture(root: Path) -> Path:
+    """造一份最小实例：够跑主流程，不多一样。"""
+    write(root / ".opc" / "instance.json", json.dumps(
+        {"kind": "opc-instance", "version": 1}, ensure_ascii=False))
+    write(root / "roles.json", json.dumps(
+        {"roles": [
+            {"name": "gm", "enabled": True},
+            {"name": "content", "enabled": True},
+            {"name": "growth", "enabled": True},
+        ]}, ensure_ascii=False, indent=2))
+    write(root / "channels.json", json.dumps(
+        {"channels": [{"id": CHANNEL, "name": "冒烟频道", "enabled": True}]},
+        ensure_ascii=False, indent=2))
+    write(root / "knowledge" / "business" / "growth" / "指标.md",
+          "---\n"
+          + json.dumps({
+              "schema_version": 1,
+              "record_type": "metric_catalog",
+              "metrics": [{
+                  "key": METRIC_KEY,
+                  "label": "冒烟阅读数",
+                  "unit": "count",
+                  "aggregation": "sum",
+                  "scope": "publication",
+                  "channels": [CHANNEL],
+              }],
+          }, ensure_ascii=False, indent=2)
+          + "\n---\n\n# 指标目录\n")
+    write(root / "knowledge" / "team.md",
+          "# 团队名册\n\n| 角色 | 终端名 |\n|---|---|\n| gm | smoke-gm |\n")
+    write(root / "knowledge" / "inbox" / "gm.md", "")
+    for name in ("content", "decisions"):
+        (root / "knowledge" / name).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def install_workflow(root: Path, source: Path) -> Path:
+    """把本实例的 workflow 拷进临时实例。
+
+    workflow 的根目录由脚本位置决定，所以必须拷进去，指向才是临时实例。
+    """
+    target = root / "tools" / "opc-workflow"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    target.chmod(0o755)
+    return target
+
+
+class Runner:
+    def __init__(self, workflow: Path, root: Path):
+        self.workflow = workflow
+        self.root = root
+        self.steps = []
+
+    def run(self, *args):
+        result = subprocess.run(
+            [sys.executable, str(self.workflow), *args],
+            cwd=str(self.root),
+            capture_output=True,
+            text=True,
+        )
+        self.steps.append({"args": list(args), "code": result.returncode})
+        if result.returncode != 0:
+            raise SmokeError("`{}` 失败：{}".format(
+                " ".join(args),
+                (result.stderr or result.stdout or "").strip()[:300]))
+        return result.stdout.strip()
+
+
+def only_child(path: Path, suffix: str) -> Path:
+    """目录里应该只有一个匹配项——冒烟只造一份，多了就说明 id 规则变了。"""
+    found = sorted(path.glob("*/" + suffix))
+    if len(found) != 1:
+        raise SmokeError("{} 下应当恰好有一个 {}，实际有 {} 个".format(
+            path, suffix, len(found)))
+    return found[0]
+
+
+def parse_frontmatter(path: Path) -> dict:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != "---":
+        raise SmokeError("记录缺少 frontmatter：{}".format(path))
+    end = lines.index("---", 1)
+    return json.loads("\n".join(lines[1:end]))
+
+
+def check_dashboard(root: Path) -> dict:
+    path = root / "knowledge" / "business" / "dashboard.json"
+    if not path.is_file():
+        raise SmokeError("build 没有生成看板 JSON：{}".format(path))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SmokeError("看板 JSON 读不了：{}".format(error))
+    for key in ("contract_version", "counts", "contents", "publications", "team"):
+        if key not in payload:
+            raise SmokeError("看板 JSON 缺字段：{}".format(key))
+    if payload.get("generated") is not True:
+        raise SmokeError("看板 JSON 没有标记 generated")
+    errors = payload.get("diagnostics", {}).get("errors", [])
+    if errors:
+        raise SmokeError("看板诊断有错误：{}".format(
+            "；".join("{}：{}".format(e.get("source"), e.get("message")) for e in errors)))
+    return payload
+
+
+def run_smoke(root: Path) -> dict:
+    workflow_source = root / "tools" / "opc-workflow"
+    if not workflow_source.is_file():
+        raise SmokeError("实例里缺少 tools/opc-workflow：{}".format(workflow_source))
+
+    temp = Path(tempfile.mkdtemp(prefix="opc-smoke-"))
+    try:
+        instance = build_fixture(temp)
+        workflow = install_workflow(instance, workflow_source)
+        runner = Runner(workflow, instance)
+
+        runner.run("create-content", "--title", "冒烟选题", "--actor", "content")
+        content_id = only_child(instance / "knowledge" / "content", "内容卡.md").parent.name
+
+        runner.run("transition", content_id, "--to", "drafting", "--actor", "content")
+        write(instance / "knowledge" / "content" / content_id / "主稿.md", DRAFT_TEXT)
+        runner.run("transition", content_id, "--to", "reviewing", "--actor", "content")
+        runner.run("transition", content_id, "--decision", "approved", "--actor", "gm")
+
+        runner.run("create-publication", content_id, "--channel", CHANNEL,
+                   "--actor", "gm", "--required-window", "48h")
+        publications = instance / "knowledge" / "content" / content_id / "publications"
+        publication_id = only_child(publications, "渠道稿.md").parent.name
+
+        write(instance / "knowledge" / "content" / content_id / "publications"
+              / publication_id / "渠道稿.md", PUBLICATION_DRAFT_TEXT)
+        runner.run("transition", publication_id, "--to", "reviewing", "--actor", "content")
+        runner.run("transition", publication_id, "--decision", "approved", "--actor", "gm")
+        runner.run("transition", publication_id, "--to", "scheduled",
+                   "--planned-at", PLANNED_AT, "--timezone", "Asia/Shanghai", "--actor", "gm")
+        runner.run("transition", publication_id, "--to", "published",
+                   "--actual-at", ACTUAL_AT, "--url", "https://example.com/smoke", "--actor", "gm")
+        runner.run("record-metrics", publication_id, "--window", "48h",
+                   "--observed-at", OBSERVED_AT, "--source", "opc-smoke",
+                   "--values", json.dumps({METRIC_KEY: 1}), "--actor", "growth")
+        runner.run("transition", publication_id, "--to", "reviewed",
+                   "--conclusion", "continue", "--next-action", "冒烟结束", "--actor", "growth")
+        runner.run("transition", content_id, "--to", "closed", "--actor", "gm")
+
+        runner.run("build")
+
+        content_record = parse_frontmatter(
+            instance / "knowledge" / "content" / content_id / "内容卡.md")
+        if content_record.get("status") != "closed":
+            raise SmokeError("内容卡状态应为 closed，实际 {}".format(
+                content_record.get("status")))
+        publication_record = parse_frontmatter(
+            instance / "knowledge" / "content" / content_id / "publications"
+            / publication_id / "发布卡.md")
+        if publication_record.get("status") != "reviewed":
+            raise SmokeError("publication 状态应为 reviewed，实际 {}".format(
+                publication_record.get("status")))
+
+        metrics_path = (instance / "knowledge" / "content" / content_id / "publications"
+                        / publication_id / "指标.md")
+        if not metrics_path.is_file():
+            raise SmokeError("指标窗口没有落盘：{}".format(metrics_path))
+        windows = [snapshot.get("window")
+                   for snapshot in parse_frontmatter(metrics_path).get("snapshots", [])]
+        if "48h" not in windows:
+            raise SmokeError("指标窗口没有落盘：{}".format(windows))
+
+        calendar = instance / "knowledge" / "business" / "选题日历.md"
+        if not calendar.is_file():
+            raise SmokeError("build 没有生成选题日历：{}".format(calendar))
+
+        payload = check_dashboard(instance)
+        return {
+            "ok": True,
+            "steps": len(runner.steps),
+            "content_id": content_id,
+            "publication_id": publication_id,
+            "counts": payload.get("counts", {}),
+        }
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="OPC 主流程冒烟检查")
+    parser.add_argument("--keep", action="store_true", help="保留临时目录，便于排查")
+    parser.add_argument("--json", action="store_true", help="输出机器可读的结果")
+    args = parser.parse_args(argv)
+
+    root = instance_root()
+    try:
+        result = run_smoke(root)
+    except SmokeError as error:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+        else:
+            print("冒烟失败：{}".format(error), file=sys.stderr)
+        return 1
+    except Exception as error:  # 工具坏了也要说人话，不要甩 traceback
+        detail = "{}：{}".format(type(error).__name__, error)
+        if args.json:
+            print(json.dumps({"ok": False, "error": detail}, ensure_ascii=False))
+        else:
+            print("冒烟失败：{}".format(detail), file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("主流程冒烟通过：{} 步（内容 {}，publication {}）".format(
+            result["steps"], result["content_id"], result["publication_id"]))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

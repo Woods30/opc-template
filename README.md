@@ -9,23 +9,25 @@
 - **结果与过程分开**：`knowledge/business/` 是老板日常只看的结果，`knowledge/work/` 是过程
 - 结论落盘到 `knowledge/`，聊天记录不算数
 
+本仓库是**模版**：只放通用机制与模版开发材料。真实业务长在每个实例自己的仓库里。
+运行载荷统一放在 `template/`；外层是模版开发用的文档、入口与测试。
+
 ## 依赖
 
 | 依赖 | 用途 | 检查 |
 |---|---|---|
 | `hc`（herdr-core） | 终端与角色模板 | `hc --version` |
-| `herdr-app` | 窗口与布局 | `herdr-app ls` |
+| `herdr-app` | 窗口、布局与看板 | `herdr-app ls` |
 | `claude`（Claude Code） | 默认 agent CLI | `claude --version` |
 | `jq` | 脚本解析 JSON | `jq --version` |
 
 ## 快速开始
 
-**模版仓库不承载业务数据。** 它只装机制与占位骨架；业务内容一律长在**实例**里。
-所以第一步不是在本仓库里装，而是开一个实例：
+**模版仓库不承载业务数据。** 第一步是开一个实例：
 
 ```sh
-git clone <this-repo> ~/Projects/opc-template     # 模版
-scripts/opc-new.sh ~/Documents/my-opc             # 开实例
+git clone <this-repo> ~/Projects/opc-template
+~/Projects/opc-template/bin/opc install ~/Documents/my-opc acme
 cd ~/Documents/my-opc
 
 scripts/opc-up.sh             # 启动所有已启用角色
@@ -33,19 +35,31 @@ scripts/opc-status.sh         # 看状态
 scripts/opc-down.sh           # 停止
 ```
 
-`opc-new.sh` 会建好实例目录、初始化一个**独立的 git 仓库**（业务数据只进这个仓库）、
-写 `.opc/instance.json` 记录模版来源，然后跑一次安装。常用参数：
+`opc install` 会：
+
+1. 校验目标目录为空或不存在；
+2. 从远端拉取最新模版到 `~/.local/share/opc/template`（首次），或使用你显式指定的
+   开发副本；
+3. 复制机制目录与文件，物化实例骨架；
+4. 写 `.opc/instance.json` 与 `.opc/mechanism.json`；
+5. `git init` 并做第一次提交（只包含模版生成的内容）；
+6. 跑实例安装器生成启动器、角色设置与 `knowledge/`；
+7. 把全局 UI（布局 `opc`、mod `opc-tabs` / `opc-dashboard`）装进
+   `~/.config/herdr-app/`（只装一份，所有实例共用）；
+8. 把实例登记到 `~/.config/opc/instances.json`。
+
+首次运行会把 `bin/opc` 链到 `~/.local/bin/opc`。常用参数：
 
 ```sh
-scripts/opc-new.sh ~/Documents/my-opc acme --prefix acme   # 指定前缀
-scripts/opc-new.sh ~/Documents/my-opc --dry-run            # 只看要做什么
-scripts/opc-new.sh ~/Documents/my-opc --no-input           # 安装时不提问
+bin/opc install <目录> <前缀> --dry-run    # 只看要做什么
+bin/opc install <目录> --no-input          # 不提问
+bin/opc install <目录> --template .        # 用当前工作区，不拉远端
 ```
 
 安装会**先检测本机装了哪些 CLI**（`claude`、`codex`、`opencode`、`gemini`，以及
 `roles.json` 里已经在用的），再逐个角色问「启用吗」「用哪个 CLI」。终端里第一次安装
-会问一次，之后重装不再打扰；想再改就跑 `--interactive`。重定向或管道里跑默认不问——
-脚本、测试、CI 用 `--no-input` 关掉：
+会问一次，之后重装不再打扰；想再改跑 `scripts/opc-install.sh --interactive`。
+重定向或管道里跑默认不问：
 
 ```sh
 scripts/opc-install.sh --interactive     # 强制提问
@@ -55,14 +69,38 @@ scripts/opc-install.sh --no-input        # 强制不问
 一个 CLI 都没检测到时会直接拒绝安装，避免把角色配到一个不存在的命令上。
 
 **不要在模版仓库里跑 `opc-install.sh`**——安装脚本会检测到 `.opc-template-repo`
-标记并直接拒绝。模版里也不该出现任何业务文件，`scripts/opc-lint.sh` 会持续检查。
+标记并直接拒绝。`opc lint --strict` 会持续检查模版里没有业务文件。
 
 `opc-up.sh` 默认 **fail-closed**：缺模板或启动器就报错退出，不自动执行安装脚本。
 脚本属于执行面，agent 不可写（`scripts/` 不在任何角色的 `scope` 内），所以启动时
 也不能悄悄把它跑起来。
 
-**推荐路径**：在实例目录启动 Claude Code，输入 `/opc-init`。它会检查依赖、问前缀/角色/
-CLI/频道，改好 `roles.json` 与 `channels.json`，跑安装，并跑一次端到端测试任务。
+**推荐路径**：在模版仓库启动 Claude Code，输入 `/opc-init`。它会检查依赖、问目标
+目录/前缀/角色/CLI/频道，然后用最新的模版调用 `bin/opc install`。codex 用户直接跑
+`bin/opc install` 即可。
+
+## 升级
+
+模版更新后，在实例目录跑：
+
+```sh
+opc upgrade --dry-run      # 看会改什么
+opc upgrade                # 升级当前实例
+opc upgrade --all          # 升级注册表里的所有实例
+```
+
+- 机制文件（`scripts/`、`tools/`、`agents/`、`AGENTS.md`）按 `.opc/mechanism.json`
+  里的 SHA-256 校验：本地改过会打印 diff 并拒绝；确认放弃本地改动后加
+  `--force-mechanism`。
+- `roles.json` / `channels.json` 按键合并：只增不改，新条目默认停用。
+- 骨架文件只在缺失时物化；删掉的骨架会在下次升级时复活。
+- `knowledge/` 永远不动。
+- 全局 UI 每次升级只装一次；所有实例共用同一份，升级任一实例都会更新它。
+
+发现旧结构（`layouts/`、`mods/`、`seeds/`、`sync-policy.json`、`template.lock.json`、
+`.opc/sync-*`、`scripts/opc-sync.sh`、`scripts/opc-new.sh`）时，`upgrade` 会先进入
+一次性迁移：`--dry-run` 打印全部动作，确认后只做一个限定 pathspec 的提交。
+详见 [`docs/安装与升级.md`](docs/安装与升级.md)。
 
 ## 一个实例长什么样
 
@@ -74,17 +112,17 @@ LESSONS.md           全局经验教训库（gm 维护；角色写各自的 work
 CLAUDE.md            一行：@AGENTS.md
 INSTANCE.md          本实例专属信息（前缀、频道、运行参数、待办）
 agents/              各角色的 hc 模板源（唯一事实来源）
-seeds/               占位骨架源：开实例时物化到 knowledge/business/
 knowledge/           唯一事实来源：
                      ├── content/   canonical 内容包：内容卡、主稿、publications/
                      ├── business/  结果、常驻口径与 generated 只读视图
                      ├── work/      过程：每个角色一个子树（草稿、提案、日志）
                      └── decisions/ inbox/
-scripts/             安装、启停、状态、角色管理、同步（执行面，仅 owner 可写）
+scripts/             安装、启停、状态、角色管理（执行面，仅 owner 可写）
 tools/               只读包装器与校验工具（执行面，仅 owner 可写）
-layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
 .opc/                安装脚本生成（不进版本库）
 ```
+
+实例**不再持有** `layouts/`、`mods/`、`seeds/`：布局与看板全局安装，骨架源只在模版里。
 
 **生成物不要手改**：`knowledge/team.md`、`knowledge/business/README.md`、
 `knowledge/business/选题日历.md`、`knowledge/inbox/<角色>.md`（首次生成后由角色使用）、
@@ -100,53 +138,34 @@ layouts/             Herdr 窗口布局（默认 / focus / grid / monitor）
 
 ```text
 ~/Projects/opc-template     模版（公开仓库 Woods30/opc-template）
-                            只装机制与占位骨架；没有任何 knowledge/ 目录
-~/Documents/OPC             实例（本地 git，无远端）
+                            template/ 是运行载荷；没有任何实例业务数据
+~/Projects/<实例目录>       实例（本地 git，无远端）
                             真实业务 + 实例配置 + 模版的机制副本
 ```
 
-- 模版根目录的 `.opc-template-repo` 是标记。`opc-install.sh` 与 `opc-sync.sh`
-  检测到它就拒绝执行——模版不能变成实例。
-- 模版的占位骨架放在 `seeds/knowledge/business/`，开实例时物化到实例的
-  `knowledge/business/`；物化之后那份文件就归业务所有。
-- `opc-new.sh` 不复制模版的 `knowledge/`（sync-policy 里是 `local`）。实例的内容区由安装器
-  创建，业务规则与 generated 视图入口从 `seeds/` 物化，不携带模版工作区的真实业务数据。
-- `opc-new.sh` 建实例时写基线快照 `.opc/sync-base/`：没有基线就判不出本地改没改过，
-  模版后续的机制更新传不进实例。老实例补基线跑 `scripts/opc-sync.sh baseline --from <模版>`。
+- 模版根目录的 `.opc-template-repo` 是标记。实例安装器检测到它就拒绝执行。
+- 注册表 `~/.config/opc/instances.json` 记录实例路径、前缀、安装时间与模版 commit；
+  `opc ls` 列出，`opc upgrade --all` 使用它。
 - 实例仓库建议**不推任何远端**；业务数据只在本机，另做一个本地裸库镜像备份。
-- 模版迭代后同步到实例：`scripts/opc-sync.sh check` 看差异，
-  `scripts/opc-sync.sh pull` 拉更新。冲突时业务文件不会被改动，产物在
-  `.opc/sync-conflicts/`。
 - 实例里发现模版要改，**不要直接改模版文件**：写提案到
   `knowledge/work/<角色>/template-proposals/`，gm 汇总，owner 脱敏后搬进模版仓库。
 
-命令速查：
-
-```sh
-scripts/opc-sync.sh status     # 实例摘要：模版来源、上次同步、pinned 数
-scripts/opc-sync.sh check      # 这次的变更计划（只读）
-scripts/opc-sync.sh pull       # 拉取模版更新
-scripts/opc-sync.sh baseline   # 固化基线快照（老实例接入模版时用；不改业务文件）
-scripts/opc-sync.sh seeds      # 骨架差异；--merge <目标> 做三方合并
-scripts/opc-sync.sh mark <路径> # 固化本地定制，模版此后不覆盖
-```
-
-退出码：`0` 成功/无差异；`1` 有差异或失败；`2` 用法/环境错；`3` 有冲突
-（业务文件未被改动）。机制细节见 [`docs/同步机制.md`](docs/同步机制.md)。
+模版仓库自己的开发约定见 [`AGENTS.md`](AGENTS.md)。
 
 ## 模版自检：opc-lint
 
-公开仓库必须保证没有真实业务。`scripts/opc-lint.sh` 就是这道闸：
+公开仓库必须保证没有真实业务。`bin/opc lint` 就是这道闸：
 
 ```sh
-scripts/opc-lint.sh                          # 在模版仓库根跑
-scripts/opc-lint.sh --strict                 # 警告也算违规
-scripts/opc-lint.sh --private-words ~/.config/opc/private-words.txt
+bin/opc lint                                # 在模版仓库根跑
+bin/opc lint --strict                       # 警告也算违规
+bin/opc lint --private-words ~/.config/opc/private-words.txt
 ```
 
 检查的内容：模版里没有 `knowledge/**`、种子还是占位而不是真实内容、种子里没有
-具体日期/链接/大数、频道清单为空、角色注册表字段合法、策略覆盖了每个文件、
-守卫本身在位、模版里没有本机路径、提案格式完整。角色启动那条规则两边都查：
+具体日期/链接/大数、频道清单为空、角色注册表字段合法、`install-manifest.json`
+覆盖每个载荷文件、守卫本身在位、模版里没有本机路径、载荷里没有已删除的同步机制引用、
+全局 UI 名称固定、脚本指向全局布局、提案格式完整。角色启动那条规则两边都查：
 模版里的 `agents/*.md` 与实例里自己的 `agents/*.md` 都要写明「等 gm 派工」
 （gm 是「先与 owner 对齐方向」）；写成「不用等 gm 派工」这种否定句、
 或同一小节里前后矛盾，一样算违规。
@@ -154,13 +173,39 @@ scripts/opc-lint.sh --private-words ~/.config/opc/private-words.txt
 `~/.config/opc/private-words.txt`；CI 用 secret 注入，没有 secret 时该规则自动跳过
 而不是失败。
 
-`.github/workflows/lint.yml` 在每次 push 与 PR 上跑它，另跑两组测试：
+`.github/workflows/lint.yml` 在每次 push 与 PR 上跑它，另跑测试：
 
 ```sh
-python3 tools/tests/test_opc_lint.py    # lint 规则本身
-python3 tools/tests/test_preflight.py   # 发布前自检
-bash tools/tests/test_opc_sync.sh       # 同步机制的场景回归
+python3 tests/test_opc_lint.py          # lint 规则本身
+python3 tests/test_preflight.py         # 发布前自检
+bash tests/test_opc_install.sh          # 安装与全局 UI
+bash tests/test_opc_upgrade.sh          # 指纹升级
+bash tests/test_opc_migrate.sh          # 旧实例迁移
 ```
+
+## 实例冒烟：opc-smoke
+
+模版自检是**模版仓库**的事（`tests/` 里那几套）。实例要验的是另一件事：
+**这套工具链能不能跑通主流程**。`tools/opc-smoke` 干这个：
+
+```sh
+tools/opc-smoke          # 跑一遍，退出码 0 表示通过
+tools/opc-smoke --json   # 机器可读的结果
+```
+
+它在**临时目录**里造一份最小实例（一个假频道、一个假指标、一份空名册），
+把本实例的 `tools/opc-workflow` 拷进去，走一遍完整闭环——
+`create-content → drafting → reviewing → approved → ready → create-publication
+→ reviewing → approved → scheduled → published → record-metrics → reviewed
+→ closed → build`——然后检查落盘结果（内容卡、publication、指标窗口、看板 JSON）。
+
+它**不读实例的业务数据**，所以「有些目录可能不存在」不影响冒烟：fixture 自带
+目录，实例少什么都能跑；反过来，实例的工具坏了、workflow 改坏了，这里就会红。
+安装器默认在装完前跑一次，失败即安装失败（`scripts/opc-install.sh --skip-smoke`
+可跳过）；团队启动前 `scripts/opc-up.sh` 也会先 `build` 一次，看板不会是空的。
+
+**实例里不要跑模版仓库的 `tests/`**：那是模版自检，依赖 `.opc-template-repo` 标记，
+实例化时该标记被明确排除，在实例里跑必然失败——那是位置约束，不是工具坏了。
 
 ## 角色是配置
 
@@ -203,7 +248,7 @@ scripts/opc-role.sh add reviewer --cli codex --desc "独立审稿" --scope knowl
 ## 频道是配置
 
 `channels.json` 决定 `knowledge/business/` 下有哪些频道目录。模版**不预置频道**——
-`/opc-init` 会问你要哪几个，每个频道一个英文 `id`（小写 slug，会直接成为目录名）
+`/opc-init` 与 `bin/opc install --answers` 会问你要哪几个，每个频道一个英文 `id`（小写 slug，会直接成为目录名）
 和一个中文显示名；暂不做的写 `enabled: false`。
 
 ```json
@@ -353,22 +398,21 @@ symlink 和越出实例目录的真实路径；cancelled publication 不会被�
 **规则不在脚本里**：口径改 `品牌口径.md`；内容与 publication 事实改对应 canonical 记录。
 只有新增「代码类」检查才需要改 `tools/preflight`——那是 owner 的活。
 
-它是**内容线专用**工具。如果这个实例不做内容，把 `tools/preflight` 与 `tools/tests/`
-连同 `opc-install.sh` 里两条 `Bash(./tools/preflight:*)` 白名单一起删掉即可，其余角色
-不受影响。
+它是**内容线专用**工具。如果这个实例不做内容，把 `tools/preflight` 连同
+`opc-install.sh` 里两条 `Bash(./tools/preflight:*)` 白名单一起删掉即可，其余角色
+不受影响。（模版仓库的 `tests/` 不属于实例，不用管。）
 
 ## 窗口布局与多 pane
 
-`layouts/` 下的 JSON 是 **herdr-app 的窗口布局**（不是 `hc` 的概念）。安装时按文件名装进
-`~/.config/herdr-app/layouts/`：
+布局与看板 mod **全局只装一份**，放在 `~/.config/herdr-app/`，所有实例共用。
+`bin/opc install` / `upgrade` 负责安装；实例不再复制自己的副本。
 
-| 文件 | 装成 | 用途 |
-|---|---|---|
-| `opc.json` | `<前缀>.json` | 默认：左侧栏 + 标签栏 + 右侧文件面板 |
-| `focus.json` | `<前缀>-focus.json` | 只留主区，pane 占满整个窗口 |
-| `grid.json` | `<前缀>-grid.json` | 更紧凑的 pane 边框与间距，适合 2×2 |
-| `monitor.json` | `<前缀>-monitor.json` | 保留 agents 列表，去掉右侧面板 |
-| `opc-dashboard.json` | `<前缀>-opc-dashboard.json` | 业务看板：只读面板，不含终端 |
+| 布局 | 用途 |
+|---|---|
+| `opc` | 默认：左侧栏 + 标签栏 + 右侧文件面板 |
+| `opc-focus` | 只留主区，pane 占满整个窗口 |
+| `opc-grid` | 更紧凑的 pane 边框与间距，适合 2×2 |
+| `opc-monitor` | 保留 agents 列表，去掉右侧面板 |
 
 切换：`ctrl-shift-l` 循环，或
 
@@ -376,12 +420,37 @@ symlink 和越出实例目录的真实路径；cancelled publication 不会被�
 herdr-app do layout.switch '{"name":"opc-grid"}'
 ```
 
-### 业务看板：mods/opc-dashboard
+### 业务看板：右上角一个「看板」入口
 
-看板是独立的 **herdr mod**（`mods/opc-dashboard/`），装进
-`~/.config/herdr-app/mods/<前缀>-opc-dashboard/`。它只读 `knowledge/business/dashboard.json`，
-不遍历也不解析 canonical Markdown，也不提供任何业务写入操作：canonical 记录的写入仍然
-只有 workflow 命令，看板最多重跑一次 `build` 刷新 generated 视图：
+看板是全局 herdr mod `opc-dashboard`，只读当前实例的
+`knowledge/business/dashboard.json`，不遍历也不解析 canonical Markdown，也不提供任何
+业务写入操作：canonical 记录的写入仍然只有 workflow 命令，看板最多重跑一次 `build`
+刷新 generated 视图。
+
+**实例发现**：`opc-tabs` 每 2 秒读一次当前 active space 的
+`<folder>/.opc/instance.json`，确认 `kind === "opc-instance"` 后才显示「看板」按钮。
+所以：
+
+- 一个 `opc` 布局可以服务所有实例，看板自动展示当前 space 对应实例的数据；
+- 非 OPC 目录的 space 不显示入口；
+- 远端 space（`machine` 不为空）v1 不显示入口。
+
+**入口在标签栏右上角**，跟 Files / Changes 平级：
+
+- 自带的 `tabs` mod 把按钮写死了，想在旁边加一个平级入口，只能复制一份再改——
+  `opc-tabs` 就是 Herdr 自带 `tabs` 的副本，只多一个「看板」按钮（差异都标了
+  「OPC 改动」，见 `template/mods/opc-tabs/UPSTREAM.md`）。
+- 点一下开一个看板 tab；看板在前台时再点一下关掉，在后台时点一下切过去。
+- 想加快捷键，在 `~/.config/herdr-app/keys.json` 的 `layout:opc` 段里加一行
+  （安装器不替你改这个全局文件）：
+
+  ```json
+  "layout:opc": { "ctrl-shift-b": "opc-tabs.dashboard" }
+  ```
+
+  焦点在终端里时快捷键归终端，入口按钮始终可用。
+
+看板本身：
 
 - 顶部是数据截止时间、条目计数、刷新按钮，以及校验 warning / error 与缓存过期的提示
 - 筛选支持时间、渠道、内容状态、publication 状态、角色、优先级与阻塞；「含历史」默认关闭，
@@ -389,12 +458,13 @@ herdr-app do layout.switch '{"name":"opc-grid"}'
 - 分区展示紧急项、内容流水线、发布节奏、待 owner / gm 处理、渠道增长与复盘；终端与
   agent 状态只是辅助信息
 - 点条目在上方读出对应 canonical 源文件（只读预览）；点角色名按 `knowledge/team.md` 的
-  **准确终端名**找到那个终端，切回本实例的主布局并聚焦它，不按命名规则猜地址；
-  打不开时给出可恢复的错误，不改业务状态
+  **准确终端名**找到那个终端并聚焦，不按命名规则猜地址；打不开时给出可恢复的错误，
+  不改业务状态
+
+**空看板不等于坏看板**：业务刚起步时没有内容是正常状态，看板给的是中性提示 + 重新生成
+按钮；只有缓存读不到或 JSON 坏了才报红。
 
 文件变化经过短 debounce 后刷新（连续事件合并成一次），另有低频兜底刷新与手动刷新。
-安装器也会把 `mods/opc-dashboard` 装进 herdr 配置目录；没装 herdr 时只是少一个面板，
-第一阶段的 workflow 与 generated Markdown 不受影响。
 
 **一屏看多个角色**：
 
@@ -572,8 +642,9 @@ OPC **不为 codex 生成项目级权限 hook 或角色 scope 守卫**。模版�
 实例路径**不要含空格**，否则 hc 模板的 `command` 会被拆开。
 
 一个模版可以开多个实例，每个实例有自己的前缀、自己的业务仓库、自己的
-`.opc/instance.json`（记着模版来源）。同步是**单向**的：模版 → 实例。
-实例之间互不影响——权限白名单按前缀限定，一个实例读不到另一个实例的终端。
+`.opc/instance.json`（记着模版来源）。升级是**单向**的：模版 → 实例。
+实例之间互不影响——权限白名单按前缀限定，一个实例读不到另一个实例的终端；
+全局 UI 只有一份，看板按当前 space 的 folder 自动切换数据源。
 
 ## 排障
 
@@ -592,14 +663,14 @@ OPC **不为 codex 生成项目级权限 hook 或角色 scope 守卫**。模版�
 | `hc run` 报名字被占用 | 同前缀已有实例在跑，`hc ls` 查看或换前缀 |
 | `opc-up` 报「模板或启动器缺失」 | 先跑 `opc-install.sh`，或 `opc-up.sh --install` |
 | agent 执行 `opc-up.sh` / `opc-down.sh` 被拒 | 预期行为：非 TTY 且没带 `--yes` 会被脚本门槛 `exit 2`；owner 明确同意后加 `--yes` |
-| 在模版仓库里跑 `opc-install.sh` 被拒 | 预期行为：模版不承载业务。用 `scripts/opc-new.sh <实例目录> <前缀>` 开实例 |
+| 在模版仓库里跑 `opc-install.sh` 被拒 | 预期行为：模版不承载业务。用 `bin/opc install <实例目录> <前缀>` 开实例 |
 | `opc-lint.sh` 报「模版里出现 knowledge/ 下的文件」 | 有人把业务写进了模版仓库。把它挪回实例仓库，并删掉模版里那份 |
 | `opc-lint.sh` 报「种子没有占位了」 | 种子被填成了真实内容。恢复成占位骨架，真实内容放实例 |
-| `opc-sync.sh check` 报 `local-modified` | 实例本地改过、模版没动。要么提交本地改动，要么 `opc-sync.sh mark <路径>` 固化 |
-| `opc-sync.sh check` 报 `unknown` | 没有基线快照，判不出本地是否改过。跑 `opc-sync.sh baseline --from <模版>` 固化基线后重跑 check |
-| `opc-sync.sh pull` 退出码 3（冲突） | 本地与模版都改了同一文件。业务文件**没被改动**；合并结果在 `.opc/sync-conflicts/`，手改后重跑 |
-| `opc-sync.sh pull` 说「将被覆盖的路径有未提交改动」 | 先提交或 stash 那些路径，或加 `--force` |
-| 同步后角色行为没变 | `agents/` 与 `AGENTS.md` 是提示词，改动要重启才生效：`scripts/opc-down.sh && scripts/opc-up.sh` |
+| `opc upgrade` 说机制文件被本地改过 | 预期行为：机制文件按指纹校验。看它打印的 diff，确认放弃本地改动后加 `--force-mechanism` |
+| `opc upgrade` 卡在 old structure | 旧实例会先迁移。先 `--dry-run` 看动作，确认后加 `--yes` |
+| 升级后角色行为没变 | `agents/` 与 `AGENTS.md` 是提示词，改动要重启才生效：`scripts/opc-down.sh && scripts/opc-up.sh` |
+| 非 OPC 目录的 space 没有「看板」按钮 | 预期行为：入口只在 space 的 folder 是 OPC 实例时显示。space 要以实例根为 folder |
+| 升级后看板没更新 | 全局 UI 只有一份，升级任一实例都会更新；重启 `herdr-app` 生效 |
 | `bash` 报 `xxx: unbound variable` 且变量后面跟着中文 | bash 会把中文全角字符吸进变量名。写成 `${xxx}` 再接中文 |
 
 ## License
