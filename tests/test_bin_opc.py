@@ -120,6 +120,39 @@ class BinOpcTestCase(unittest.TestCase):
             "install", str(target), "t", "--template", str(ROOT), "--no-input")
         self.assertNotEqual(0, proc.returncode)
 
+    def test_install_rejects_manifest_path_escape(self):
+        # 清单里的路径能读出载荷外的文件：绝对路径与 `..` 都要被拒。
+        tpl = self.tmp / "tpl"
+        shutil.copytree(str(ROOT / "template"), str(tpl / "template"))
+        manifest_path = tpl / "template" / "install-manifest.json"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data["starters"]["files"].append({
+            "source": "../../../etc/passwd", "target": "leak.txt"})
+        manifest_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        target = self.tmp / "instance"
+        proc = self.run_opc(
+            "install", str(target), "t", "--template", str(tpl),
+            "--no-input", "--skip-smoke")
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("路径不合法", proc.stdout + proc.stderr)
+        self.assertFalse((target / "leak.txt").exists())
+
+    def test_upgrade_does_not_write_through_symlink(self):
+        # 实例里的起始材料是软链接且指向实例外：升级不能顺着它改写外部文件。
+        target = self.tmp / "instance"
+        proc = self.run_opc(
+            "install", str(target), "t", "--template", str(ROOT),
+            "--no-input", "--skip-smoke")
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        outside = self.tmp / "outside.md"
+        outside.write_text("原来的内容\n", encoding="utf-8")
+        role_file = target / "agents" / "gm" / "AGENTS.md"
+        role_file.unlink()
+        role_file.symlink_to(outside)
+        self.run_opc("upgrade", str(target), "--template", str(ROOT), "--skip-smoke")
+        self.assertEqual("原来的内容\n", outside.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

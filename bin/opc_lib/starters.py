@@ -141,6 +141,10 @@ def expand(payload, manifest):
                 kind, unit=unit))
     for spec in manifest.get("seeds", []):
         entries.append(_entry(spec["target"], spec["source"], KIND_SEED))
+    for entry in entries:
+        _check_entry(entry)
+        if not _inside(payload, payload / entry["source"]):
+            raise OpcError("起始材料来源不在模版载荷内：{}".format(entry["source"]))
     return entries
 
 
@@ -169,6 +173,9 @@ def install(payload, manifest, instance, entries=None):
         src = payload / entry["source"]
         dst = instance / entry["target"]
         if not src.is_file():
+            continue
+        if dst.is_symlink():
+            # 目标是软链接：不顺着它写，否则会改到别处的文件。
             continue
         if not dst.exists():
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +286,13 @@ def plan(payload, manifest, instance, baseline, entries=None):
                 new_files[rel] = dict(record)
             continue
 
+        if dst.is_symlink():
+            # 目标是软链接：不顺着它写，避免改到实例里别的文件。
+            result["kept"].append((rel, "目标是软链接，已保留"))
+            if record:
+                new_files[rel] = dict(record)
+            continue
+
         if entry["kind"] in ADD_ONLY_KINDS:
             # 种子只补不覆盖：实例里有就留着，owner 删掉的不再补。
             if dst.exists():
@@ -353,6 +367,23 @@ def _safe_rel(rel):
     if rel.startswith("/") or os.path.isabs(rel):
         return False
     return ".." not in Path(rel).parts
+
+
+def _inside(root, path):
+    """路径（含软链接落点）是否仍在 root 之下。"""
+    try:
+        resolved = Path(path).resolve()
+        base = Path(root).resolve()
+    except OSError:
+        return False
+    return resolved == base or base in resolved.parents
+
+
+def _check_entry(entry):
+    """起始材料条目的路径合法性：相对、无 `..`、来源在载荷内。"""
+    for key in ("source", "target"):
+        if not _safe_rel(entry.get(key)):
+            raise OpcError("起始材料路径不合法：{} = {}".format(key, entry.get(key)))
 
 
 def _resolves_inside(instance, path):

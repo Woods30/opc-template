@@ -30,38 +30,79 @@ def load(template_root):
     return data
 
 
+def safe_rel(rel):
+    """清单里的路径必须是载荷内的相对路径。
+
+    绝对路径或带 `..` 的路径能读出载荷外的文件；起始材料会把它们抄进
+    实例，等于让一份被改过的清单搬走 owner 目录外的东西。
+    """
+    if not rel or not isinstance(rel, str):
+        return False
+    path = Path(rel)
+    if path.is_absolute() or str(rel).startswith("/"):
+        return False
+    return ".." not in path.parts
+
+
+def _inside(root, path):
+    """路径（含软链接落点）是否仍在 root 之下。"""
+    try:
+        resolved = Path(path).resolve()
+        base = Path(root).resolve()
+    except OSError:
+        return False
+    return resolved == base or base in resolved.parents
+
+
+def _check(root, rel, what):
+    if not safe_rel(rel):
+        raise OpcError("载荷清单里的{}路径不合法：{}".format(what, rel))
+    if not _inside(root, root / rel):
+        raise OpcError("载荷清单里的{}路径不在载荷内：{}".format(what, rel))
+
+
 def validate(template_root, manifest):
     root = payload_root(template_root)
     if manifest.get("version") != 1:
         raise OpcError("载荷清单版本不支持：{}".format(manifest.get("version")))
     mech = manifest.get("mechanism") or {}
     for rel in mech.get("dirs", []) + mech.get("files", []):
+        _check(root, rel, "机制")
         if not (root / rel).exists():
             raise OpcError("载荷清单引用的机制路径不存在：{}".format(rel))
     for item in manifest.get("seeds", []):
+        _check(root, item["source"], "种子来源")
         if not (root / item["source"]).is_file():
             raise OpcError("种子来源不存在：{}".format(item["source"]))
         if not item.get("target"):
             raise OpcError("种子缺少 target：{}".format(item["source"]))
+        _check(root, item["target"], "种子目标")
     starters = manifest.get("starters") or {}
     for item in starters.get("files", []):
+        _check(root, item["source"], "起始材料来源")
         if not (root / item["source"]).is_file():
             raise OpcError("起始材料来源不存在：{}".format(item["source"]))
         if not item.get("target"):
             raise OpcError("起始材料缺少 target：{}".format(item["source"]))
+        _check(root, item["target"], "起始材料目标")
     for item in starters.get("dirs", []):
+        _check(root, item["source"], "起始材料目录")
         path = root / item["source"]
         # 目录型起始材料可以先声明后落地（如 `skills/`）：目录不在就不起作用。
         if path.exists() and not path.is_dir():
             raise OpcError("起始材料来源不是目录：{}".format(item["source"]))
         if not item.get("target"):
             raise OpcError("起始材料目录缺少 target：{}".format(item["source"]))
+        _check(root, item["target"], "起始材料目录目标")
     ui = manifest.get("ui") or {}
     for item in ui.get("layouts", []):
+        _check(root, item["source"], "布局")
         if not (root / item["source"]).is_file():
             raise OpcError("布局来源不存在：{}".format(item["source"]))
-        if item.get("asset") and not (root / item["asset"]).is_file():
-            raise OpcError("布局资源不存在：{}".format(item["asset"]))
+        if item.get("asset"):
+            _check(root, item["asset"], "布局资源")
+            if not (root / item["asset"]).is_file():
+                raise OpcError("布局资源不存在：{}".format(item["asset"]))
     for name in ui.get("mods", []):
         if not (root / "mods" / name).is_dir():
             raise OpcError("mod 目录不存在：mods/{}".format(name))
