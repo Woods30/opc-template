@@ -142,6 +142,81 @@ opc_safe_skill_name() {
   return 0
 }
 
+# 技能 frontmatter 的原始 description 值（不做引号剥离）。
+# 单独取一次是为了能看出「值是不是块标量」：块标量（| 或 >）说明描述跨了多行。
+opc_skill_description_raw() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  awk '
+    NR==1 { if ($0 !~ /^---[[:space:]]*$/) exit; next }
+    /^---[[:space:]]*$/ { exit }
+    {
+      pat = "^description[[:space:]]*:[[:space:]]*"
+      if ($0 ~ pat) { sub(pat, ""); print; exit }
+    }
+  ' "$file" 2>/dev/null
+}
+
+# 技能 frontmatter 校验：name 与目录名一致、description 非空且是单行。
+# 通过返回 0；不通过返回 1，原因写在 OPC_SKILL_ERROR 里。
+# 读技能的地方都用它，所以模版里的技能坏了，索引里不会出现一条坏条目。
+opc_skill_frontmatter_error() {
+  local file="$1" expected="${2:-}" name raw desc
+  OPC_SKILL_ERROR=""
+  [[ -f "$file" ]] || { OPC_SKILL_ERROR="技能文件不存在"; return 1; }
+  head -n 1 "$file" 2>/dev/null | grep -q '^---[[:space:]]*$' || {
+    OPC_SKILL_ERROR="缺少 frontmatter"; return 1; }
+  name="$(opc_frontmatter_value "$file" name)"
+  if [[ -z "$name" ]]; then
+    OPC_SKILL_ERROR="frontmatter 缺少 name"; return 1
+  fi
+  if [[ -n "$expected" && "$name" != "$expected" ]]; then
+    OPC_SKILL_ERROR="frontmatter 的 name 与目录名不一致（name=${name}，目录=${expected}）"
+    return 1
+  fi
+  raw="$(opc_skill_description_raw "$file")"
+  desc="$(opc_skill_description "$file")"
+  if [[ -z "$raw" ]]; then
+    OPC_SKILL_ERROR="frontmatter 缺少 description"; return 1
+  fi
+  case "$raw" in
+    '|'*|'>'*) OPC_SKILL_ERROR="description 必须是单行，不能用块标量"; return 1 ;;
+  esac
+  if [[ -z "$desc" ]]; then
+    OPC_SKILL_ERROR="frontmatter 的 description 是空的"; return 1
+  fi
+  return 0
+}
+
+# 技能文件的真实路径：解析软链接后必须仍落在实例根之下，否则不可用。
+# 技能说明会被读进角色提示词，等于交给终端执行；实例里的 skills/ 或
+# skills/<名字>/SKILL.md 本身可能就是指向实例外的软链接，读进来就是越权。
+# 成功时把路径写进 OPC_SKILL_FILE 并返回 0；失败返回 1，原因写在 OPC_SKILL_ERROR 里。
+# （用全局量而不是 stdout：命令替换会开子 shell，全局量就丢了。）
+opc_safe_skill_file() {
+  local root="$1" name="$2" root_resolved skills_resolved file_resolved
+  OPC_SKILL_ERROR=""
+  OPC_SKILL_FILE=""
+  opc_safe_skill_name "$name" || { OPC_SKILL_ERROR="技能名不合法"; return 1; }
+  root_resolved="$(cd "$root" 2>/dev/null && pwd -P)" || {
+    OPC_SKILL_ERROR="实例根目录读不到"; return 1; }
+  skills_resolved="$(opc_resolved_path "$root_resolved" "skills")" || {
+    OPC_SKILL_ERROR="技能目录解析失败"; return 1; }
+  case "$skills_resolved" in
+    "$root_resolved"/*) ;;
+    *) OPC_SKILL_ERROR="技能目录指向实例外"; return 1 ;;
+  esac
+  file_resolved="$(opc_resolved_path "$root_resolved" "skills/$name/SKILL.md")" || {
+    OPC_SKILL_ERROR="技能文件解析失败"; return 1; }
+  case "$file_resolved" in
+    "$root_resolved"/*) ;;
+    *) OPC_SKILL_ERROR="技能文件指向实例外"; return 1 ;;
+  esac
+  [[ -f "$file_resolved" ]] || { OPC_SKILL_ERROR="技能文件不存在"; return 1; }
+  OPC_SKILL_FILE="$file_resolved"
+  return 0
+}
+
 # frontmatter 里的一个字段值。只认文件开头那一段 --- ... ---，
 # 且只取首行匹配，避免正文里的同名行被当成字段。
 opc_frontmatter_value() {
@@ -192,6 +267,8 @@ opc_role_body() {
 
 # 技能索引：只列 roles.json 里选中、且实例里确实存在的技能。
 # 缺失的技能只告警并跳过——别的角色仍要能启动。
+# 技能文件要经过 opc_safe_skill_file：指向实例外的软链接一律跳过，
+# 读进来的内容会变成角色的指令，不能让实例外的文件混进来。
 opc_skill_index() {
   local role="$1" root="$2" name file desc
   local lines=()
@@ -201,9 +278,13 @@ opc_skill_index() {
       echo "警告：角色 $role 选了非法技能名，已跳过：$name" >&2
       continue
     fi
-    file="$root/skills/$name/SKILL.md"
-    if [[ ! -f "$file" ]]; then
-      echo "警告：角色 $role 选中的技能不存在，已跳过：$name" >&2
+    if ! opc_safe_skill_file "$root" "$name"; then
+      echo "警告：角色 $role 选中的技能已跳过：${name}（${OPC_SKILL_ERROR:-不可用}）" >&2
+      continue
+    fi
+    file="$OPC_SKILL_FILE"
+    if ! opc_skill_frontmatter_error "$file" "$name"; then
+      echo "警告：角色 $role 选中的技能已跳过：${name}（${OPC_SKILL_ERROR:-frontmatter 不合法}）" >&2
       continue
     fi
     desc="$(opc_skill_description "$file")"

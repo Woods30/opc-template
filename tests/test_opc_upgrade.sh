@@ -256,7 +256,52 @@ expect "老实例改过的起始材料被保留" grep -q "老实例里 owner 改
 expect "老实例的角色文件还在" test -f "$INST4/agents/gm/AGENTS.md"
 expect "老实例升级后有了起始材料基线" test -f "$INST4/.opc/starters.json"
 
-# 16. 注册表记录实例
+# 16. 实例里删掉的技能不再复活
+INST5="$WORK/inst5"
+"$ROOT/bin/opc" install "$INST5" t5 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+check "带技能库的实例准备就绪" "0" "$?"
+rm -rf "$INST5/skills/instance-ops"
+"$ROOT/bin/opc" upgrade "$INST5" --template "$ROOT" --skip-smoke >/dev/null 2>&1
+check "删掉技能后升级仍成功" "0" "$?"
+expect "删掉的技能不被补回" test ! -e "$INST5/skills/instance-ops/SKILL.md"
+expect "没删的技能还在" test -f "$INST5/skills/knowledge-writing/SKILL.md"
+
+# 17. 改过技能里的任一文件，整个技能冻结；没改的技能照常更新
+TPL5="$WORK/tpl5"
+mkdir -p "$TPL5"
+cp -R "$ROOT/template" "$TPL5/template"
+printf '\n模版侧的新版本。\n' >> "$TPL5/template/skills/opc-workflow/SKILL.md"
+printf '\n模版侧的新版本。\n' >> "$TPL5/template/skills/knowledge-writing/SKILL.md"
+INST6="$WORK/inst6"
+"$ROOT/bin/opc" install "$INST6" t6 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+printf '\nowner 改的。\n' >> "$INST6/skills/opc-workflow/SKILL.md"
+out="$("$ROOT/bin/opc" upgrade "$INST6" --template "$TPL5" --skip-smoke 2>&1)"
+rc=$?
+check "技能冻结不阻断升级" "0" "$rc"
+expect "技能冻结有提示" grep -q "技能冻结" <<< "$out"
+expect "被冻结的技能保持 owner 的版本" grep -q "owner 改的" "$INST6/skills/opc-workflow/SKILL.md"
+expect "被冻结的技能不更新到模版版本" \
+  bash -c "! grep -q '模版侧的新版本' '$INST6/skills/opc-workflow/SKILL.md'"
+expect "没被改的技能照常更新" \
+  grep -q "模版侧的新版本" "$INST6/skills/knowledge-writing/SKILL.md"
+
+# 18. 起始材料是指向实例外的软链接：升级不顺着它写到实例外
+INST7="$WORK/inst7"
+"$ROOT/bin/opc" install "$INST7" t7 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+printf 'owner 的内容\n' > "$WORK/outside.md"
+rm -f "$INST7/skills/knowledge-writing/SKILL.md"
+ln -s "$WORK/outside.md" "$INST7/skills/knowledge-writing/SKILL.md"
+printf 'owner 的规约\n' > "$WORK/outside-agents.md"
+rm -f "$INST7/AGENTS.md"
+ln -s "$WORK/outside-agents.md" "$INST7/AGENTS.md"
+out="$("$ROOT/bin/opc" upgrade "$INST7" --template "$TPL5" --skip-smoke 2>&1)"
+rc=$?
+check "起始材料软链接指向实例外时升级仍成功" "0" "$rc"
+check "实例外的文件没有被改写" "owner 的内容" "$(cat "$WORK/outside.md")"
+check "实例外的规约文件没有被改写" "owner 的规约" "$(cat "$WORK/outside-agents.md")"
+expect "指向实例外的软链接有告警" grep -q "指向实例外" <<< "$out"
+
+# 19. 注册表记录实例
 expect "注册表包含实例" grep -q "$INST" "$OPC_CONFIG_DIR/instances.json"
 check "opc ls 列出实例" "1" "$("$ROOT/bin/opc" ls 2>/dev/null | grep -c "^t  ")"
 

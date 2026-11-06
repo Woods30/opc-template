@@ -242,6 +242,20 @@ tools/opc-smoke --json   # 机器可读的结果
 | `skills` | 该角色在根级技能库里选中的技能；只有选中且文件存在的才进 hc 模板的技能索引 |
 | `approvedSkills` | 逐个批准的 **CLI 原生**技能名；与 `skills` 是两回事 |
 
+### 模版自带的技能库
+
+模版带三个技能，装实例时整库复制到 `skills/`，角色按 `roles.json` 的 `skills` 选用：
+
+| 技能 | 用途 | 默认选它的角色 |
+|---|---|---|
+| `opc-workflow` | 用 `tools/opc-workflow` 推进内容生命周期 | gm、content、growth |
+| `knowledge-writing` | `knowledge/` 的落盘规矩：目录归属、决策与 inbox、取材范围 | gm、content、growth、dev |
+| `instance-ops` | 运行实例：启停角色、查名册与状态、管频道、升级 | gm、dev |
+
+技能 frontmatter 必须有 `name`（与目录名一致）与 `description`（单行）。选中的技能
+在实例里不存在时只告警并跳过，不阻断角色启动；技能文件指向实例外时同样跳过——
+技能说明会进角色提示词，不能让实例外的文件混进来。
+
 用命令改：
 
 ```sh

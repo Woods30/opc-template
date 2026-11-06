@@ -6,7 +6,11 @@
       "cli": "claude",
       "description": "OPC 公司总经理。定战略、拆目标、跨角色派工与裁决、定稿把关与发布事实落盘、内容关闭。不写长稿、不做投放、不写生产代码。",
       "template": "agents/gm/AGENTS.md",
-      "skills": [],
+      "skills": [
+        "opc-workflow",
+        "knowledge-writing",
+        "instance-ops"
+      ],
       "permissionMode": "bypassPermissions",
       "scope": [
         "knowledge/content",
@@ -23,7 +27,10 @@
       "cli": "claude",
       "description": "OPC 内容经理。canonical 选题、撰写与编辑、多渠道适配（频道清单见 channels.json）、品牌口径维护。不擅自发布未过 gm 审阅的内容。",
       "template": "agents/content/AGENTS.md",
-      "skills": [],
+      "skills": [
+        "knowledge-writing",
+        "opc-workflow"
+      ],
       "permissionMode": "bypassPermissions",
       "scope": [
         "knowledge/work/content",
@@ -38,7 +45,10 @@
       "cli": "claude",
       "description": "OPC 增长经理。渠道组合与投放计划、增长实验（假设/指标/结论）、落地页转化路径、漏斗复盘。不承诺预算、不擅自改定价。",
       "template": "agents/growth/AGENTS.md",
-      "skills": [],
+      "skills": [
+        "knowledge-writing",
+        "opc-workflow"
+      ],
       "permissionMode": "bypassPermissions",
       "scope": [
         "knowledge/work/growth",
@@ -52,7 +62,10 @@
       "cli": "claude",
       "description": "OPC 研发负责人。公司需要的一切技术研发工作——脚本与自动化、内部工具、数据管道、项目开发（官网 / SaaS / 服务）。不擅自改业务优先级、不对外承诺。",
       "template": "agents/dev/AGENTS.md",
-      "skills": [],
+      "skills": [
+        "instance-ops",
+        "knowledge-writing"
+      ],
       "permissionMode": "bypassPermissions",
       "scope": [
         "knowledge/work/dev",

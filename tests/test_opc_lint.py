@@ -56,6 +56,9 @@ MANIFEST = {
         "dirs": ["scripts", "agents"],
         "files": ["AGENTS.md"],
     },
+    "starters": {
+        "dirs": [{"source": "skills", "target": "skills", "type": "skill"}],
+    },
     "config": [
         {"source": "roles.json", "target": "roles.json", "arrayPath": "roles",
          "key": "name", "onNew": "append-disabled"},
@@ -100,7 +103,7 @@ ROLES = {
 }
 
 
-PAYLOAD_TOP = {"agents", "scripts", "tools", "layouts", "mods", "seeds"}
+PAYLOAD_TOP = {"agents", "scripts", "tools", "layouts", "mods", "seeds", "skills"}
 PAYLOAD_FILES = {"AGENTS.md", "LICENSE", "roles.json", "channels.json", "install-manifest.json"}
 
 
@@ -808,6 +811,63 @@ class LintTestCase(unittest.TestCase):
         )
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_OK, checks["L13"].status)
+
+    # ---- L23 技能库 frontmatter ----
+
+    def skill_check(self):
+        return run_lint(self.repo)["L23"]
+
+    def test_skill_frontmatter_valid_passes(self):
+        self.write(
+            "skills/demo/SKILL.md",
+            "---\nname: demo\ndescription: 一句话说明这个技能做什么。\n---\n\n正文。\n",
+        )
+        self.assertEqual(lint.STATUS_OK, self.skill_check().status)
+
+    def test_skill_name_mismatch_fails(self):
+        self.write(
+            "skills/demo/SKILL.md",
+            "---\nname: other\ndescription: 一句话说明这个技能做什么。\n---\n\n正文。\n",
+        )
+        check = self.skill_check()
+        self.assertEqual(lint.STATUS_FAIL, check.status)
+        self.assertTrue(any("目录名不一致" in d for d in check.detail))
+
+    def test_skill_missing_description_fails(self):
+        self.write("skills/demo/SKILL.md", "---\nname: demo\n---\n\n正文。\n")
+        check = self.skill_check()
+        self.assertEqual(lint.STATUS_FAIL, check.status)
+        self.assertTrue(any("description" in d for d in check.detail))
+
+    def test_skill_multiline_description_fails(self):
+        self.write(
+            "skills/demo/SKILL.md",
+            "---\nname: demo\ndescription: >\n  跨行的说明。\n---\n\n正文。\n",
+        )
+        check = self.skill_check()
+        self.assertEqual(lint.STATUS_FAIL, check.status)
+        self.assertTrue(any("单行" in d for d in check.detail))
+
+    def test_skill_without_frontmatter_fails(self):
+        self.write("skills/demo/SKILL.md", "# 没有 frontmatter\n")
+        check = self.skill_check()
+        self.assertEqual(lint.STATUS_FAIL, check.status)
+        self.assertTrue(any("frontmatter" in d for d in check.detail))
+
+    def test_skill_without_skill_md_fails(self):
+        self.write("skills/demo/参考.md", "参考材料。\n")
+        check = self.skill_check()
+        self.assertEqual(lint.STATUS_FAIL, check.status)
+        self.assertTrue(any("SKILL.md" in d for d in check.detail))
+
+    def test_skill_without_frontmatter_problems_is_reusable(self):
+        """校验函数独立可用：#17 可以在别的规则里直接调用。"""
+        path = os.path.join(self.repo, "template", "skills", "demo", "SKILL.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("---\nname: demo\ndescription: 说明。\n---\n\n正文。\n")
+        self.assertEqual([], lint.skill_frontmatter_problems(path, "demo"))
+        self.assertTrue(lint.skill_frontmatter_problems(path, "other"))
 
     # ---- 退出码 ----
 

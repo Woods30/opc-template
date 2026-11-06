@@ -272,6 +272,13 @@ def plan(payload, manifest, instance, baseline, entries=None):
                 new_files[rel] = dict(record)
             continue
 
+        if not _resolves_inside(instance, dst):
+            # 目标（连同它的父目录）指向实例外：不写过去，保留并告警。
+            result["kept"].append((rel, "指向实例外的软链接，已保留"))
+            if record:
+                new_files[rel] = dict(record)
+            continue
+
         if entry["kind"] in ADD_ONLY_KINDS:
             # 种子只补不覆盖：实例里有就留着，owner 删掉的不再补。
             if dst.exists():
@@ -346,6 +353,20 @@ def _safe_rel(rel):
     if rel.startswith("/") or os.path.isabs(rel):
         return False
     return ".." not in Path(rel).parts
+
+
+def _resolves_inside(instance, path):
+    """软链接的落点是否仍在实例内。
+
+    实例里的文件可能是指向实例外的软链接。顺着它写会把 owner 目录外的东西
+    改掉——那既越界，也会把实例的改动写到别处去。
+    """
+    try:
+        resolved = Path(path).resolve()
+        root = Path(instance).resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
 
 
 def instance_roles(instance):

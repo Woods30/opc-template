@@ -1177,6 +1177,94 @@ def _sha256_file(path):
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
+# ---------------------------------------------------------------- 技能库
+
+RE_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+RE_FRONTMATTER_KEY = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):[ \t]*(.*)$")
+
+
+def parse_frontmatter(text):
+    """解析 frontmatter 字段。返回 dict；不是合法 frontmatter 返回 None。
+
+    只认文件开头那一段 `--- ... ---`：纯 Markdown 里也可能出现分隔线，
+    误当成 frontmatter 会把正文当字段读。
+    """
+    if not text:
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    fields = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return fields
+        m = RE_FRONTMATTER_KEY.match(line)
+        if m:
+            fields[m.group(1)] = m.group(2).strip()
+    return None
+
+
+def skill_frontmatter_problems(path, expected_name=None):
+    """技能 frontmatter 的问题列表；空列表表示合法。
+
+    口径与实例安装器（scripts/lib.sh 的 opc_skill_frontmatter_error）一致：
+    name 与目录名一致、description 非空且是单行。
+    """
+    text = read_text(path)
+    if text is None:
+        return ["技能文件读不了或不是文本"]
+    fields = parse_frontmatter(text)
+    if fields is None:
+        return ["缺少合法的 frontmatter（首行 ---，之后用 --- 收尾）"]
+    problems = []
+    name = (fields.get("name") or "").strip().strip('"').strip("'")
+    if not name:
+        problems.append("frontmatter 缺少 name")
+    elif expected_name and name != expected_name:
+        problems.append("frontmatter 的 name 与目录名不一致：name={}，目录={}".format(
+            name, expected_name))
+    raw = fields.get("description")
+    if raw is None or raw == "":
+        problems.append("frontmatter 缺少 description")
+    elif raw.startswith("|") or raw.startswith(">"):
+        problems.append("description 必须是单行，不能用块标量")
+    elif not raw.strip().strip('"').strip("'"):
+        problems.append("description 是空的")
+    return problems
+
+
+def check_l23_skills(root):
+    """模版技能库：每个技能目录都要有合法 frontmatter 的 SKILL.md。
+
+    技能会被读进角色提示词，坏掉的 frontmatter 会让索引里出现一条没有
+    用途说明、甚至指错路径的条目。
+    """
+    c = Check("L23", "技能库 frontmatter 合法", source="skills/<名字>/SKILL.md")
+    skills_dir = os.path.join(payload_root(root), "skills")
+    if not os.path.isdir(skills_dir):
+        c.status = STATUS_SKIP
+        c.detail.append("模版里没有 skills/ 目录（技能库可以先声明后落地）")
+        return c
+    fails = []
+    for name in sorted(os.listdir(skills_dir)):
+        path = os.path.join(skills_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if not RE_SKILL_NAME.match(name):
+            fails.append("技能目录名不合法：{}".format(name))
+            continue
+        skill_md = os.path.join(path, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            fails.append("技能 {} 缺少 SKILL.md".format(name))
+            continue
+        for problem in skill_frontmatter_problems(skill_md, name):
+            fails.append("技能 {}：{}".format(name, problem))
+    if fails:
+        c.status = STATUS_FAIL
+        c.detail.extend(fails)
+    return c
+
+
 def check_l16_instance(root, policy):
     c = Check("L16", "实例自洽", source=".opc/instance.json 与 .opc/mechanism.json")
     if os.path.isfile(os.path.join(root, MARKER_REL)):
@@ -1270,6 +1358,7 @@ def run_checks(root, strict=False, words_file=None):
             check_l18_instance_scope(root),
             check_l19_payload_split(root, tracked),
             check_l20_no_dead_refs(root, payload_tracked),
+            check_l23_skills(root),
         ]
         if policy is not None:
             checks.append(check_l13_proposals(root, policy))

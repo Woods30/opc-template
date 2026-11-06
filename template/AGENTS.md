@@ -52,6 +52,9 @@ skills/<名字>/    # 统一技能库
 - `skills/<名字>/SKILL.md` 是**根级统一技能库**：所有角色共用一份事实源。角色
   启动提示里只列出自己选中的技能（名字、一句话用途、路径），需要时再读具体文件，
   不用把全部技能塞进上下文。
+- 实例默认带三个技能：`opc-workflow`（内容生命周期怎么推）、`knowledge-writing`
+  （`knowledge/` 怎么落盘）、`instance-ops`（实例怎么跑、怎么查）。角色在
+  `roles.json` 的 `skills` 里选用，索引只列选中的。
 
 - `content/` 是**事实**：每条内容从 proposed 起固定在 `<content_id>/内容卡.md`，不靠移动目录表达状态。
   主稿固定在 `<content_id>/主稿.md`，渠道稿固定在

@@ -291,6 +291,72 @@ jq '(.roles[] | select(.name=="demoer") | .enabled) = false' \
 (cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
 expect "停用角色的 hc 模板被清理" test ! -e "$HERDR_CORE_HOME/templates/t-demoer.md"
 
+# ---- 8. 统一技能库：默认映射、索引内容与越界防护 ----
+# 第 6 节的交互式安装停用了 growth 与 dev，这里恢复全部角色再验默认映射。
+jq '(.roles[] | select(.name=="growth" or .name=="dev") | .enabled) = true' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
+
+for skill in opc-workflow knowledge-writing instance-ops; do
+  expect "新实例含技能 $skill" test -f "$INST/skills/$skill/SKILL.md"
+done
+
+# 索引里列出的技能名，一行一个
+index_skills() {
+  sed -n '/^## 技能索引/,$p' "$HERDR_CORE_HOME/templates/t-$1.md" \
+    | grep -o '^- [a-z0-9-]*' | sed 's/^- //'
+}
+check "gm 的索引列出三个技能" "opc-workflow knowledge-writing instance-ops" \
+  "$(index_skills gm | paste -sd ' ' -)"
+check "content 的索引列出两个技能" "knowledge-writing opc-workflow" \
+  "$(index_skills content | paste -sd ' ' -)"
+check "growth 的索引列出两个技能" "knowledge-writing opc-workflow" \
+  "$(index_skills growth | paste -sd ' ' -)"
+check "dev 的索引列出两个技能" "instance-ops knowledge-writing" \
+  "$(index_skills dev | paste -sd ' ' -)"
+expect "索引带技能路径" grep -q "skills/opc-workflow/SKILL.md" \
+  "$HERDR_CORE_HOME/templates/t-gm.md"
+
+# 改 roles.json 的技能选择，重跑安装器后索引跟着变
+jq '(.roles[] | select(.name=="dev") | .skills) = ["instance-ops"]' \
+  "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
+(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
+check "改过技能选择后索引跟着变" "instance-ops" "$(index_skills dev | paste -sd ' ' -)"
+
+# 实例里没有的技能：只告警并跳过，安装不失败
+rm -rf "$INST/skills/instance-ops"
+out="$( (cd "$INST" && scripts/opc-install.sh --no-input t) 2>&1 )"
+rc=$?
+check "选中技能缺失时安装仍成功" "0" "$rc"
+expect "选中技能缺失时有告警" grep -q "instance-ops" <<< "$out"
+expect "缺失的技能不进索引" \
+  bash -c "! grep -q 'instance-ops' '$HERDR_CORE_HOME/templates/t-dev.md'"
+
+# 技能文件是指向实例外的软链接：跳过并告警，外部内容不进提示词
+printf -- '---\nname: instance-ops\ndescription: 外部机密\n---\n\n外部机密内容\n' \
+  > "$WORK/outside.md"
+mkdir -p "$INST/skills/instance-ops"
+ln -s "$WORK/outside.md" "$INST/skills/instance-ops/SKILL.md"
+out="$( (cd "$INST" && scripts/opc-install.sh --no-input t) 2>&1 )"
+rc=$?
+check "技能指向实例外时安装仍成功" "0" "$rc"
+expect "技能指向实例外时有告警" grep -q "指向实例外" <<< "$out"
+expect "指向实例外的技能不进索引" \
+  bash -c "! grep -q 'instance-ops' '$HERDR_CORE_HOME/templates/t-dev.md'"
+expect "外部文件内容不进提示词" \
+  bash -c "! grep -q '外部机密内容' '$HERDR_CORE_HOME/templates/t-dev.md'"
+
+# 整个技能库指向实例外：所有技能都跳过
+rm -rf "$INST/skills"
+mkdir -p "$WORK/outside-skills"
+ln -s "$WORK/outside-skills" "$INST/skills"
+out="$( (cd "$INST" && scripts/opc-install.sh --no-input t) 2>&1 )"
+rc=$?
+check "技能库指向实例外时安装仍成功" "0" "$rc"
+expect "技能库指向实例外时有告警" grep -q "技能目录指向实例外" <<< "$out"
+expect "技能库指向实例外时索引为空" \
+  bash -c "! grep -q '技能索引' '$HERDR_CORE_HOME/templates/t-gm.md'"
+
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"
 [[ "$FAIL" -eq 0 ]]
