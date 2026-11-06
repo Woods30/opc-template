@@ -17,18 +17,21 @@
 
 规则集随之分开：
 
-    模版侧（L1–L12、L15、L17–L23）
+    模版侧（L1–L5、L7–L12、L15、L17–L23）
                       查内容与安全表述：角色正文写没写清「等 gm 派工」、
                       「只在本实例目录内取材」，种子有没有占位，技能库
                       frontmatter 合不合法。模版里的角色是默认值，坏在这里
                       会被装进每个新实例，所以必须硬拦。
-    实例侧（L24–L32）
-                      只查结构：角色目录在不在、路径越不越界、描述有没有、
-                      技能引用与 frontmatter 对不对、根 AGENTS.md 在不在、
-                      hc 模板生成得了生成不了。实例的角色正文归 owner 管——
-                      owner 想怎么写就怎么写，lint 不拦内容。
-    两边都跑（L0、L6、L13、L14、L16）
-                      注册表可读、提案格式与脱敏、实例自洽、私词扫描。
+    实例侧（L16、L24–L33）
+                      只查结构：实例元数据与机制指纹自洽、角色目录在不在、
+                      路径越不越界、描述有没有、技能引用与 frontmatter
+                      对不对、根 AGENTS.md 在不在、hc 模板生成得了生成不了。
+                      实例的角色正文归 owner 管——owner 想怎么写就怎么写，
+                      lint 不拦内容。
+    两边都跑（L0、L6、L13、L14）
+                      清单可读、提案格式与提案脱敏、私词扫描。实例里的私词
+                      扫描只看模版托管的文件——业务文件里出现真实品牌名
+                      是正常的。
 
 规则来源（都从仓库文件里读，不写死在本脚本）：
 
@@ -1675,7 +1678,7 @@ def run_checks(root, strict=False, words_file=None):
     else:
         skipped = Check("SKIP", "模版侧规则跳过", source="这是实例仓库")
         skipped.status = STATUS_SKIP
-        skipped.detail.append("L1–L12、L15、L17–L23 是模版侧内容规则，"
+        skipped.detail.append("L1–L5、L7–L12、L15、L17–L23 是模版侧内容规则，"
                               "在实例里跑没有意义：实例的角色正文归 owner 管")
         checks.append(skipped)
         if policy is not None:

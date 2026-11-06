@@ -357,6 +357,141 @@ expect "技能库指向实例外时有告警" grep -q "技能目录指向实例�
 expect "技能库指向实例外时索引为空" \
   bash -c "! grep -q '技能索引' '$HERDR_CORE_HOME/templates/t-gm.md'"
 
+# ---- 9. 端到端验收：安装产物、起始材料升级、实例 lint ----
+# 前 8 节把 $INST 改得面目全非（技能库被换成软链接、角色被停用），这里另开
+# 一个干净实例走完整链路。
+E2E="$WORK/e2e"
+"$ROOT/bin/opc" install "$E2E" e2e --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+check "端到端实例安装成功" "0" "$?"
+
+# 9a. 角色目录：入口文件在目录里，目录本身就是角色的家
+for role in gm content growth dev; do
+  expect "角色 $role 有角色目录" test -d "$E2E/agents/$role"
+  expect "角色 $role 的入口文件在目录里" test -f "$E2E/agents/$role/AGENTS.md"
+done
+
+# 9b. 技能库：模版带的技能整库复制到实例
+for skill in opc-workflow knowledge-writing instance-ops; do
+  expect "技能库整库复制到实例" test -f "$E2E/skills/$skill/SKILL.md"
+done
+
+# 9c. 起始材料基线：相对路径 + SHA-256 + 技能单元
+expect "起始材料基线已生成" test -f "$E2E/.opc/starters.json"
+cat > "$WORK/check_baseline.py" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+inst = pathlib.Path(sys.argv[1])
+data = json.loads((inst / ".opc" / "starters.json").read_text(encoding="utf-8"))
+files = data.get("files") or {}
+skills = data.get("skills") or {}
+problems = []
+for rel in ("AGENTS.md", "agents/gm/AGENTS.md", "skills/opc-workflow/SKILL.md"):
+    record = files.get(rel) or {}
+    digest = record.get("sha256")
+    if not digest:
+        problems.append("基线缺 " + rel)
+        continue
+    actual = hashlib.sha256((inst / rel).read_bytes()).hexdigest()
+    if actual != digest:
+        problems.append("基线哈希与实际不符：" + rel)
+for rel in files:
+    parts = pathlib.PurePosixPath(rel).parts
+    if rel.startswith("/") or ".." in parts:
+        problems.append("基线里的路径不是相对路径：" + rel)
+if "skills/opc-workflow" not in skills:
+    problems.append("基线没记技能单元")
+print("；".join(problems))
+sys.exit(1 if problems else 0)
+PY
+if python3 "$WORK/check_baseline.py" "$E2E" >/dev/null 2>&1; then
+  ok "起始材料基线记了相对路径与 SHA-256"
+else
+  bad "起始材料基线不对：$(python3 "$WORK/check_baseline.py" "$E2E" 2>&1)"
+fi
+
+# 9d. hc 模板的技能索引：与 roles.json 里该角色选中的技能完全一致
+for role in gm content growth dev; do
+  want="$(jq -r --arg n "$role" '.roles[] | select(.name==$n) | .skills | join(" ")' \
+    "$E2E/roles.json")"
+  got="$(sed -n '/^## 技能索引/,$p' "$HERDR_CORE_HOME/templates/e2e-$role.md" \
+    | grep -o '^- [A-Za-z0-9._-]*' | sed 's/^- //' | paste -sd ' ' -)"
+  check "角色 $role 的技能索引与 roles.json 完全一致" "$want" "$got"
+done
+expect "技能索引给出读取路径" \
+  grep -q "skills/opc-workflow/SKILL.md" "$HERDR_CORE_HOME/templates/e2e-gm.md"
+
+# 9e. 升级语义：owner 改过的保留、owner 删掉的不复活、模版新增的补入
+TPL_A="$WORK/tpl-a"
+TPL_B="$WORK/tpl-b"
+mkdir -p "$TPL_A" "$TPL_B"
+cp -R "$ROOT/template" "$TPL_A/template"
+cp -R "$ROOT/template" "$TPL_B/template"
+mkdir -p "$TPL_A/template/agents/extra" "$TPL_B/template/agents/extra"
+printf '# 模版新增的角色材料\n' > "$TPL_A/template/agents/extra/AGENTS.md"
+cp "$TPL_A/template/agents/extra/AGENTS.md" "$TPL_B/template/agents/extra/AGENTS.md"
+mkdir -p "$TPL_B/template/skills/extra-skill"
+printf -- '---\nname: extra-skill\ndescription: 模版新增的技能\n---\n\n正文。\n' \
+  > "$TPL_B/template/skills/extra-skill/SKILL.md"
+# 模版侧改了 dev 的角色材料：实例没动过它，升级应该刷新
+printf '\n模版侧的新版本。\n' >> "$TPL_B/template/agents/dev/AGENTS.md"
+
+UP="$WORK/up"
+"$ROOT/bin/opc" install "$UP" up --template "$TPL_A" --no-input --skip-smoke >/dev/null 2>&1
+check "升级场景的实例安装成功" "0" "$?"
+expect "起始材料基线记了模版新增的角色材料" test -f "$UP/agents/extra/AGENTS.md"
+
+# owner 改过一份起始材料，删掉另一份
+printf '\n# owner 的补充\n' >> "$UP/agents/gm/AGENTS.md"
+rm -f "$UP/agents/extra/AGENTS.md"
+
+# dry-run 要把将要发生的动作讲清楚，但不能写盘
+out="$("$ROOT/bin/opc" upgrade "$UP" --template "$TPL_B" --dry-run 2>&1)"
+rc=$?
+check "升级 --dry-run 返回 0" "0" "$rc"
+expect "dry-run 打印起始材料更新" grep -q "起始材料更新" <<< "$out"
+expect "dry-run 打印起始材料新增" grep -q "起始材料新增" <<< "$out"
+expect "dry-run 打印 owner 删过的跳过" grep -q "owner 已删除" <<< "$out"
+expect "dry-run 不补 owner 删掉的文件" test ! -e "$UP/agents/extra/AGENTS.md"
+expect "dry-run 不补模版新增的技能" test ! -e "$UP/skills/extra-skill/SKILL.md"
+expect "dry-run 不改 owner 改过的文件" bash -c \
+  "! grep -q '模版侧的新版本' '$UP/agents/gm/AGENTS.md'"
+
+out="$("$ROOT/bin/opc" upgrade "$UP" --template "$TPL_B" --skip-smoke 2>&1)"
+rc=$?
+check "升级成功" "0" "$rc"
+expect "owner 改过的起始材料被保留" grep -q "owner 的补充" "$UP/agents/gm/AGENTS.md"
+expect "owner 改过的起始材料有告警" grep -q "已本地修改" <<< "$out"
+expect "owner 删掉的起始材料没有复活" test ! -e "$UP/agents/extra/AGENTS.md"
+expect "模版新增的起始材料被补入" test -f "$UP/skills/extra-skill/SKILL.md"
+expect "没改过的角色材料跟随模版更新" grep -q "模版侧的新版本" "$UP/agents/dev/AGENTS.md"
+
+# 提交范围：只带本次动作涉及的文件，不带工作区里的无关脏文件
+printf '不相关\n' > "$UP/knowledge/business/unrelated.md"
+committed="$(git -C "$UP" diff-tree --no-commit-id --name-only -r --no-renames HEAD \
+  | sort | tr '\n' ' ')"
+expect "升级提交不含无关脏文件" bash -c \
+  "! printf '%s' '$committed' | grep -q 'knowledge/business/unrelated.md'"
+expect "升级提交含新增的技能" bash -c \
+  "printf '%s' '$committed' | grep -q 'skills/extra-skill/SKILL.md'"
+
+# 9f. 实例 lint：结构检查在干净实例上全绿
+lint_out="$("$E2E/scripts/opc-lint.sh" 2>&1)"
+rc=$?
+check "干净实例的 lint 通过" "0" "$rc"
+if grep -q "角色启动不自主开工" <<< "$lint_out"; then
+  bad "实例 lint 不该查角色内容：$(grep -A 3 "角色启动不自主开工" <<< "$lint_out" | tr '\n' ' ')"
+else
+  ok "实例 lint 不查角色内容规则"
+fi
+
+# owner 改过角色简报也不该被实例 lint 拦：内容归 owner 管
+lint_out="$("$UP/scripts/opc-lint.sh" 2>&1)"
+rc=$?
+check "owner 改过角色简报后实例 lint 仍通过" "0" "$rc"
+
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"
 [[ "$FAIL" -eq 0 ]]

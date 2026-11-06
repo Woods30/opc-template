@@ -89,11 +89,15 @@ opc upgrade                # 升级当前实例
 opc upgrade --all          # 升级注册表里的所有实例
 ```
 
-- 机制文件（`scripts/`、`tools/`、`LICENSE`）按 `.opc/mechanism.json`
-  里的 SHA-256 校验：本地改过会打印 diff 并拒绝；确认放弃本地改动后加
-  `--force-mechanism`。
-- 起始材料（`AGENTS.md`、`agents/`、`skills/`、业务种子）按 `.opc/starters.json`
-  的基线比对：没改过的跟随模版更新，改过的保留并告警，删掉的不复活，模版新增的补入。
+载荷分三层（见「模版与实例」一节），升级时各走各的路：
+
+- 机制文件按 `.opc/mechanism.json` 里的 SHA-256 校验：本地改过会打印 diff 并拒绝；
+  确认放弃本地改动后加 `--force-mechanism`。
+- 起始材料按 `.opc/starters.json` 的基线比对：每份材料记实例里的相对路径与
+  SHA-256。**技能目录以目录为单元**：目录里任一已记录文件被改、或出现 owner 新增的
+  文件，整个技能跳过更新并告警，免得 `SKILL.md` 与配套文件半新半旧；角色目录按文件
+  管理，`agents/<角色>/AGENTS.md` 与目录里的参考文件互不影响。
+- 业务种子只补不覆盖：实例里已经有就留着（业务事实归 owner），owner 删掉的不再补。
 - `roles.json` / `channels.json` 按键合并：只增不改，新条目默认停用。
 - `knowledge/` 永远不动。
 - 全局 UI 每次升级只装一次；所有实例共用同一份，升级任一实例都会更新它。
@@ -101,7 +105,8 @@ opc upgrade --all          # 升级注册表里的所有实例
 发现旧结构（`layouts/`、`mods/`、`seeds/`、`sync-policy.json`、`template.lock.json`、
 `.opc/sync-*`、`scripts/opc-sync.sh`、`scripts/opc-new.sh`）时，`upgrade` 会先进入
 一次性迁移：`--dry-run` 打印全部动作，确认后只做一个限定 pathspec 的提交。
-详见 [`docs/安装与升级.md`](docs/安装与升级.md)。
+旧实例的**角色单文件**（`agents/<文件>.md`）也会在升级时迁成角色目录，详见
+[`docs/安装与升级.md`](docs/安装与升级.md)。
 
 ## 一个实例长什么样
 
@@ -146,6 +151,18 @@ tools/               只读包装器与校验工具（执行面，仅 owner 可�
                             真实业务 + 实例配置 + 模版的机制副本
 ```
 
+这是**仓库**层面的划分。载荷内部还分**三层**，各有各的归属与升级行为：
+
+| 层 | 装什么 | 归谁 | 升级行为 |
+|---|---|---|---|
+| **机制** | `scripts/`、`tools/`、`LICENSE` | 模版 | 整目录覆盖；本地改过就拒绝升级，`--force-mechanism` 才覆盖 |
+| **起始材料** | 根 `AGENTS.md`、`agents/<角色>/`、`skills/<名字>/`、业务种子 | owner（装一次就归 owner） | 按基线比对：没改过的跟随模版更新，改过的保留并告警，删掉的不复活，模版新增的补入 |
+| **实例自有** | `knowledge/`、`roles.json`、`channels.json`、`.opc/` | 实例 | 永不覆盖；`roles.json` / `channels.json` 只按键合并，只增不改 |
+
+分层的理由：机制装错会坏，owner 不该改；起始材料是 owner 的工作台，模版只能「补」；
+实例自有是业务事实，模版根本不该碰。三层混在一起时，owner 想改一句角色职责就会撞上
+机制指纹，升级要么拒绝要么覆盖。
+
 - 模版根目录的 `.opc-template-repo` 是标记。实例安装器检测到它就拒绝执行。
 - 注册表 `~/.config/opc/instances.json` 记录实例路径、前缀、安装时间与模版 commit；
   `opc ls` 列出，`opc upgrade --all` 使用它。
@@ -165,13 +182,25 @@ bin/opc lint --strict                       # 警告也算违规
 bin/opc lint --private-words ~/.config/opc/private-words.txt
 ```
 
-检查的内容：模版里没有 `knowledge/**`、种子还是占位而不是真实内容、种子里没有
-具体日期/链接/大数、频道清单为空、角色注册表字段合法、`install-manifest.json`
-覆盖每个载荷文件、守卫本身在位、模版里没有本机路径、载荷里没有已删除的同步机制引用、
-全局 UI 名称固定、脚本指向全局布局、提案格式完整。角色启动那条规则两边都查：
-模版里的 `agents/<角色>/AGENTS.md` 与实例里自己的角色目录都要写明「等 gm 派工」
-（gm 是「先与 owner 对齐方向」）；写成「不用等 gm 派工」这种否定句、
-或同一小节里前后矛盾，一样算违规。
+规则分两套，跑的地方不一样：
+
+**模版侧**（在模版仓库根跑，`bin/opc lint`）查内容与安全表述：模版里没有
+`knowledge/**`、种子还是占位而不是真实内容、种子里没有具体日期/链接/大数、
+频道清单为空、角色注册表字段合法、`install-manifest.json` 覆盖每个载荷文件、
+守卫本身在位、模版里没有本机路径、载荷里没有已删除的同步机制引用、全局 UI 名称固定、
+脚本指向全局布局、提案格式完整、技能库 frontmatter 合法。角色启动那条规则也在这侧：
+模版里的 `agents/<角色>/AGENTS.md` 要写明「等 gm 派工」（gm 是「先与 owner 对齐方向」）；
+写成「不用等 gm 派工」这种否定句、或同一小节里前后矛盾，一样算违规。
+
+**实例侧**（在实例里跑，`scripts/opc-lint.sh`）查实例自洽与结构：`.opc/instance.json`
+与 `.opc/mechanism.json` 对得上、角色注册表可读、角色路径合法、启用角色的入口文件
+存在、描述非空、技能名合法、选中技能的 frontmatter 合法且与目录名一致、选中的技能
+文件确实存在、根 `AGENTS.md` 存在、hc 模板生成得了。实例的角色正文归 owner 管——
+owner 想怎么写就怎么写，lint 不拦内容。
+
+少数规则两边都跑：清单可读、私词扫描、提案格式与提案脱敏。实例里的私词扫描只覆盖
+模版托管的文件——业务文件出现真实品牌名是正常的。
+
 私词表**永远不进版本库**，放在实例的 `.opc/private-words.txt` 或
 `~/.config/opc/private-words.txt`；CI 用 secret 注入，没有 secret 时该规则自动跳过
 而不是失败。
@@ -181,9 +210,13 @@ bin/opc lint --private-words ~/.config/opc/private-words.txt
 ```sh
 python3 tests/test_opc_lint.py          # lint 规则本身
 python3 tests/test_preflight.py         # 发布前自检
-bash tests/test_opc_install.sh          # 安装与全局 UI
-bash tests/test_opc_upgrade.sh          # 指纹升级
+python3 tests/test_opc_workflow.py      # 内容生命周期状态机
+python3 tests/test_opc_smoke.py         # 冒烟
+python3 tests/test_bin_opc.py           # install / upgrade 入口
+bash tests/test_opc_instance.sh         # 实例结构与端到端验收
+bash tests/test_opc_upgrade.sh          # 指纹与起始材料升级
 bash tests/test_opc_migrate.sh          # 旧实例迁移
+node --test tests/test_opc_tabs_mod.mjs tests/test_opc_dashboard_mod.mjs
 ```
 
 ## 实例冒烟：opc-smoke
@@ -256,6 +289,11 @@ tools/opc-smoke --json   # 机器可读的结果
 在实例里不存在时只告警并跳过，不阻断角色启动；技能文件指向实例外时同样跳过——
 技能说明会进角色提示词，不能让实例外的文件混进来。
 
+根级技能库**不链接**到 `.claude/skills/` 或 `.agents/skills/`：CLI 的原生技能发现
+走的是它自己的目录，OPC 的技能靠 hc 模板里的技能索引加按需读取加载，不依赖 CLI 自动
+触发。两套并存互不干扰：`skills` 决定索引里列哪些，`approvedSkills` 决定放行哪些
+CLI 原生技能。
+
 用命令改：
 
 ```sh
@@ -269,6 +307,10 @@ scripts/opc-role.sh add analyst --desc "做数据分析" --skills knowledge-writ
 
 `add` 会在 `agents/<角色>/AGENTS.md` 建一份纯 Markdown 的角色简报，并把 `description`
 与 `skills` 写进 `roles.json`。改完重跑安装脚本，hc 模板随之更新。
+
+角色目录里除入口外还可以放参考稿、清单、示例；安装器只渲染 `AGENTS.md`，其余文件
+由角色按路径自己读。升级时角色目录**按文件管理**：`AGENTS.md` 跟参考文件互不影响，
+owner 在目录里新增的文件永远不会被升级触碰。
 
 启动时也可以只挑一部分：`scripts/opc-up.sh gm content`。
 

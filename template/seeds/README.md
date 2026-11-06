@@ -19,6 +19,8 @@ knowledge/           唯一事实来源
 ├── work/<角色>/     过程：草稿、提案、日志、template-proposals/
 ├── decisions/       决策记录
 └── inbox/           任务队列（只有 gm 可写；只执行行首既无 ✅ 也无 ⛔ 的条目）
+agents/<角色>/       角色材料目录：入口是 AGENTS.md，目录里可放参考稿与清单
+skills/<名字>/       统一技能库：SKILL.md；角色按 roles.json 的 skills 选用
 ```
 
 `business/` 是结果，老板日常只看这里；`work/` 是过程，不干扰。
@@ -72,11 +74,13 @@ owner 负责实际对外发布；gm 只把 approval 决定、发布时间与 URL
 - 机制文件（`scripts/`、`tools/`）按指纹管理：本地直接改过会被升级拒绝并打印 diff。
 - 起始材料（根 `AGENTS.md`、`agents/<角色>/`、`skills/`）装一次就归你：升级只更新你没改过
   的文件，改过的保留并告警，删掉的不复活，模版新增的才补入。
+  **技能目录例外**：技能以目录为单位，目录里任一文件被改过，整个技能就不再更新，
+  免得 `SKILL.md` 与配套文件半新半旧。
   想改模版的角色职责或技能，写提案到
   `knowledge/work/<角色>/template-proposals/`，格式见 `AGENTS.md` 的
   「模版与实例」一节。
-- 骨架文件（README、LESSONS、`knowledge/business/` 下的初始文档）只在缺失时物化；
-  升级不会覆盖你写过的版本，但你删掉的骨架会在下次升级时重新出现。
+- 业务种子（README、LESSONS、`knowledge/business/` 下的初始文档）只在缺失时物化；
+  升级不会覆盖你写过的版本，你删掉的那份也不会被补回来。
 - 换一台机器重建这个实例：`opc install <目录> <前缀>`，再把 `knowledge/`
   与配置搬过去。
 
