@@ -83,16 +83,20 @@ esac
 #                   实例的知识目录由安装器从 seeds/ 物化，不从模版复制
 #   README.md     —— 模版视角的说明书，实例用 seeds/README.md 那一份
 #                   （用 /README.md 锚定根目录，否则会连 seeds/ 下的同名文件一起排除）
+#   template.lock.json —— 实例自己的同步状态（记着接的是哪个模版提交）。
+#                   模版工作区里可能有一份旧的，复制过去新实例就会以为
+#                   自己已经接上了那个提交，所以明确排除。
 RSYNC_EXCLUDES=(
   --exclude '.git' --exclude '.opc' --exclude '.opc-template-repo'
   --exclude '.github' --exclude 'docs' --exclude 'sync-policy.json'
   --exclude '/knowledge' --exclude '/README.md'
+  --exclude 'template.lock.json'
 )
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "将创建实例：${TARGET}（前缀 ${PREFIX}）"
   echo "  模版来源：$SOURCE"
-  echo "  复制内容：除 .git/.opc/.opc-template-repo/.github/docs/sync-policy.json/knowledge 外的全部"
+  echo "  复制内容：除 .git/.opc/.opc-template-repo/.github/docs/sync-policy.json/knowledge/template.lock.json 外的全部"
   [[ "$DO_GIT" == "1" ]] && echo "  git：init + 首次提交"
   echo "  基线：写 .opc/sync-base（建实例这一刻的模版内容）"
   if [[ "$DO_INSTALL" == "1" ]]; then

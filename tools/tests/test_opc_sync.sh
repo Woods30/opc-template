@@ -457,6 +457,39 @@ fi
 grep -q "恢复路径要带回来的改动" "$RECOVER/AGENTS.md" \
   && ok "baseline 之后能拉回模版更新" || bad "baseline 之后拉不回模版更新"
 
+# ---- 18. 模版仓库守卫：baseline 与 adopt 也不能在模版里跑 ----
+# 这两个命令会往实例目录写 .opc/ 与 template.lock.json。在模版里跑就等于
+# 把实例状态写进模版仓库，模版自此不再干净。
+out="$(cd "$TPL" && scripts/opc-sync.sh baseline --from "$TPL" 2>&1)"
+rc=$?
+if [[ "$rc" == "2" ]] && grep -q "模版仓库" <<< "$out"; then
+  ok "在模版仓库里跑 baseline 被拒绝"
+else
+  bad "在模版仓库里跑 baseline 没有被拒绝（退出码 ${rc}）"
+fi
+out="$(cd "$TPL" && scripts/opc-sync.sh adopt --from "$TPL" 2>&1)"
+rc=$?
+if [[ "$rc" == "2" ]] && grep -q "模版仓库" <<< "$out"; then
+  ok "在模版仓库里跑 adopt 被拒绝"
+else
+  bad "在模版仓库里跑 adopt 没有被拒绝（退出码 ${rc}）"
+fi
+[[ -e "$TPL/.opc/sync-state.json" ]] && bad "baseline 在模版里留下了实例状态" || ok "模版里没有留下实例状态"
+
+# ---- 19. 实例状态不进新实例：template.lock.json 不能被复制过去 ----
+# template.lock.json 是实例自己的同步状态。模版工作区里如果有一份旧的，
+# 建实例时复制过去，新实例就会以为自己已经接上了某个模版提交。
+# 这里去掉同步脚本，让基线不会跑——否则 baseline 会用真值把锁重写掉，
+# 就测不出 rsync 到底有没有把它带过来。
+LOCK_TPL="$WORK/lock-tpl"
+LOCK_INST="$WORK/lock-inst"
+cp -R "$TEMPLATE" "$LOCK_TPL"
+rm -rf "$LOCK_TPL/.git" "$LOCK_TPL/.opc"
+rm -f "$LOCK_TPL/scripts/opc-sync.sh"
+printf '{"template":{"id":"opc-template","commit":"deadbee"}}\n' > "$LOCK_TPL/template.lock.json"
+"$LOCK_TPL/scripts/opc-new.sh" "$LOCK_INST" --prefix l --source "$LOCK_TPL" --no-install >/dev/null 2>&1
+[[ -f "$LOCK_INST/template.lock.json" ]] && bad "新实例继承了模版的 template.lock.json" || ok "新实例不继承模版的 template.lock.json"
+
 say ""
 say "通过 $PASS 项 / 失败 $FAIL 项"
 [[ "$FAIL" == "0" ]] || exit 1

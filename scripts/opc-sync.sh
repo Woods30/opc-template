@@ -780,6 +780,12 @@ cmd_mark() {
 }
 
 cmd_adopt() {
+  # 这两个命令会往当前目录写实例状态（.opc/ 与 template.lock.json）。
+  # 在模版仓库里跑，模版就自己变成了半个实例。
+  if opc_is_template_repo "$ROOT"; then
+    opc_template_repo_refusal
+    exit 2
+  fi
   local from=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -824,6 +830,11 @@ cmd_adopt() {
 }
 
 cmd_baseline() {
+  # 同 adopt：基线快照是实例状态，不该落在模版仓库里。
+  if opc_is_template_repo "$ROOT"; then
+    opc_template_repo_refusal
+    exit 2
+  fi
   local from=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
