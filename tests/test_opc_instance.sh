@@ -262,6 +262,12 @@ expect "新角色的 Claude 入口文件只引用 AGENTS.md" \
   only_ref "$INST/agents/tester/CLAUDE.md"
 expect "新角色的 Gemini 入口文件只引用 AGENTS.md" \
   only_ref "$INST/agents/tester/GEMINI.md"
+expect "新角色的收件箱用统一任务格式" \
+  grep -q "| 任务 ID：task-" "$INST/knowledge/inbox/tester.md"
+expect "新角色的收件箱保留当前队列小节" \
+  grep -q "## 当前队列" "$INST/knowledge/inbox/tester.md"
+expect "新角色的收件箱保留完成与撤销规则" \
+  bash -c "grep -q '✅' '$INST/knowledge/inbox/tester.md' && grep -q '⛔ 已撤销' '$INST/knowledge/inbox/tester.md'"
 expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/tester/AGENTS.md"
 expect "新角色的 roles.json 里有描述" \
   test -n "$(jq -r '.roles[] | select(.name=="tester") | .description' "$INST/roles.json")"

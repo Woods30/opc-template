@@ -96,8 +96,7 @@ EOF
 
     inbox="$ROOT/knowledge/inbox/$name.md"
     if [[ ! -f "$inbox" ]]; then
-      printf '# %s 收件箱\n\n派工与上报都追加到本文件末尾，一行一条，最新的在最下面。格式：\n\n```\n- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务：<做什么> | 验收：<怎么算完成>\n```\n\n派工后 `hc send <前缀>-%s` 通知。\n\n---\n' \
-        "$name" "$name" > "$inbox"
+      opc_write_inbox "$name" "$inbox"
       echo "已创建收件箱：knowledge/inbox/$name.md"
     fi
 

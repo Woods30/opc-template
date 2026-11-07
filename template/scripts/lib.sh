@@ -40,6 +40,21 @@ opc_role_exists() {
   jq -e --arg n "$1" '.roles[] | select(.name==$n)' "$(opc_roles_file)" >/dev/null 2>&1
 }
 
+# 新收件箱的固定头部。install 与 role add 都走这里，避免新增角色拿到另一套
+# 任务格式；只负责生成内容，调用方仍要守住「文件存在就不覆盖」。
+opc_write_inbox() { # opc_write_inbox <角色> <目标文件>
+  local role="$1"
+  local target="$2"
+  if [[ "$role" == "gm" ]]; then
+    # gm 的收件箱不放上报——回报只在会话里处理，不落盘。这里只登记派给 gm
+    # 自己的条目；派工状态记在收件人的 inbox 里，gm 收口时在那一行加 ✅。
+    printf '# gm 收件箱\n\n`knowledge/inbox/` 只有 gm 可写。角色用 `hc send <前缀>-gm` 回报，**回报不落盘**，gm 在会话里处理。\n\n落盘的只有派工状态：gm 派出去的每条任务记在**收件人的** inbox 里，gm 收到「完成」回报后在**那条**行首加 `✅`；撤销时在行首加 `⛔ 已撤销：<原因>`。本文件登记派给 gm 自己的条目，当前没有派工对象时是空的。详见 `AGENTS.md`「状态来源」一节。\n\n---\n\n## 当前队列\n\n（空）\n' > "$target"
+  else
+    printf '# %s 收件箱\n\n派工与上报都追加到本文件末尾，一行一条，最新的在最下面。`knowledge/inbox/` 只有 gm 可写。格式：\n\n```\n- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务 ID：task-<稳定 ID> | 业务引用：<content_id / publication_id / -> | 任务：<做什么> | 验收：<怎么算完成>\n```\n\n派工后 `hc send <前缀>-%s` 通知。\n\n**只执行行首既无 `✅` 也无 `⛔` 的条目。** 发起方收到「完成」回报后在该条目行首加 `✅`；撤销时在行首加 `⛔ 已撤销：<原因>`。详见 `AGENTS.md`「状态来源」一节。\n\n---\n\n## 当前队列\n\n（空）\n' \
+      "$role" "$role" > "$target"
+  fi
+}
+
 opc_role_enabled() {
   [[ "$(opc_role_field "$1" enabled)" == "true" ]]
 }
