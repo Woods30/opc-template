@@ -16,7 +16,6 @@ description 写进 `roles.json`，旧文件连同原始 frontmatter 备份到
 import re
 from pathlib import Path
 
-from . import install as install_mod
 from . import safefile
 from .errors import OpcError
 from .hashutil import sha256_bytes, sha256_file
@@ -25,7 +24,7 @@ from .hashutil import sha256_bytes, sha256_file
 OLD_TEMPLATE_RE = re.compile(r"^agents/[^/]+\.md$")
 
 # 角色名要能当目录名用：只允许普通标识符，挡住路径穿越。
-ROLE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ROLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,19}$")
 
 # frontmatter 的字段行：key: value。纯 Markdown 正文里也可能出现分隔线，
 # 只有整段都像字段才当 frontmatter。
@@ -34,37 +33,6 @@ FM_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*:")
 BACKUP_ROOT = ".opc/backups"
 
 KIND_ROLE = "role"
-
-
-def _inside(instance, path):
-    """路径（含软链接落点）是否仍在实例内。"""
-    try:
-        resolved = Path(path).resolve()
-        base = Path(instance).resolve()
-    except OSError:
-        return False
-    return resolved == base or base in resolved.parents
-
-
-def _symlink_component(instance, path):
-    """路径的任一层（含自己）是不是软链接。
-
-    只看最后一段不够：父目录是软链接时，写进去的文件照样落在实例外。
-    """
-    root = Path(instance)
-    try:
-        rel = Path(path).relative_to(root)
-    except ValueError:
-        return True
-    cur = root
-    for part in rel.parts:
-        cur = cur / part
-        try:
-            if cur.is_symlink():
-                return True
-        except OSError:
-            return True
-    return False
 
 
 def split_frontmatter(text):
@@ -129,8 +97,13 @@ def plan(instance, roles, fingerprint=None):
     for role in detect(roles):
         name = role.get("name") or ""
         old_rel = role.get("template") or ""
-        if not ROLE_NAME_RE.match(name) or ".." in name:
-            # 角色名要当目录名用：名字不干净就别碰它。
+        if not ROLE_NAME_RE.match(name):
+            # 迁移不能擅自改名，但静默跳过会让 owner 误以为角色已迁好。
+            items.append({
+                "role": name or "<未知角色>",
+                "skipped": True,
+                "warnings": ["角色名不合法，未迁移 {}".format(old_rel)],
+            })
             continue
         item = {
             "role": name,
@@ -144,7 +117,7 @@ def plan(instance, roles, fingerprint=None):
             "warnings": [],
         }
         target_path = instance / item["target"]
-        if not _inside(instance, target_path.parent):
+        if not safefile.inside(instance, target_path.parent):
             # 角色目录指向实例外：不写过去，也不改这个角色条目。
             item["skipped"] = True
             item["warnings"].append("角色目录指向实例外，跳过 {}".format(name))
@@ -299,12 +272,13 @@ def apply(instance, result):
         old_path = instance / item["old"]
         if item["write"]:
             target = instance / item["target"]
-            if not target.exists() and not _symlink_component(instance, target):
+            if not target.exists() and not safefile.symlink_component(instance, target):
                 safefile.write_text(instance, item["target"], item["body"])
         if old_path.is_file() and not old_path.is_symlink():
             backup = instance / item["backup"]
-            if not backup.exists() and not _symlink_component(instance, backup):
-                safefile.copy_file(instance, item["old"], item["backup"])
+            if not backup.exists() and not safefile.symlink_component(instance, backup):
+                safefile.copy_from(
+                    instance, item["old"], instance, item["backup"], mode=0o644)
             try:
                 safefile.unlink(instance, item["old"])
             except (OSError, safefile.UnsafePath):
@@ -318,7 +292,7 @@ def _apply_roles(instance, result):
     path = Path(instance) / "roles.json"
     if not path.is_file():
         return
-    data = install_mod.load_json(path, None)
+    data = safefile.read_json(path, None)
     if not isinstance(data, dict):
         raise OpcError("roles.json 不是合法 JSON：{}".format(path))
     by_name = {item["role"]: item for item in (result.get("roles") or [])
@@ -334,4 +308,4 @@ def _apply_roles(instance, result):
         role["skills"] = []
         changed = True
     if changed:
-        install_mod.write_json(path, data)
+        safefile.write_json(path, data)

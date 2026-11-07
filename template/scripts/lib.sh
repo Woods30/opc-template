@@ -265,27 +265,29 @@ opc_role_body() {
   fi
 }
 
-# 技能索引：只列 roles.json 里选中、且实例里确实存在的技能。
-# 缺失的技能只告警并跳过——别的角色仍要能启动。
-# 技能文件要经过 opc_safe_skill_file：指向实例外的软链接一律跳过，
-# 读进来的内容会变成角色的指令，不能让实例外的文件混进来。
+# 技能索引：缺失技能允许角色降级启动；非法名、越界路径与坏 frontmatter
+# 必须阻断安装，否则会把未经校验的指令静默装进角色提示词。
 opc_skill_index() {
   local role="$1" root="$2" name file desc
   local lines=()
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     if ! opc_safe_skill_name "$name"; then
-      echo "警告：角色 $role 选了非法技能名，已跳过：$name" >&2
-      continue
+      echo "错误：角色 $role 的技能 $name 不合法：技能名不合法" >&2
+      return 1
     fi
     if ! opc_safe_skill_file "$root" "$name"; then
-      echo "警告：角色 $role 选中的技能已跳过：${name}（${OPC_SKILL_ERROR:-不可用}）" >&2
-      continue
+      if [[ "${OPC_SKILL_ERROR:-}" == "技能文件不存在" ]]; then
+        echo "警告：角色 $role 选中的技能已跳过：${name}（技能文件不存在）" >&2
+        continue
+      fi
+      echo "错误：角色 $role 的技能 $name 不合法：${OPC_SKILL_ERROR:-不可用}" >&2
+      return 1
     fi
     file="$OPC_SKILL_FILE"
     if ! opc_skill_frontmatter_error "$file" "$name"; then
-      echo "警告：角色 $role 选中的技能已跳过：${name}（${OPC_SKILL_ERROR:-frontmatter 不合法}）" >&2
-      continue
+      echo "错误：角色 $role 的技能 $name 不合法：${OPC_SKILL_ERROR:-frontmatter 不合法}" >&2
+      return 1
     fi
     desc="$(opc_skill_description "$file")"
     # 索引每条必须是一行：描述里的换行会把它拆成两条。

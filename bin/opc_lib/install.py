@@ -1,14 +1,12 @@
 """install：创建实例、复制机制、装起始材料、装全局 UI。"""
 
-import json
-import os
 import re
 import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from . import cache, gitutil, manifest as manifest_mod, paths, registry, starters, ui
+from . import cache, gitutil, manifest as manifest_mod, paths, registry, safefile, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_file
 
@@ -32,40 +30,22 @@ def validate_prefix(prefix):
     return prefix
 
 
-def load_json(path, default=None):
-    path = Path(path)
-    if not path.is_file():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise OpcError("不是合法 JSON：{}（{}）".format(path, exc))
-
-
-def write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def copy_mechanism(payload, manifest, target, overwrite=False):
-    """把机制目录与文件复制到实例；overwrite=False 时目录要求目标不存在。"""
+def copy_mechanism(payload, manifest, target):
+    """把机制目录与文件复制到空实例。"""
     target = Path(target)
-    for rel_dir in (manifest.get("mechanism") or {}).get("dirs", []):
+    mechanism = manifest.get("mechanism") or {}
+    executables = set(mechanism.get("executables") or [])
+    for rel_dir in mechanism.get("dirs", []):
         src = payload / rel_dir
         dst = target / rel_dir
-        if dst.exists() and not overwrite:
+        if dst.exists():
             raise OpcError("实例里已有 {}，目标目录不是空的".format(rel_dir))
-        if overwrite and dst.exists():
-            shutil.rmtree(dst)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns(
             "__pycache__", "*.pyc", ".DS_Store"))
         for path in dst.rglob("*"):
-            if path.is_file() and (path.suffix == ".sh" or path.name in {
-                    "opc-workflow", "opc-lint", "preflight", "opc-smoke"}):
+            rel = path.relative_to(target).as_posix()
+            if path.is_file() and (path.suffix == ".sh" or rel in executables):
                 try:
                     path.chmod(path.stat().st_mode | 0o111)
                 except OSError:
@@ -91,7 +71,7 @@ def apply_answers(target, answers):
     if not answers:
         return
     roles_path = Path(target) / "roles.json"
-    roles_data = load_json(roles_path, {"roles": []})
+    roles_data = safefile.read_json(roles_path, {"roles": []})
     role_answers = answers.get("roles") or {}
     for role in roles_data.get("roles", []):
         patch = role_answers.get(role.get("name"))
@@ -103,7 +83,7 @@ def apply_answers(target, answers):
             role["cli"] = str(patch["cli"])
         if patch.get("permissionMode"):
             role["permissionMode"] = str(patch["permissionMode"])
-    write_json(roles_path, roles_data)
+    safefile.write_json(roles_path, roles_data)
 
     channels = answers.get("channels")
     if isinstance(channels, list):
@@ -119,7 +99,7 @@ def apply_answers(target, answers):
                 "name": str(item.get("name") or cid),
                 "enabled": bool(item.get("enabled", True)),
             })
-        write_json(Path(target) / "channels.json", {"channels": cleaned})
+        safefile.write_json(Path(target) / "channels.json", {"channels": cleaned})
 
 
 def mechanism_hashes(payload, manifest):
@@ -131,7 +111,7 @@ def mechanism_hashes(payload, manifest):
 
 def write_instance_json(target, prefix, template_root, upstream, created=False):
     path = Path(target) / ".opc" / "instance.json"
-    data = load_json(path, {}) or {}
+    data = safefile.read_json(path, {}) or {}
     data["version"] = 2
     data["kind"] = "opc-instance"
     data["prefix"] = prefix
@@ -143,13 +123,13 @@ def write_instance_json(target, prefix, template_root, upstream, created=False):
         "commit": gitutil.head_commit(template_root),
         "upstream": upstream,
     }
-    write_json(path, data)
+    safefile.write_json(path, data)
     return data
 
 
 def write_mechanism_json(target, payload, manifest, template_root, upstream):
     path = Path(target) / ".opc" / "mechanism.json"
-    data = load_json(path, {}) or {}
+    data = safefile.read_json(path, {}) or {}
     data["version"] = 1
     data.setdefault("installedAt", now())
     data["upgradedAt"] = now()
@@ -165,7 +145,7 @@ def write_mechanism_json(target, payload, manifest, template_root, upstream):
         "proposalSections": manifest.get("proposalSections", []),
         "manifestVersion": manifest.get("version"),
     }
-    write_json(path, data)
+    safefile.write_json(path, data)
     return data
 
 
@@ -212,11 +192,13 @@ def install(template_root, manifest, args):
     baseline, _added = starters.install(payload, manifest, target, entries=entries)
     starters.write_baseline(target, baseline)
 
-    answers = load_json(args.answers) if args.answers else None
+    answers = safefile.read_json(args.answers) if args.answers else None
     if answers and answers.get("prefix"):
         prefix = validate_prefix(str(answers["prefix"]))
     apply_answers(target, answers)
 
+    roles = starters.instance_roles(target)
+    starters.validate_skills(target, roles)
     missing = starters.missing_required_files(target, entries)
     missing.extend(starters.missing_role_entries(target, starters.instance_roles(target)))
     if missing:

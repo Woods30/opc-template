@@ -4,7 +4,13 @@
   "minOpcVersion": 1,
   "mechanism": {
     "dirs": ["scripts", "tools"],
-    "files": ["LICENSE"]
+    "files": ["LICENSE"],
+    "executables": [
+      "tools/opc-workflow",
+      "tools/opc-lint",
+      "tools/preflight",
+      "tools/opc-smoke"
+    ]
   },
   "starters": {
     "files": [

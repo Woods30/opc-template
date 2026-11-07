@@ -112,6 +112,24 @@ class BinOpcTestCase(unittest.TestCase):
         self.assertTrue((target / "AGENTS.md").is_file())
         self.assertTrue((target / "agents" / "gm" / "AGENTS.md").is_file())
 
+    def test_install_uses_manifest_executable_list(self):
+        tpl = self.tmp / "tpl"
+        shutil.copytree(str(ROOT / "template"), str(tpl / "template"))
+        executables = json.loads(
+            (tpl / "template" / "install-manifest.json").read_text(encoding="utf-8")
+        )["mechanism"]["executables"]
+        for rel in executables:
+            (tpl / "template" / rel).chmod(0o644)
+        target = self.tmp / "instance"
+
+        proc = self.run_opc(
+            "install", str(target), "t", "--template", str(tpl),
+            "--no-input", "--skip-smoke")
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        for rel in executables:
+            self.assertTrue(os.access(target / rel, os.X_OK), rel)
+
     def test_install_refuses_non_empty_target(self):
         target = self.tmp / "instance"
         target.mkdir()

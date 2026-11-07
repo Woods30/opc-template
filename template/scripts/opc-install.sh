@@ -297,6 +297,11 @@ EOF
   desc="${desc#\"}"; desc="${desc%\"}"
   [[ -n "$desc" ]] || desc="OPC 角色 $role"
 
+  # 先完整生成技能索引；校验失败时不能让重定向先截断已有 hc 模板。
+  if ! skill_index="$(opc_skill_index "$role" "$ROOT")"; then
+    exit 1
+  fi
+
   # 角色正文：旧的单文件角色简报带 frontmatter，新版的 AGENTS.md 是纯
   # Markdown。两种都要只取正文，前缀占位符在这里替换。
   {
@@ -306,7 +311,7 @@ EOF
     printf 'command: %s\n' "$ROOT/.opc/run/$role.sh"
     printf -- '---\n\n'
     opc_role_body "$src" | sed -e "s/{{PREFIX}}/$PREFIX/g"
-    opc_skill_index "$role" "$ROOT"
+    [[ -z "$skill_index" ]] || printf '%s\n' "$skill_index"
   } > "$TEMPLATES/$PREFIX-$role.md"
 done
 

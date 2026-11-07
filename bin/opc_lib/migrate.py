@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from . import install as install_mod
-from . import gitutil, manifest as manifest_mod, registry, role_migrate, starters, ui
+from . import gitutil, manifest as manifest_mod, registry, role_migrate, safefile, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_bytes, sha256_file
 from .upgrade import apply_payload, load_instance, starter_lines
@@ -105,6 +105,21 @@ def _legacy_starter_baseline(instance, payload, manifest):
     return {"version": 1, "files": files}
 
 
+def _legacy_role_fingerprint(instance, roles, fingerprint):
+    """从 git 首次提交补出旧角色指纹；现存 mechanism 记录优先。"""
+    reconstructed = {}
+    for role in role_migrate.detect(roles):
+        rel = role.get("template") or ""
+        commit = gitutil.first_add_commit(instance, rel)
+        if not commit:
+            continue
+        text = gitutil.show_file(instance, commit, rel)
+        if text is not None:
+            reconstructed[rel] = sha256_bytes(text.encode("utf-8"))
+    reconstructed.update(fingerprint or {})
+    return reconstructed
+
+
 def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
     instance = Path(instance).resolve()
     data = load_instance(instance)
@@ -124,13 +139,31 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
             "要删除的路径有未提交改动，先提交或 stash：\n  "
             + "\n  ".join(line.strip() for line in dirty))
 
-    # 角色单文件迁移：旧实例的 roles.json 还指向 agents/ 下的单文件简报。
-    # 旧指纹留着那些文件的哈希，用来分辨旧简报被 owner 改过没有。
-    fingerprint = (install_mod.load_json(
+    # 角色单文件迁移：旧指纹优先；没有 mechanism.json 的更老实例从
+    # git 首次提交重建，避免把每个未改角色都误判为 owner 修改。
+    fingerprint = (safefile.read_json(
         instance / ".opc" / "mechanism.json", {}) or {}).get("files", {})
     roles = starters.instance_roles(instance)
+    fingerprint = _legacy_role_fingerprint(instance, roles, fingerprint)
     role_result = role_migrate.plan(instance, roles, fingerprint)
     role_lines = role_migrate.lines(role_result)
+
+    # 起始材料计划必须在 dry-run 返回前完成，才能完整展示更新与技能冻结；
+    # 这里只读，不会写基线或实例文件。
+    entries = starters.expand(payload, manifest)
+    baseline = starters.read_baseline(instance)
+    if not baseline.get("files"):
+        baseline = _legacy_starter_baseline(instance, payload, manifest)
+    plan = starters.plan(payload, manifest, instance, baseline, entries=entries)
+    role_migrate.detach(plan, role_result)
+    planned = [rel for _src, _dst, rel in plan["copy"]]
+    planned.extend(role_migrate.written_targets(role_result))
+    missing = list(plan.get("missing") or [])
+    missing.extend(starters.missing_required_files(instance, entries, planned))
+    missing.extend(starters.missing_role_entries(
+        instance, role_migrate.effective_roles(roles, role_result), planned))
+    if missing:
+        raise OpcError("起始材料缺失：\n  " + "\n  ".join(missing))
 
     if args.dry_run:
         print("将迁移旧实例：{}（前缀 {}）".format(instance, prefix))
@@ -141,6 +174,8 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
         for rel in deletions:
             print("    - {}".format(rel))
         print("  全局清理：~/.config/herdr-app 下 {} 前缀的旧布局与 mod".format(prefix))
+        for line in starter_lines(plan):
+            print(line)
         for line in role_lines:
             print(line)
         print("  然后：复制新机制、合并配置、补起始材料、单个提交、重跑安装器")
@@ -152,23 +187,6 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
         answer = input("确认迁移 {}？[y/N] ".format(instance))
         if answer.strip().lower() not in {"y", "yes", "是"}:
             raise OpcError("已取消")
-
-    # 起始材料的计划在删旧结构之前算好：缺料就别动实例了。
-    entries = starters.expand(payload, manifest)
-    baseline = starters.read_baseline(instance)
-    if not baseline.get("files"):
-        baseline = _legacy_starter_baseline(instance, payload, manifest)
-    plan = starters.plan(payload, manifest, instance, baseline, entries=entries)
-    # 角色单文件迁移：旧实例的 roles.json 还指向 agents/ 下的单文件简报。
-    role_migrate.detach(plan, role_result)
-    planned = [rel for _src, _dst, rel in plan["copy"]]
-    planned.extend(role_migrate.written_targets(role_result))
-    missing = list(plan.get("missing") or [])
-    missing.extend(starters.missing_required_files(instance, entries, planned))
-    missing.extend(starters.missing_role_entries(
-        instance, role_migrate.effective_roles(roles, role_result), planned))
-    if missing:
-        raise OpcError("起始材料缺失：\n  " + "\n  ".join(missing))
 
     backup = _backup(instance, deletions)
     for rel in deletions:
@@ -193,7 +211,7 @@ def migrate(template_root, manifest, args, instance, legacy, install_ui=True):
         template_repo=template_root,
     )
 
-    ui.cleanup_legacy([prefix])
+    ui.cleanup_legacy([prefix], manifest)
     if install_ui:
         ui.install(payload, manifest, force=args.force_ui, dry_run=False)
     install_mod.run_installer(instance, prefix, "--no-input", args.skip_smoke)

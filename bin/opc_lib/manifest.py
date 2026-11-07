@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from . import safefile
 from .errors import OpcError
 
 IGNORE_DIRS = {"__pycache__", ".git"}
@@ -31,33 +32,14 @@ def load(template_root):
 
 
 def safe_rel(rel):
-    """清单里的路径必须是载荷内的相对路径。
-
-    绝对路径或带 `..` 的路径能读出载荷外的文件；起始材料会把它们抄进
-    实例，等于让一份被改过的清单搬走 owner 目录外的东西。
-    """
-    if not rel or not isinstance(rel, str):
-        return False
-    path = Path(rel)
-    if path.is_absolute() or str(rel).startswith("/"):
-        return False
-    return ".." not in path.parts
-
-
-def _inside(root, path):
-    """路径（含软链接落点）是否仍在 root 之下。"""
-    try:
-        resolved = Path(path).resolve()
-        base = Path(root).resolve()
-    except OSError:
-        return False
-    return resolved == base or base in resolved.parents
+    """清单路径校验的布尔接口；底层与实例文件操作共用同一实现。"""
+    return safefile.safe_rel(rel)
 
 
 def _check(root, rel, what):
     if not safe_rel(rel):
         raise OpcError("载荷清单里的{}路径不合法：{}".format(what, rel))
-    if not _inside(root, root / rel):
+    if not safefile.inside(root, root / rel):
         raise OpcError("载荷清单里的{}路径不在载荷内：{}".format(what, rel))
 
 
@@ -70,6 +52,11 @@ def validate(template_root, manifest):
         _check(root, rel, "机制")
         if not (root / rel).exists():
             raise OpcError("载荷清单引用的机制路径不存在：{}".format(rel))
+    mechanism_files_set = set(mechanism_files(template_root, manifest))
+    for rel in mech.get("executables", []):
+        _check(root, rel, "可执行文件")
+        if rel not in mechanism_files_set:
+            raise OpcError("可执行文件不属于机制载荷：{}".format(rel))
     for item in manifest.get("seeds", []):
         _check(root, item["source"], "种子来源")
         if not (root / item["source"]).is_file():
@@ -136,10 +123,6 @@ def should_ignore(path):
     if path.name in IGNORE_NAMES or path.suffix in IGNORE_SUFFIXES:
         return True
     return any(part in IGNORE_DIRS for part in path.parts)
-
-
-def config_specs(manifest):
-    return manifest.get("config", [])
 
 
 def commit_paths(manifest, extra=None):

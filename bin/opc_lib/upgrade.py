@@ -1,12 +1,12 @@
 """upgrade：机制指纹校验 + 起始材料按基线更新；本地改过机制文件则拒绝。"""
 
 import difflib
-import json
 import shutil
+import sys
 from pathlib import Path
 
 from . import install as install_mod
-from . import gitutil, manifest as manifest_mod, registry, role_migrate, starters, ui
+from . import gitutil, manifest as manifest_mod, registry, role_migrate, safefile, starters, ui
 from .errors import OpcError
 from .hashutil import sha256_file
 
@@ -33,7 +33,7 @@ def detect_legacy(instance):
 
 
 def load_instance(instance):
-    data = install_mod.load_json(Path(instance) / ".opc" / "instance.json", None)
+    data = safefile.read_json(Path(instance) / ".opc" / "instance.json", None)
     if not data or data.get("kind") != "opc-instance":
         raise OpcError("不是 OPC 实例（缺 .opc/instance.json 或 kind 不对）：{}".format(instance))
     return data
@@ -41,6 +41,7 @@ def load_instance(instance):
 
 def copy_mechanism_over(payload, manifest, target):
     """覆盖复制机制文件，但不删除目录里的其他文件（保留本地新增角色模板）。"""
+    executables = set((manifest.get("mechanism") or {}).get("executables") or [])
     for rel in manifest_mod.mechanism_files(payload.parent, manifest):
         src = payload / rel
         dst = Path(target) / rel
@@ -48,8 +49,7 @@ def copy_mechanism_over(payload, manifest, target):
         tmp = dst.with_name(dst.name + ".opc-tmp")
         shutil.copy2(src, tmp)
         tmp.replace(dst)
-        if dst.suffix == ".sh" or dst.name in {
-                "opc-workflow", "opc-lint", "preflight", "opc-smoke"}:
+        if dst.suffix == ".sh" or rel in executables:
             try:
                 dst.chmod(dst.stat().st_mode | 0o111)
             except OSError:
@@ -62,9 +62,9 @@ def merge_config(src, dst, spec):
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         return [item.get(spec["key"]) for item in
-                install_mod.load_json(src, {}).get(spec["arrayPath"], [])]
-    src_data = install_mod.load_json(src, {})
-    dst_data = install_mod.load_json(dst, {})
+                safefile.read_json(src, {}).get(spec["arrayPath"], [])]
+    src_data = safefile.read_json(src, {})
+    dst_data = safefile.read_json(dst, {})
     array_path = spec["arrayPath"]
     key = spec["key"]
     existing = {item.get(key) for item in dst_data.get(array_path, [])}
@@ -78,7 +78,7 @@ def merge_config(src, dst, spec):
         dst_data.setdefault(array_path, []).append(new)
         added.append(item.get(key))
     if added:
-        install_mod.write_json(dst, dst_data)
+        safefile.write_json(dst, dst_data)
     return added
 
 
@@ -175,20 +175,22 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
     if not instance.is_dir():
         raise OpcError("实例目录不存在：{}".format(instance))
 
+    data = load_instance(instance)
+    roles = starters.instance_roles(instance)
+    starters.validate_skills(instance, roles)
     legacy = detect_legacy(instance)
     if legacy:
         from . import migrate
         return migrate.migrate(template_root, manifest, args, instance, legacy,
                                install_ui=install_ui)
 
-    data = load_instance(instance)
     prefix = data.get("prefix") or install_mod.slugify(instance.name)
     mech_path = instance / ".opc" / "mechanism.json"
     if not mech_path.is_file():
         raise OpcError(
             "缺少 .opc/mechanism.json，无法判断机制文件是否被本地改过。\n"
             "确认没有本地改动后加 --force-mechanism 接管：{}".format(instance))
-    old_files = (install_mod.load_json(mech_path, {}) or {}).get("files", {})
+    old_files = (safefile.read_json(mech_path, {}) or {}).get("files", {})
     payload = manifest_mod.payload_root(template_root)
     modified, deleted, collisions = verify(instance, payload, manifest, old_files)
 
@@ -208,7 +210,6 @@ def upgrade_one(template_root, manifest, args, instance, install_ui=True):
     obsolete = sorted((set(old_files) - new_files) - starter_targets)
 
     # 角色单文件迁移：旧实例的 roles.json 还指向 agents/ 下的单文件简报。
-    roles = starters.instance_roles(instance)
     role_result = role_migrate.plan(instance, roles, old_files)
 
     plan = starter_plan(instance, payload, manifest, old_files, entries=entries)
@@ -270,13 +271,13 @@ def upgrade_all(template_root, manifest, args):
     failed = []
     for instance in targets:
         if not instance.is_dir():
-            print("跳过（目录不存在）：{}".format(instance), file=__import__("sys").stderr)
+            print("跳过（目录不存在）：{}".format(instance), file=sys.stderr)
             continue
         try:
             upgrade_one(template_root, manifest, args, instance, install_ui=False)
         except OpcError as exc:
             failed.append((instance, exc.message))
-            print("升级失败：{}：{}".format(instance, exc.message), file=__import__("sys").stderr)
+            print("升级失败：{}：{}".format(instance, exc.message), file=sys.stderr)
     ui.install(manifest_mod.payload_root(template_root), manifest,
                force=args.force_ui, dry_run=args.dry_run)
     if failed:

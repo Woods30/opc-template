@@ -285,23 +285,51 @@ expect "被冻结的技能不更新到模版版本" \
 expect "没被改的技能照常更新" \
   grep -q "模版侧的新版本" "$INST6/skills/knowledge-writing/SKILL.md"
 
-# 18. 起始材料是指向实例外的软链接：升级不顺着它写到实例外
+# 18. 普通起始材料是指向实例外的软链接：升级不顺着它写到实例外
 INST7="$WORK/inst7"
 "$ROOT/bin/opc" install "$INST7" t7 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
-printf 'owner 的内容\n' > "$WORK/outside.md"
-rm -f "$INST7/skills/knowledge-writing/SKILL.md"
-ln -s "$WORK/outside.md" "$INST7/skills/knowledge-writing/SKILL.md"
 printf 'owner 的规约\n' > "$WORK/outside-agents.md"
 rm -f "$INST7/AGENTS.md"
 ln -s "$WORK/outside-agents.md" "$INST7/AGENTS.md"
 out="$("$ROOT/bin/opc" upgrade "$INST7" --template "$TPL5" --skip-smoke 2>&1)"
 rc=$?
 check "起始材料软链接指向实例外时升级仍成功" "0" "$rc"
-check "实例外的文件没有被改写" "owner 的内容" "$(cat "$WORK/outside.md")"
 check "实例外的规约文件没有被改写" "owner 的规约" "$(cat "$WORK/outside-agents.md")"
 expect "指向实例外的软链接有告警" grep -q "指向实例外" <<< "$out"
 
-# 19. 注册表记录实例
+# 19. 基线缺记录：逐字节相同的是旧基线重建，不同内容才按 owner 材料钉住
+INST8="$WORK/inst8"
+"$ROOT/bin/opc" install "$INST8" t8 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+python3 - "$INST8/.opc/starters.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+data["files"].pop("AGENTS.md", None)
+data["files"].pop("agents/gm/AGENTS.md", None)
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+printf '\nowner 的无基线内容。\n' >> "$INST8/AGENTS.md"
+"$ROOT/bin/opc" upgrade "$INST8" --template "$ROOT" --skip-smoke >/dev/null 2>&1
+check "无记录且不同的文件被钉住" "true" \
+  "$(jq -r '.files["AGENTS.md"].pinned' "$INST8/.opc/starters.json")"
+check "无记录但相同的文件重建普通基线" "null" \
+  "$(jq -r '.files["agents/gm/AGENTS.md"].pinned // "null"' "$INST8/.opc/starters.json")"
+TPL6="$WORK/tpl6"
+mkdir -p "$TPL6"
+cp -R "$ROOT/template" "$TPL6/template"
+printf '\n模版侧的新规约。\n' >> "$TPL6/template/AGENTS.md"
+printf '\n模版侧的新角色版本。\n' >> "$TPL6/template/agents/gm/AGENTS.md"
+"$ROOT/bin/opc" upgrade "$INST8" --template "$TPL6" --skip-smoke >/dev/null 2>&1
+expect "重建基线的相同文件继续跟随模版" grep -q "模版侧的新角色版本" \
+  "$INST8/agents/gm/AGENTS.md"
+expect "不同内容的 pinned 文件不被覆盖" \
+  bash -c "! grep -q '模版侧的新规约' '$INST8/AGENTS.md'"
+expect "pinned 文件保留 owner 内容" grep -q "owner 的无基线内容" "$INST8/AGENTS.md"
+
+# 20. 注册表记录实例
 expect "注册表包含实例" grep -q "$INST" "$OPC_CONFIG_DIR/instances.json"
 check "opc ls 列出实例" "1" "$("$ROOT/bin/opc" ls 2>/dev/null | grep -c "^t  ")"
 

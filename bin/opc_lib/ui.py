@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 from datetime import datetime
-from pathlib import Path
 
 from . import paths
 from .errors import OpcError
@@ -130,9 +129,10 @@ def install(payload, manifest, force=False, dry_run=False):
     return actions
 
 
-def cleanup_legacy(prefixes, dry_run=False):
+def cleanup_legacy(prefixes, manifest, dry_run=False):
     """清理旧版本按前缀安装的布局与 mod。返回被清理的路径。"""
     app_home = paths.herdr_app_home()
+    mod_names = set((manifest.get("ui") or {}).get("mods") or [])
     layouts = app_home / "layouts"
     mods = app_home / "mods"
     victims = []
@@ -140,9 +140,9 @@ def cleanup_legacy(prefixes, dry_run=False):
     if mods.is_dir():
         for path in mods.iterdir():
             name = path.name
-            if name in {"opc-dashboard", "opc-tabs"}:
+            if name in mod_names:
                 continue
-            if name.endswith("-opc-dashboard") or name.endswith("-opc-tabs"):
+            if any(name.endswith("-" + mod_name) for mod_name in mod_names):
                 victims.append(path)
 
     if layouts.is_dir():

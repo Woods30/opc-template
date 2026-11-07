@@ -106,7 +106,6 @@ INST2="$WORK/inst-roles"
 check "角色迁移用例的实例准备就绪" "0" "$?"
 
 python3 - "$INST2" <<'PY'
-import hashlib
 import json
 import pathlib
 import shutil
@@ -115,45 +114,42 @@ import sys
 inst = pathlib.Path(sys.argv[1])
 
 
-def sha_text(text):
-    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
-
-
-# 角色 -> (描述, 正文, owner 追加的段落)
+# 角色 -> (描述, 正文)
 OLD = {
     "gm": ("OPC 公司总经理。旧实例的描述。",
            "你现在是 **OPC 公司的总经理（gm）**。\n\n"
-           "旧实例里的 gm 正文，通知走 {{PREFIX}}-gm。\n", ""),
+           "旧实例里的 gm 正文，通知走 {{PREFIX}}-gm。\n"),
     "content": ("OPC 内容经理。旧实例的描述。",
                 "你现在是 **OPC 公司的内容经理（content）**。\n\n"
-                "旧实例里的 content 正文。\n", "\nowner 的补充。\n"),
+                "旧实例里的 content 正文。\n"),
 }
 
 roles = json.loads((inst / "roles.json").read_text(encoding="utf-8"))
 mech_path = inst / ".opc" / "mechanism.json"
-mech = json.loads(mech_path.read_text(encoding="utf-8"))
 
 for role in roles["roles"]:
     name = role["name"]
     if name not in OLD:
         continue
-    desc, body, owner = OLD[name]
+    desc, body = OLD[name]
     brief = ("---\nname: {{PREFIX}}-%s\ndescription: %s\ncommand: zsh -lic claude\n---\n\n%s"
              % (name, desc, body))
     old_rel = "agents/opc-%s.md" % name
-    (inst / old_rel).write_text(brief + owner, encoding="utf-8")
+    # 首次提交保留安装时的旧简报；owner 修改在下一次提交追加，供 git 历史重建指纹。
+    (inst / old_rel).write_text(brief, encoding="utf-8")
     shutil.rmtree(inst / "agents" / name)
     role["template"] = old_rel
     role.pop("description", None)
     role.pop("skills", None)
-    # 旧指纹记的是装进来时那份的哈希：owner 改过的角色就对不上号了
-    mech["files"][old_rel] = sha_text(brief)
 
 (inst / "roles.json").write_text(
     json.dumps(roles, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-mech_path.write_text(
-    json.dumps(mech, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+# 模拟早于 mechanism.json 的实例；sync-base 只作为 legacy marker。
+mech_path.unlink()
+(inst / ".opc" / "sync-base").mkdir(parents=True)
 (inst / ".opc" / "starters.json").unlink()
+(inst / "skills" / "opc-workflow" / "owner.md").write_text(
+    "owner 新增的技能文件。\n", encoding="utf-8")
 PY
 check "旧角色布局造好" "0" "$?"
 
@@ -164,13 +160,27 @@ check "旧角色布局造好" "0" "$?"
     commit -m "旧角色布局" >/dev/null 2>&1
 )
 check "旧角色布局已提交" "0" "$?"
+printf '\nowner 的补充。\n' >> "$INST2/agents/opc-content.md"
+(
+  cd "$INST2" || exit 1
+  git add agents/opc-content.md
+  git -c user.name="$OPC_GIT_NAME" -c user.email="$OPC_GIT_EMAIL" \
+    commit -m "owner 修改旧角色" >/dev/null 2>&1
+)
+check "owner 修改旧角色已提交" "0" "$?"
 
-# dry-run 零写入
-out="$("$ROOT/bin/opc" upgrade "$INST2" --template "$ROOT" --dry-run 2>&1)"
+# dry-run 零写入，并完整展示起始材料更新与技能冻结
+TPL_MIG="$WORK/tpl-migrate"
+mkdir -p "$TPL_MIG"
+cp -R "$ROOT/template" "$TPL_MIG/template"
+printf '\n迁移 dry-run 的模版更新。\n' >> "$TPL_MIG/template/AGENTS.md"
+out="$("$ROOT/bin/opc" upgrade "$INST2" --template "$TPL_MIG" --dry-run 2>&1)"
 check "角色迁移 --dry-run 返回 0" "0" "$?"
 expect "dry-run 打印角色迁移" grep -q "角色迁移" <<< "$out"
 expect "dry-run 打印要建的角色目录" grep -q "agents/gm/AGENTS.md" <<< "$out"
 expect "dry-run 打印备份位置" grep -q ".opc/backups/agents/opc-gm.md" <<< "$out"
+expect "dry-run 打印起始材料更新" grep -q "起始材料更新.*AGENTS.md" <<< "$out"
+expect "dry-run 打印技能冻结" grep -q "技能冻结.*skills/opc-workflow" <<< "$out"
 expect "dry-run 不建角色目录" test ! -e "$INST2/agents/gm"
 expect "dry-run 不动旧简报" test -f "$INST2/agents/opc-gm.md"
 expect "dry-run 不写备份" test ! -e "$INST2/.opc/backups"
@@ -181,7 +191,7 @@ expect "dry-run 后工作区干净" test -z "$(git -C "$INST2" status --porcelai
 knowledge_before="$(find "$INST2/knowledge" -type f -exec shasum {} + | sort | shasum | awk '{print $1}')"
 
 # 正式升级
-out="$("$ROOT/bin/opc" upgrade "$INST2" --template "$ROOT" --skip-smoke 2>&1)"
+out="$("$ROOT/bin/opc" upgrade "$INST2" --template "$TPL_MIG" --yes --skip-smoke 2>&1)"
 check "角色迁移升级返回 0" "0" "$?"
 expect "升级打印了角色迁移" grep -q "角色迁移" <<< "$out"
 
@@ -224,7 +234,7 @@ expect "hc 模板里没有技能索引" bash -c "! grep -q '技能索引' '$HERD
 committed="$(git -C "$INST2" diff-tree --no-commit-id --name-only -r --no-renames HEAD \
   | sort | tr '\n' ' ')"
 check "升级提交只含迁移相关文件" \
-  "agents/content/AGENTS.md agents/gm/AGENTS.md agents/opc-content.md agents/opc-gm.md roles.json " \
+  "AGENTS.md agents/content/AGENTS.md agents/gm/AGENTS.md agents/opc-content.md agents/opc-gm.md roles.json " \
   "$committed"
 
 # 幂等：再升级一次不重做迁移
@@ -293,6 +303,20 @@ expect "实例外的内容没进角色提示词" \
   bash -c "! grep -rq '实例外的机密内容' '$INST3/agents' 2>/dev/null"
 expect "实例外的文件没有被改写" grep -q "实例外的机密内容" "$OUTSIDE"
 expect "软链接本身没被删掉" test -L "$INST3/agents/opc-gm.md"
+
+if PYTHONPATH="$ROOT/bin" python3 - "$INST3" <<'PY'
+import sys
+from opc_lib import role_migrate
+
+result = role_migrate.plan(
+    sys.argv[1], [{"name": "Bad.Name", "template": "agents/opc-Bad.Name.md"}], {})
+assert any("角色名不合法" in line for line in role_migrate.lines(result))
+PY
+then
+  ok "非法旧角色名会显示未迁移警告"
+else
+  bad "非法旧角色名被静默跳过"
+fi
 
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"

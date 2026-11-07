@@ -15,8 +15,8 @@ SHA-256；技能目录额外记该技能包含的文件集合，用于整目录�
   owner 删掉的不再补；模版新增的 seed 只在目标缺失时补入。
 """
 
-import json
-import os
+import re
+import sys
 from pathlib import Path
 
 from . import manifest as manifest_mod
@@ -34,6 +34,9 @@ ADD_ONLY_KINDS = {KIND_SEED}
 
 BASELINE_VERSION = 1
 
+SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+FRONTMATTER_KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):[ \t]*(.*)$")
+
 
 # ---------------------------------------------------------------- 基线读写
 
@@ -42,27 +45,9 @@ def baseline_path(instance):
     return Path(instance) / ".opc" / "starters.json"
 
 
-def _read_json(path, default):
-    path = Path(path)
-    if not path.is_file():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise OpcError("不是合法 JSON：{}（{}）".format(path, exc))
-
-
-def _write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def read_baseline(instance):
     """读实例的起始材料基线；没有就返回空基线。"""
-    raw = _read_json(baseline_path(instance), None) or {}
+    raw = safefile.read_json(baseline_path(instance), None) or {}
     files = raw.get("files")
     files = dict(files) if isinstance(files, dict) else {}
     skills = raw.get("skills")
@@ -89,7 +74,7 @@ def write_baseline(instance, baseline):
         "files": files,
         "skills": {unit: sorted(rels) for unit, rels in skills.items()},
     }
-    _write_json(baseline_path(instance), data)
+    safefile.write_json(baseline_path(instance), data)
     return data
 
 
@@ -143,7 +128,7 @@ def expand(payload, manifest):
         entries.append(_entry(spec["target"], spec["source"], KIND_SEED))
     for entry in entries:
         _check_entry(entry)
-        if not _inside(payload, payload / entry["source"]):
+        if not safefile.inside(payload, payload / entry["source"]):
             raise OpcError("起始材料来源不在模版载荷内：{}".format(entry["source"]))
     return entries
 
@@ -179,7 +164,7 @@ def install(payload, manifest, instance, entries=None):
             # 校验与拷贝之间仍有竞态；能往实例目录里写符号链接的人本来就能
             # 改这个实例，这里防的是「实例里已有的链接把改动带到实例外」。
             continue
-        if _symlink_component(instance, dst) or not _resolves_inside(instance, dst):
+        if safefile.symlink_component(instance, dst) or not safefile.inside(instance, dst):
             # 父目录是软链接或落点在实例外：一律不写。
             continue
         if not dst.exists():
@@ -286,7 +271,7 @@ def plan(payload, manifest, instance, baseline, entries=None):
                 new_files[rel] = dict(record)
             continue
 
-        if not _resolves_inside(instance, dst):
+        if not safefile.inside(instance, dst):
             # 目标（连同它的父目录）指向实例外：不写过去，保留并告警。
             result["kept"].append((rel, "指向实例外的软链接，已保留"))
             if record:
@@ -300,7 +285,7 @@ def plan(payload, manifest, instance, baseline, entries=None):
                 new_files[rel] = dict(record)
             continue
 
-        if _symlink_component(instance, dst):
+        if safefile.symlink_component(instance, dst):
             # 父目录是软链接：落点可能落在实例外，同样不写。
             result["kept"].append((rel, "父目录是软链接，已保留"))
             if record:
@@ -337,7 +322,8 @@ def plan(payload, manifest, instance, baseline, entries=None):
         current = sha256_file(dst)
         if record is None:
             if current == sha256_file(src):
-                # 与模版一致：收编进基线，之后就能正常跟随模版更新。
+                # 内容逐字节相同说明缺的是旧实例基线，不是 owner 材料；重建
+                # 基线后才能继续跟随模版。不同内容会在下面钉住，永不覆盖。
                 _record(new_files, entry, current)
             else:
                 result["kept"].append((rel, "与模版不同，已保留"))
@@ -374,75 +360,82 @@ def plan(payload, manifest, instance, baseline, entries=None):
     return result
 
 
-def _safe_rel(rel):
-    """相对路径安全性：拒绝绝对路径与 `..`。"""
-    if not rel or not isinstance(rel, str):
-        return False
-    if rel.startswith("/") or os.path.isabs(rel):
-        return False
-    return ".." not in Path(rel).parts
-
-
-def _inside(root, path):
-    """路径（含软链接落点）是否仍在 root 之下。"""
-    try:
-        resolved = Path(path).resolve()
-        base = Path(root).resolve()
-    except OSError:
-        return False
-    return resolved == base or base in resolved.parents
-
-
-def _symlink_component(instance, path):
-    """路径的任一层（含自己）是不是软链接。
-
-    只看最后一段不够：父目录是软链接时，写进去的文件照样落在实例外。
-    """
-    root = Path(instance)
-    try:
-        rel = Path(path).relative_to(root)
-    except ValueError:
-        return True
-    cur = root
-    for part in rel.parts:
-        cur = cur / part
-        try:
-            if cur.is_symlink():
-                return True
-        except OSError:
-            return True
-    return False
-
-
 def _check_entry(entry):
     """起始材料条目的路径合法性：相对、无 `..`、来源在载荷内。"""
     for key in ("source", "target"):
-        if not _safe_rel(entry.get(key)):
+        if not safefile.safe_rel(entry.get(key)):
             raise OpcError("起始材料路径不合法：{} = {}".format(key, entry.get(key)))
 
 
-def _resolves_inside(instance, path):
-    """软链接的落点是否仍在实例内。
+def _skill_frontmatter_problem(text, expected_name):
+    """返回技能 frontmatter 的首个问题；口径与 lint、Bash backstop 一致。"""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return "缺少合法的 frontmatter（首行 ---，之后用 --- 收尾）"
+    fields = {}
+    closed = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            closed = True
+            break
+        match = FRONTMATTER_KEY_RE.match(line)
+        if match:
+            fields[match.group(1)] = match.group(2).strip()
+    if not closed:
+        return "缺少合法的 frontmatter（首行 ---，之后用 --- 收尾）"
+    name = (fields.get("name") or "").strip().strip('"').strip("'")
+    if not name:
+        return "frontmatter 缺少 name"
+    if name != expected_name:
+        return "frontmatter 的 name 与目录名不一致（name={}，目录={}）".format(
+            name, expected_name)
+    raw = fields.get("description")
+    if raw is None or raw == "":
+        return "frontmatter 缺少 description"
+    if raw.startswith(("|", ">")):
+        return "description 必须是单行，不能用块标量"
+    if not raw.strip().strip('"').strip("'"):
+        return "frontmatter 的 description 是空的"
+    return None
 
-    实例里的文件可能是指向实例外的软链接。顺着它写会把 owner 目录外的东西
-    改掉——那既越界，也会把实例的改动写到别处去。
-    """
-    try:
-        resolved = Path(path).resolve()
-        root = Path(instance).resolve()
-    except OSError:
-        return False
-    return resolved == root or root in resolved.parents
+
+def validate_skills(instance, roles):
+    """校验启用角色选中的技能；缺失可降级，其余损坏必须阻断安装或升级。"""
+    instance = Path(instance)
+    for role in roles or []:
+        if not role.get("enabled"):
+            continue
+        role_name = role.get("name") or "<未知角色>"
+        skills = role.get("skills") or []
+        for name in skills:
+            if not isinstance(name, str) or not SKILL_NAME_RE.match(name):
+                raise OpcError("角色 {} 的技能 {} 不合法：技能名不合法".format(
+                    role_name, name))
+            rel = "skills/{}/SKILL.md".format(name)
+            path = instance / rel
+            if not safefile.inside(instance, path):
+                raise OpcError("角色 {} 的技能 {} 不合法：技能路径指向实例外".format(
+                    role_name, name))
+            if not path.is_file():
+                print("警告：角色 {} 选中的技能已跳过：{}（技能文件不存在）".format(
+                    role_name, name), file=sys.stderr)
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise OpcError("角色 {} 的技能 {} 不合法：技能文件读不了（{}）".format(
+                    role_name, name, exc))
+            problem = _skill_frontmatter_problem(text, name)
+            if problem:
+                raise OpcError("角色 {} 的技能 {} 不合法：{}".format(
+                    role_name, name, problem))
 
 
 def instance_roles(instance):
     """实例里的角色清单（roles.json）；读不到就当没有角色。"""
-    path = Path(instance) / "roles.json"
-    if not path.is_file():
-        return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = safefile.read_json(Path(instance) / "roles.json", {}) or {}
+    except OpcError:
         return []
     return data.get("roles") or []
 
@@ -471,7 +464,7 @@ def missing_role_entries(instance, roles, planned=()):
         template = role.get("template")
         if not template:
             continue
-        if not _safe_rel(template):
+        if not safefile.safe_rel(template):
             missing.append("角色 {}：模板路径不合法 {}".format(role.get("name"), template))
             continue
         if (Path(instance) / template).exists() or template in planned:
@@ -488,8 +481,8 @@ def apply(result):
         if dst.is_symlink():
             # 目标是软链接：replace 会替换链接本身，但这里直接跳过更清楚。
             continue
-        if instance and (_symlink_component(instance, dst)
-                         or not _resolves_inside(instance, dst)):
+        if instance and (safefile.symlink_component(instance, dst)
+                         or not safefile.inside(instance, dst)):
             continue
         safefile.copy_from(result.get("payload"), src, instance, rel)
     return result

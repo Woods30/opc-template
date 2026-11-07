@@ -1,7 +1,6 @@
 """模版来源：显式路径、开发副本或全局缓存；缓存负责自动拉取最新。"""
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -139,8 +138,3 @@ def ensure_global_command(template_root):
               "  export PATH=\"{}:$PATH\"".format(paths.bin_dir(), paths.bin_dir()),
               file=sys.stderr)
     return target
-
-
-def discard_cache_warning(cache):
-    if shutil.which("git") is None:
-        print("提示：没有 git，模版缓存不会自动更新。", file=sys.stderr)

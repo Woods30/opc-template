@@ -7,7 +7,11 @@
 所有路径都是相对实例根的相对路径；每一段都不能是 `..`，也不能是软链接。
 """
 
+import json
 import os
+from pathlib import Path
+
+from .errors import OpcError
 
 O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -21,12 +25,69 @@ class UnsafePath(Exception):
 
 def split_rel(rel):
     """把相对路径拆成段；绝对路径与 `..` 一律拒绝。"""
-    if not rel or not isinstance(rel, str):
+    if not rel or not isinstance(rel, str) or os.path.isabs(rel):
         raise UnsafePath("路径不合法：{}".format(rel))
     parts = [p for p in rel.split("/") if p not in ("", ".")]
     if not parts or any(p == ".." for p in parts):
         raise UnsafePath("路径不合法：{}".format(rel))
     return parts
+
+
+def safe_rel(rel):
+    """相对路径是否合法；供只需要布尔结果的清单校验复用。"""
+    try:
+        split_rel(rel)
+    except UnsafePath:
+        return False
+    return True
+
+
+def inside(root, path):
+    """路径（含软链接落点）是否仍在 root 之下。"""
+    try:
+        resolved = Path(path).resolve()
+        base = Path(root).resolve()
+    except OSError:
+        return False
+    return resolved == base or base in resolved.parents
+
+
+def symlink_component(root, path):
+    """路径的任一层（含自己）是不是软链接。"""
+    root = Path(root)
+    try:
+        rel = Path(path).relative_to(root)
+    except ValueError:
+        return True
+    current = root
+    for part in rel.parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def read_json(path, default=None):
+    """读取 JSON；文件不存在时返回 default，格式错误时给统一诊断。"""
+    path = Path(path)
+    if not path.is_file():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OpcError("不是合法 JSON：{}（{}）".format(path, exc))
+
+
+def write_json(path, data):
+    """原子写入 JSON。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _open_dir(root, parts, create=False):
@@ -86,11 +147,8 @@ def write_text(root, rel, text, mode=0o644):
         os.close(parent)
 
 
-def copy_from(src_root, src_rel, dst_root, dst_rel):
-    """把一份受信任目录下的文件复制到目标目录里的相对路径。
-
-    来源与落点都按目录描述符逐段打开：来源不跟随软链接，落点写不出去。
-    """
+def copy_from(src_root, src_rel, dst_root, dst_rel, mode=None):
+    """在两个受限目录之间复制文件，来源与落点都不跟随软链接。"""
     sparts = split_rel(src_rel)
     dparts = split_rel(dst_rel)
     src_parent = _open_dir(src_root, sparts[:-1])
@@ -100,7 +158,7 @@ def copy_from(src_root, src_rel, dst_root, dst_rel):
         os.close(src_parent)
     with os.fdopen(sfd, "rb") as source:
         data = source.read()
-        mode = os.fstat(source.fileno()).st_mode & 0o777
+        source_mode = os.fstat(source.fileno()).st_mode & 0o777
     parent = _open_dir(dst_root, dparts[:-1], create=True)
     tmp = _tmp_name()
     try:
@@ -108,35 +166,8 @@ def copy_from(src_root, src_rel, dst_root, dst_rel):
                      0o600, dir_fd=parent)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        os.chmod(tmp, mode or 0o644, dir_fd=parent)
+        os.chmod(tmp, mode if mode is not None else (source_mode or 0o644), dir_fd=parent)
         os.replace(tmp, dparts[-1], src_dir_fd=parent, dst_dir_fd=parent)
-    except BaseException:
-        _unlink_quiet(parent, tmp)
-        raise
-    finally:
-        os.close(parent)
-
-
-def copy_file(root, src_rel, dst_rel):
-    """把实例内的文件复制到实例内的另一个路径。"""
-    src = split_rel(src_rel)
-    dst = split_rel(dst_rel)
-    src_parent = _open_dir(root, src[:-1])
-    try:
-        sfd = os.open(src[-1], os.O_RDONLY | O_NOFOLLOW, dir_fd=src_parent)
-    finally:
-        os.close(src_parent)
-    with os.fdopen(sfd, "rb") as source:
-        data = source.read()
-    parent = _open_dir(root, dst[:-1], create=True)
-    tmp = _tmp_name()
-    try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW,
-                     0o600, dir_fd=parent)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        os.chmod(tmp, 0o644, dir_fd=parent)
-        os.replace(tmp, dst[-1], src_dir_fd=parent, dst_dir_fd=parent)
     except BaseException:
         _unlink_quiet(parent, tmp)
         raise
