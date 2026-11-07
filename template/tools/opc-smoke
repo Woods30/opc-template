@@ -22,8 +22,9 @@ knowledge/：自己在临时目录里造一份最小实例（一个假频道、�
    自己的 actor；不带 actor 的步骤（如 build）则完全不设这个变量。直接把
    OPC_ROLE 删掉也能跑通，但等于把这条防线绕过去了——冒烟就不再验证它。
 2. **实例根向上找**：脚本装在 <实例>/tools/ 下、放在提案目录里评审，都能定位
-   到同一个实例；也可用 --instance-root 显式指定。
-3. **--keep 真的保留**：保留临时目录并打印路径，便于排查。
+   到同一个实例；工具被拷到实例外面时，改按当前工作目录认。也可用
+   --instance-root 显式指定。
+3. **--keep 真的保留**：保留临时目录并打印路径；跑失败时也打印——排查现场靠它。
 
 用法：
     tools/opc-smoke                    # 跑一遍，退出码 0 表示通过
@@ -58,30 +59,62 @@ class SmokeError(Exception):
 
 
 def find_instance_root(start: Path | None = None) -> Path:
-    """实例根 = 脚本所在位置的祖先目录，按可信度从高到低认：
+    """实例根 = 最近的、同时含实例标记与工作流工具的祖先目录。
 
-    1. 同时含实例标记与工作流工具的目录 —— 真实例；
-    2. 只含实例标记的目录 —— 实例在但工作流没了，返回它，好让后面报
-       「缺少 tools/opc-workflow」，而不是一句含混的「找不到实例根」；
-    3. 只含工作流工具的目录 —— 工具在但实例标记没了。
+    向上找的起点有两处：**脚本所在目录**（工具装在 <实例>/tools/ 下时最准，
+    提案目录里的副本也顺着同一棵树往上走）与**当前工作目录**（工具被拷到
+    实例外面、但人还在实例里跑时靠它兜底）。
 
-    从脚本所在目录向上找，所以脚本装在 <实例>/tools/ 下、或者放在提案目录里
-    评审，都能定位到同一个实例。
+    两处都按可信度分三轮找：先找**同时含实例标记与工作流工具**的目录（那才是
+    真实例），都找不到才放宽到只含实例标记（实例在但工作流没了，好让后面报
+    一句「缺少 tools/opc-workflow」，而不是含混的「找不到实例根」），再放宽到
+    只含工作流工具（工具在但实例标记没了）。同一轮里脚本那棵树先于当前目录。
+
+    也可用 --instance-root 显式指定，不走这套查找。
     """
-    current = (start or Path(__file__).resolve().parent).resolve()
-    candidates = [current, *current.parents]
-    for candidate in candidates:
-        if ((candidate / ".opc" / "instance.json").is_file()
-                and (candidate / "tools" / "opc-workflow").is_file()):
-            return candidate
-    for candidate in candidates:
-        if (candidate / ".opc" / "instance.json").is_file():
-            return candidate
-    for candidate in candidates:
-        if (candidate / "tools" / "opc-workflow").is_file():
-            return candidate
+    origins = []
+    if start is not None:
+        origins.append(Path(start))
+    else:
+        origins.append(Path(__file__).resolve().parent)
+        try:
+            origins.append(Path.cwd())
+        except OSError:
+            pass
+
+    def has_instance(candidate: Path) -> bool:
+        return (candidate / ".opc" / "instance.json").is_file()
+
+    def has_workflow(candidate: Path) -> bool:
+        return (candidate / "tools" / "opc-workflow").is_file()
+
+    def nearest(chain, check):
+        for candidate in chain:
+            if check(candidate):
+                return candidate
+        return None
+
+    def both(candidate):
+        return has_instance(candidate) and has_workflow(candidate)
+
+    chains = []
+    for origin in origins:
+        resolved = origin.resolve()
+        chain = [resolved, *resolved.parents]
+        if any(chain[0] == existing[0] for existing in chains):
+            continue
+        chains.append(chain)
+
+    # 先在所有起点里找完整实例，再按可信度放宽；同一轮里脚本那棵树优先。
+    for check in (both, has_instance, has_workflow):
+        for chain in chains:
+            found = nearest(chain, check)
+            if found is not None:
+                return found
+
+    where = "、".join(str(origin) for origin in origins)
     raise SmokeError(
-        "找不到实例根（需要 .opc/instance.json 与 tools/opc-workflow）：从 {} 向上没找到".format(current))
+        "找不到实例根（需要 .opc/instance.json 与 tools/opc-workflow）：从 {} 向上没找到".format(where))
 
 
 def write(path: Path, text: str) -> None:
@@ -221,7 +254,13 @@ def check_dashboard(root: Path) -> dict:
     return payload
 
 
-def run_smoke(root: Path, keep: bool = False) -> dict:
+def run_smoke(root: Path, keep: bool = False, scene: dict | None = None) -> dict:
+    """跑一遍主流程。scene 用来回传「保留的临时目录在哪」。
+
+    scene 由调用方传进来：失败时要报出保留的现场，路径得从临时目录的
+    创建者手里拿，不能靠给异常对象挂属性——那既不常规，也容易在异常类型
+    不许挂属性时把原本的失败原因盖掉。
+    """
     workflow_source = root / "tools" / "opc-workflow"
     if not workflow_source.is_file():
         raise SmokeError("实例里缺少 tools/opc-workflow：{}".format(workflow_source))
@@ -298,9 +337,30 @@ def run_smoke(root: Path, keep: bool = False) -> dict:
         if keep:
             result["kept_dir"] = str(temp)
         return result
+    except Exception:
+        # 保留了现场就得报出位置，否则人得自己去临时目录里翻。
+        if keep and scene is not None:
+            scene["kept_dir"] = str(temp)
+        raise
     finally:
         if not keep:
             shutil.rmtree(temp, ignore_errors=True)
+
+
+def report_failure(error, json_mode: bool, kept: str | None = None) -> int:
+    """失败也要说人话，并且把保留的现场报出来。"""
+    detail = (str(error) if isinstance(error, SmokeError)
+              else "{}：{}".format(type(error).__name__, error))
+    if json_mode:
+        payload = {"ok": False, "error": detail}
+        if kept:
+            payload["kept_dir"] = kept
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print("冒烟失败：{}".format(detail), file=sys.stderr)
+        if kept:
+            print("保留临时目录：{}".format(kept), file=sys.stderr)
+    return 1
 
 
 def main(argv=None) -> int:
@@ -310,23 +370,13 @@ def main(argv=None) -> int:
     parser.add_argument("--instance-root", help="显式指定实例根（默认向上自动找）")
     args = parser.parse_args(argv)
 
+    scene = {}
     try:
         root = (Path(args.instance_root).resolve() if args.instance_root
                 else find_instance_root())
-        result = run_smoke(root, keep=args.keep)
-    except SmokeError as error:
-        if args.json:
-            print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
-        else:
-            print("冒烟失败：{}".format(error), file=sys.stderr)
-        return 1
+        result = run_smoke(root, keep=args.keep, scene=scene)
     except Exception as error:  # 工具坏了也要说人话，不要甩 traceback
-        detail = "{}：{}".format(type(error).__name__, error)
-        if args.json:
-            print(json.dumps({"ok": False, "error": detail}, ensure_ascii=False))
-        else:
-            print("冒烟失败：{}".format(detail), file=sys.stderr)
-        return 1
+        return report_failure(error, args.json, scene.get("kept_dir"))
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
