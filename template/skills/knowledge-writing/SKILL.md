@@ -34,7 +34,8 @@ knowledge/
 
 - 角色能写的子树由 `roles.json` 的 `scope` 决定，加上自己的 `knowledge/work/<角色>/`。
   权限层只挡「写不出实例目录」，**没有**替你锁住「只写自己那几棵子树」——那是你的责任。
-- `knowledge/inbox/` 只有 gm 能写。其他角色把派工与上报交给 gm，由 gm 落盘。
+- `knowledge/inbox/` 只有 gm 能写：派工由 gm 追加到收件人的 inbox；其他角色用
+  `hc send` 上报，gm 在当前会话里处理——回报不落盘，落盘的只有任务状态。
 - `knowledge/business/` 的定稿、`scripts/`、`tools/` 归 gm 与 owner，不要直接改。
 - 内容区共享但写入受限：主稿、渠道稿与状态只能通过 `tools/opc-workflow` 写，
   指标观测同样走 workflow。

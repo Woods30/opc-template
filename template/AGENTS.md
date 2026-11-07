@@ -316,7 +316,8 @@ owner 负责实际对外发布；gm 负责把 approval 决定与发布事实落�
    ```
 
    **不要直接写 `knowledge/inbox/gm.md`**——`knowledge/inbox/` 只有 gm 可写，
-   其他角色写它会被直接拒绝。由 gm 收到后代为落盘。
+   其他角色写它会被直接拒绝。gm 在会话里收到后处理，汇总进当天的决策记录
+   （见下一条）。
 
 3. gm 把它汇总到当天的 `decisions/<日期>-权限缺口.md`；owner 批量处理后重跑
    `scripts/opc-install.sh`，受影响的角色重启一次即可。
