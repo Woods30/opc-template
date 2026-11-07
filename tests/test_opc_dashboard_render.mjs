@@ -258,10 +258,22 @@ function hasCall(node, method, ...args) {
   );
 }
 
+function backgroundOf(node) {
+  return (node.__calls ?? []).find(call => call[0] === "bg")?.[1];
+}
+
+function isTranslucentHex(color) {
+  return /^#[0-9a-f]{8}$/i.test(color ?? "") && !color.endsWith("00") && !color.endsWith("ff");
+}
+
 function findById(root, id) {
   return nodesOf(root).find(node =>
     (node.__calls ?? []).some(call => call[0] === "id" && call[1] === id)
   );
+}
+
+function parentOf(root, target) {
+  return nodesOf(root).find(node => (node.__children ?? []).includes(target));
 }
 
 function deferred() {
@@ -442,13 +454,51 @@ test("载荷完整时各栏都渲染得出来", () => {
   assert.equal(texts.includes("主稿"), true);
 });
 
-test("六个阶段列头固定等高，让列内容从同一水平线开始", () => {
+test("六个阶段列头固定等高，并由阶段行从顶部拉伸对齐", () => {
   const root = newView().render();
+  const firstStage = findById(root, "opc-dashboard-stage-proposed");
+  const stageRow = parentOf(root, firstStage);
+  const boardContent = parentOf(root, stageRow);
+  const board = parentOf(root, boardContent);
+  const boardAndPreview = parentOf(root, board);
+  assert.ok(boardAndPreview, "看板与预览应挂在同一个横向容器中");
+  assert.equal(
+    hasCall(boardAndPreview, "items_stretch"),
+    true,
+    "看板外层不应使用 h_flex 默认的垂直居中",
+  );
+
+  assert.ok(stageRow, "阶段列应挂在同一个横向容器中");
+  assert.equal(hasCall(stageRow, "w_full"), true, "阶段行应铺满可用宽度");
+  assert.equal(hasCall(stageRow, "items_stretch"), true, "阶段行不应使用 h_flex 默认的垂直居中");
+
   for (const key of ["proposed", "drafting", "reviewing", "ready", "published", "reviewed"]) {
     const header = findById(root, `opc-dashboard-stage-header-${key}`);
     assert.ok(header, `缺少阶段列头：${key}`);
     assert.equal(hasCall(header, "h", 58), true, `${key} 列头应固定为 58px`);
     assert.equal(hasCall(header, "flex_none"), true, `${key} 列头不应被卡片内容挤压`);
+  }
+});
+
+test("阶段列和进度轨道自适应铺满，并保留 220px 最低宽度", () => {
+  const root = newView().render();
+  const rail = findById(root, "opc-dashboard-progress-rail");
+  assert.ok(rail, "缺少阶段进度轨道");
+  assert.equal(hasCall(rail, "w_full"), true, "进度轨道应铺满可用宽度");
+
+  for (const key of ["proposed", "drafting", "reviewing", "ready", "published", "reviewed"]) {
+    const stage = findById(root, `opc-dashboard-stage-${key}`);
+    assert.ok(stage, `缺少阶段列：${key}`);
+    assert.equal(hasCall(stage, "flex_1"), true, `${key} 阶段列应等分剩余宽度`);
+    assert.equal(hasCall(stage, "min_w", 220), true, `${key} 阶段列应保留最低宽度`);
+    assert.equal(hasCall(stage, "w", 260), false, `${key} 阶段列不应继续固定为 260px`);
+    assert.equal(hasCall(stage, "flex_none"), false, `${key} 阶段列应允许横向伸展`);
+
+    const railNode = findById(root, `opc-dashboard-rail-${key}`);
+    const railSlot = parentOf(root, parentOf(root, railNode));
+    assert.ok(railSlot, `缺少阶段轨道槽：${key}`);
+    assert.equal(hasCall(railSlot, "flex_1"), true, `${key} 轨道槽应与阶段列同步等分`);
+    assert.equal(hasCall(railSlot, "min_w", 220), true, `${key} 轨道槽应与阶段列最低宽度一致`);
   }
 });
 
@@ -458,6 +508,53 @@ test("内容项使用低圆角与左侧状态光条的 Signal Card", () => {
   assert.ok(card, "内容项应有稳定的 Signal Card id");
   assert.equal(hasCall(card, "rounded", 3), true);
   assert.equal(hasCall(card, "border_l", 2), true);
+});
+
+test("Aurora 环境层铺满整个 dashboard 根容器", () => {
+  const root = newView().render();
+  const ambient = findById(root, "opc-dashboard-ambient");
+  assert.ok(ambient, "看板应包含 Aurora 环境层");
+  assert.equal(parentOf(root, ambient), root, "Aurora 应直接覆盖整个 dashboard，而不是只覆盖阶段区");
+  assert.equal(hasCall(root, "relative"), true);
+  assert.equal(hasCall(root, "overflow_hidden"), true);
+});
+
+test("上层面板和卡片使用分层透明背景，但不降低文字层 opacity", () => {
+  const root = newView().render();
+  const panelIds = [
+    "opc-dashboard-header",
+    "opc-dashboard-filters",
+    "opc-dashboard-actions",
+    "opc-dashboard-stage-drafting",
+  ];
+  for (const id of panelIds) {
+    const panel = findById(root, id);
+    assert.ok(panel, `缺少上层面板：${id}`);
+    assert.equal(isTranslucentHex(backgroundOf(panel)), true, `${id} 应使用带 alpha 的背景色`);
+    assert.equal((panel.__calls ?? []).some(call => call[0] === "opacity"), false, `${id} 不应让文字一起变淡`);
+  }
+
+  const stage = findById(root, "opc-dashboard-stage-drafting");
+  const signalCard = findById(root, "opc-dashboard-card-content-content-1");
+  const actionCard = findById(root, "opc-dashboard-action-task-task-abc");
+  for (const card of [signalCard, actionCard]) {
+    assert.ok(card, "缺少上层业务卡片");
+    assert.equal(isTranslucentHex(backgroundOf(card)), true, "业务卡片应使用带 alpha 的背景色");
+    assert.equal((card.__calls ?? []).some(call => call[0] === "opacity"), false, "卡片文字应保持不透明");
+    assert.ok(
+      Number.parseInt(backgroundOf(card).slice(-2), 16) < Number.parseInt(backgroundOf(stage).slice(-2), 16),
+      "业务卡片应比阶段面板更透明，让 Aurora 能透出",
+    );
+  }
+});
+
+test("右侧 Editor 面板保持不透明背景", async () => {
+  const view = newView();
+  await view.openSource("knowledge/content/content-1/主稿.md");
+  const preview = findById(view.render(), "opc-dashboard-preview");
+  assert.ok(preview, "选中文件后应显示右侧 Editor 面板");
+  assert.equal(backgroundOf(preview), "#000000");
+  assert.equal(isTranslucentHex(backgroundOf(preview)), false);
 });
 
 test("Aurora 兼容没有 Background.opacity 的 Herdr runtime，并固定显示六个阶段节点", () => {

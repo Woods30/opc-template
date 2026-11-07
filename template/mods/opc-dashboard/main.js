@@ -40,7 +40,7 @@ const DEBOUNCE_MS = 400;
 const POLL_INTERVAL = 300;
 const PREVIEW_LIMIT = 400000;
 const PREVIEW_WIDTH = 480;
-const STAGE_WIDTH = 260;
+const STAGE_MIN_WIDTH = 220;
 const STAGE_HEADER_HEIGHT = 58;
 const NODE_PULSE_PERIOD = 1600;
 const STAGE_PULSE_PERIOD = 2200;
@@ -50,6 +50,8 @@ const AMBIENT_BASE_OPACITY = 0.11;
 const AMBIENT_MIN_OPACITY = 0.07;
 const AMBIENT_MAX_OPACITY = 0.16;
 const BEAM_OPACITY = 0.16;
+const PANEL_ALPHA = "c4";
+const CARD_ALPHA = "b8";
 const FULL_BOUNDS_PATH = PathBuilder.fill()
   .move_to("0%", "0%")
   .line_to("100%", "0%")
@@ -57,6 +59,13 @@ const FULL_BOUNDS_PATH = PathBuilder.fill()
   .line_to("0%", "100%")
   .close()
   .build();
+
+function withAlpha(color, alpha) {
+  if (typeof color !== "string") return color;
+  if (/^#[0-9a-f]{6}$/i.test(color)) return `${color}${alpha}`;
+  if (/^#[0-9a-f]{8}$/i.test(color)) return `${color.slice(0, 7)}${alpha}`;
+  return color;
+}
 
 const EDITOR_LANGUAGES = {
   js: "javascript",
@@ -324,8 +333,10 @@ export default class OpcDashboard extends View {
     const counted = counts(payload);
     const stamp = this.building ? "正在刷新…" : `数据截止 ${payload.as_of ?? "—"}`;
     return h_flex()
+      .id("opc-dashboard-header")
       .items_center()
       .gap(12)
+      .bg(withAlpha(t.chrome, PANEL_ALPHA))
       .px(14)
       .py(10)
       .border_b(1)
@@ -459,10 +470,12 @@ export default class OpcDashboard extends View {
       ["90d", "90 天"],
     ];
     return h_flex()
+      .id("opc-dashboard-filters")
       .flex_none()
       .items_center()
       .gap(14)
       .px(14)
+      .bg(withAlpha(t.chrome, PANEL_ALPHA))
       .py(7)
       .overflow_x_scroll()
       .border_b(1)
@@ -534,9 +547,11 @@ export default class OpcDashboard extends View {
     };
     const actions = currentActions(view);
     return v_flex()
+      .id("opc-dashboard-actions")
       .flex_none()
       .gap(7)
       .px(14)
+      .bg(withAlpha(t.chrome, PANEL_ALPHA))
       .py(10)
       .border_b(1)
       .border_color(t.border)
@@ -577,7 +592,7 @@ export default class OpcDashboard extends View {
                     .rounded(6)
                     .border_1()
                     .border_color(action.kind === "blocked" ? t.blocked : t.border)
-                    .bg(t.surface)
+                    .bg(withAlpha(t.surface, CARD_ALPHA))
                     .cursor_pointer()
                     .on_click((_event, cx) => {
                       this.openSource(action.source_path);
@@ -648,7 +663,7 @@ export default class OpcDashboard extends View {
       .border_1()
       .border_l(2)
       .border_color(item.blocked ? t.blocked : t.accent)
-      .bg(t.surface)
+      .bg(withAlpha(t.surface, CARD_ALPHA))
       .child(
         h_flex()
           .items_center()
@@ -735,6 +750,7 @@ export default class OpcDashboard extends View {
     return h_flex()
       .id("opc-dashboard-progress-rail")
       .h(44)
+      .w_full()
       .flex_none()
       .gap(10)
       .children(
@@ -758,8 +774,8 @@ export default class OpcDashboard extends View {
                 }),
             );
           return v_flex()
-            .w(STAGE_WIDTH)
-            .flex_none()
+            .min_w(STAGE_MIN_WIDTH)
+            .flex_1()
             .items_center()
             .gap(4)
             .child(
@@ -803,15 +819,15 @@ export default class OpcDashboard extends View {
       );
     return v_flex()
       .id(`opc-dashboard-stage-${stage.key}`)
-      .w(STAGE_WIDTH)
-      .flex_none()
+      .min_w(STAGE_MIN_WIDTH)
+      .flex_1()
       .min_h(0)
       .relative()
       .overflow_hidden()
       .rounded(7)
       .border_1()
       .border_color(occupied ? t.accent : t.border)
-      .bg(t.chrome)
+      .bg(withAlpha(t.chrome, PANEL_ALPHA))
       .when(occupied, column => column.child(glow))
       .child(
         v_flex()
@@ -867,9 +883,7 @@ export default class OpcDashboard extends View {
       .flex_1()
       .min_h(0)
       .min_w(0)
-      .relative()
       .overflow_hidden()
-      .child(this.ambientLayer(t))
       .child(
         v_flex()
           .flex_1()
@@ -881,8 +895,10 @@ export default class OpcDashboard extends View {
           .child(this.progressRail(t, stages))
           .child(
             h_flex()
+              .w_full()
               .flex_1()
               .min_h(0)
+              .items_stretch()
               .gap(10)
               .children(stages.map(stage => this.stageColumn(t, stage))),
           ),
@@ -894,6 +910,7 @@ export default class OpcDashboard extends View {
     const preview = this.preview;
     if (!preview) return null;
     return v_flex()
+      .id("opc-dashboard-preview")
       .w(PREVIEW_WIDTH)
       .flex_none()
       .min_h(0)
@@ -1057,6 +1074,10 @@ export default class OpcDashboard extends View {
     return v_flex()
       .size_full()
       .min_h(0)
+      .relative()
+      .overflow_hidden()
+      .bg(t.background)
+      .child(this.ambientLayer(t))
       .child(this.header(t))
       .when(Boolean(banner), el => el.child(banner))
       .child(this.filterBar(t))
@@ -1065,6 +1086,7 @@ export default class OpcDashboard extends View {
         h_flex()
           .flex_1()
           .min_h(0)
+          .items_stretch()
           .child(this.stageBoard(t, view))
           .when(Boolean(preview), el => el.child(preview)),
       );
