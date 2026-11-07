@@ -39,4 +39,4 @@ jobs:
           bash tests/test_opc_migrate.sh
 
       - name: Mod 逻辑测试
-        run: node --test tests/test_opc_tabs_mod.mjs tests/test_opc_dashboard_mod.mjs
+        run: node --test tests/test_opc_tabs_mod.mjs tests/test_opc_dashboard_mod.mjs tests/test_opc_dashboard_render.mjs

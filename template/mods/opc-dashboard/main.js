@@ -863,11 +863,15 @@ export default class OpcDashboard extends View {
     if (state) {
       return this.emptyView(t, state);
     }
+    // banner() 与 previewPanel() 都会在「没有内容」时返回 null，
+    // 而 gpui 的 child() 不接受 null：整块用 when 挂上去，不成立就不挂。
+    const banner = this.banner(t);
+    const preview = this.previewPanel(t);
     return v_flex()
       .size_full()
       .child(this.header(t))
-      .child(this.banner(t))
-      .child(this.previewPanel(t))
+      .when(Boolean(banner), el => el.child(banner))
+      .when(Boolean(preview), el => el.child(preview))
       .child(this.filterBar(t))
       .child(
         h_flex()
