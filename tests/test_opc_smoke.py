@@ -158,14 +158,7 @@ class SmokeTestCase(unittest.TestCase):
         self.install_workflow()
         env = dict(os.environ)
         env["OPC_ROLE"] = "gm"
-        tool = self.instance / "tools" / "opc-smoke"
-        result = subprocess.run(
-            [sys.executable, str(tool)],
-            cwd=str(self.instance),
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        result = run_smoke(self.instance, env=env)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("通过", result.stdout)
 
@@ -175,14 +168,7 @@ class SmokeTestCase(unittest.TestCase):
         env = dict(os.environ)
         env["OPC_ROLE"] = "gm"
         env["OPC_TEST_MARKER"] = "kept"
-        tool = self.instance / "tools" / "opc-smoke"
-        result = subprocess.run(
-            [sys.executable, str(tool), "--json"],
-            cwd=str(self.instance),
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        result = run_smoke(self.instance, "--json", env=env)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertTrue(json.loads(result.stdout)["ok"])
 
@@ -192,14 +178,7 @@ class SmokeTestCase(unittest.TestCase):
         self.install_recording_workflow()
         log = Path(self.tmp) / "calls.jsonl"
         env = self.recording_env(log, OPC_ROLE="gm", OPC_TEST_MARKER="kept")
-        tool = self.instance / "tools" / "opc-smoke"
-        result = subprocess.run(
-            [sys.executable, str(tool)],
-            cwd=str(self.instance),
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        result = run_smoke(self.instance, env=env)
         self.assertEqual(0, result.returncode, result.stderr)
         records = self.read_log(log)
         self.assertTrue(records, "工作流一次都没被调用")
