@@ -128,6 +128,41 @@ check "重跑安装器不改写实例的角色正文" "$before" \
 expect "hc 模板反映改后的正文" \
   grep -q "owner 的补充说明" "$HERDR_CORE_HOME/templates/t-gm.md"
 
+# ---- 1c. 收件箱文件头按角色分措辞 ----
+# 上报只在会话里处理、不落盘。gm 的收件箱头若还写「上报」，下一个 gm 会以为该落盘；
+# 其余角色的头保持原样。措辞类规则靠 review，这里守住的是「gm 那版不讲上报」。
+expect "gm 收件箱头不讲上报" \
+  bash -c "! grep -q '上报' '$INST/knowledge/inbox/gm.md'"
+expect "gm 收件箱头讲清落盘的只有派工状态" \
+  grep -q "落盘的只有派工状态" "$INST/knowledge/inbox/gm.md"
+for role in content growth dev; do
+  expect "收件箱 $role 保留派工与上报的原措辞" \
+    grep -q "派工与上报都追加到本文件末尾" "$INST/knowledge/inbox/$role.md"
+done
+for role in gm content growth dev; do
+  expect "收件箱 $role 保留当前队列小节" \
+    grep -q "## 当前队列" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 保留空队列占位" \
+    grep -q "（空）" "$INST/knowledge/inbox/$role.md"
+done
+# printf 没把 Markdown 打坏：占位符全部替换，反引号、完成/撤销标记、条目竖线原样输出
+expect "收件箱头没留下未替换的占位符" \
+  bash -c "! grep -q '%s' '$INST/knowledge/inbox/content.md'"
+expect "收件箱头保留反引号" \
+  grep -q '`knowledge/inbox/`' "$INST/knowledge/inbox/gm.md"
+expect "收件箱头保留完成标记" \
+  grep -q "✅" "$INST/knowledge/inbox/gm.md"
+expect "收件箱头保留撤销标记" \
+  grep -q "⛔ 已撤销" "$INST/knowledge/inbox/gm.md"
+expect "收件箱头保留条目格式的竖线" \
+  grep -q "| 任务 ID：task-" "$INST/knowledge/inbox/content.md"
+
+# 收件箱只在文件缺失时创建：已有的头不被改写，由 gm 在会话内自行对齐
+before_inbox="$(shasum "$INST/knowledge/inbox/gm.md" | awk '{print $1}')"
+(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
+check "重跑安装器不改写已有收件箱" "$before_inbox" \
+  "$(shasum "$INST/knowledge/inbox/gm.md" | awk '{print $1}')"
+
 # ---- 2. 完整生命周期：proposed → ready → publication → published → metrics → reviewed → closed ----
 cd "$INST" || exit 1
 created="$(tools/opc-workflow create-content --title "集成测试内容" --target-date 2026-12-01 --actor content 2>&1)"
