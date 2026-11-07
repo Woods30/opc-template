@@ -252,10 +252,10 @@ def check_dashboard(root: Path) -> dict:
     return payload
 
 
-def run_smoke(root: Path, keep: bool = False, scene: dict | None = None) -> dict:
-    """跑一遍主流程。scene 用来回传「保留的临时目录在哪」。
+def run_smoke(root: Path, keep: bool = False, failure_context: dict | None = None) -> dict:
+    """跑一遍主流程。failure_context 用来回传「保留的临时目录在哪」。
 
-    scene 由调用方传进来：失败时要报出保留的现场，路径得从临时目录的
+    failure_context 由调用方传进来：失败时要报出保留的现场，路径得从临时目录的
     创建者手里拿，不能靠给异常对象挂属性——那既不常规，也容易在异常类型
     不许挂属性时把原本的失败原因盖掉。
     """
@@ -337,8 +337,8 @@ def run_smoke(root: Path, keep: bool = False, scene: dict | None = None) -> dict
         return result
     except Exception:
         # 保留了现场就得报出位置，否则人得自己去临时目录里翻。
-        if keep and scene is not None:
-            scene["kept_dir"] = str(temp)
+        if keep and failure_context is not None:
+            failure_context["kept_dir"] = str(temp)
         raise
     finally:
         if not keep:
@@ -368,13 +368,13 @@ def main(argv=None) -> int:
     parser.add_argument("--instance-root", help="显式指定实例根（默认向上自动找）")
     args = parser.parse_args(argv)
 
-    scene = {}
+    failure_context = {}
     try:
         root = (require_instance_root(Path(args.instance_root).resolve())
                 if args.instance_root else find_instance_root())
-        result = run_smoke(root, keep=args.keep, scene=scene)
+        result = run_smoke(root, keep=args.keep, failure_context=failure_context)
     except Exception as error:  # 工具坏了也要说人话，不要甩 traceback
-        return report_failure(error, args.json, scene.get("kept_dir"))
+        return report_failure(error, args.json, failure_context.get("kept_dir"))
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
