@@ -46,6 +46,10 @@ const NODE_PULSE_PERIOD = 1600;
 const STAGE_PULSE_PERIOD = 2200;
 const AMBIENT_PULSE_PERIOD = 5200;
 const BEAM_SWEEP_PERIOD = 3600;
+const AMBIENT_BASE_OPACITY = 0.11;
+const AMBIENT_MIN_OPACITY = 0.07;
+const AMBIENT_MAX_OPACITY = 0.16;
+const BEAM_OPACITY = 0.16;
 const FULL_BOUNDS_PATH = PathBuilder.fill()
   .move_to("0%", "0%")
   .line_to("100%", "0%")
@@ -674,40 +678,46 @@ export default class OpcDashboard extends View {
       .when(links.length > 0, card => card.child(h_flex().gap(5).children(links)));
   }
 
-  ambientLayer(t) {
-    const ambient = this.cx
-      .paint_path(
+  ambientPaint(t, angle) {
+    const canPaintGradient =
+      typeof Background.linear_gradient === "function" &&
+      typeof globalThis.window?.paint_path === "function";
+    if (canPaintGradient) {
+      return globalThis.window.paint_path(
         FULL_BOUNDS_PATH,
-        Background.linear_gradient(24, t.background, t.accent).opacity(0.22),
-      )
+        Background.linear_gradient(angle, t.background, t.accent),
+      );
+    }
+    return div().bg(t.accent);
+  }
+
+  ambientLayer(t) {
+    const ambient = this.ambientPaint(t, 24)
       .id("opc-dashboard-ambient")
       .absolute()
       .inset_0()
       .overflow_hidden()
-      .opacity(0.5)
+      .opacity(AMBIENT_BASE_OPACITY)
       .transition("opacity", { duration: 260, easing: "ease-out" })
       .when(
         this.motionEnabled,
         layer =>
           layer.loop("opacity", {
-            from: 0.32,
-            to: 0.72,
+            from: AMBIENT_MIN_OPACITY,
+            to: AMBIENT_MAX_OPACITY,
             period: AMBIENT_PULSE_PERIOD,
             easing: "ease-in-out",
           }),
       );
     return ambient.child(
-      this.cx
-        .paint_path(
-          FULL_BOUNDS_PATH,
-          Background.linear_gradient(90, t.background, t.accent).opacity(0.16),
-        )
+      this.ambientPaint(t, 90)
         .id("opc-dashboard-beam")
         .absolute()
         .left(-260)
         .top(0)
         .h_full()
         .w(220)
+        .opacity(BEAM_OPACITY)
         .when(
           this.motionEnabled,
           beam =>

@@ -81,17 +81,16 @@ function makeElement(kind) {
 export function div() { return makeElement("div"); }
 export function h_flex() { return makeElement("h_flex"); }
 export function v_flex() { return makeElement("v_flex"); }
-export const Background = {
-  linear_gradient(angle, from, to) {
-    return {
-      kind: "linear_gradient",
-      angle,
-      from,
-      to,
-      opacity(factor) { return { ...this, opacity: factor }; },
-    };
-  },
-};
+export const Background = {};
+export function setGradientEnabled(enabled) {
+  if (enabled) {
+    Background.linear_gradient = (angle, from, to) =>
+      Object.freeze({ kind: "linear_gradient", angle, from, to });
+  } else {
+    delete Background.linear_gradient;
+  }
+}
+setGradientEnabled(true);
 export const PathBuilder = {
   fill() {
     return {
@@ -142,6 +141,9 @@ export function watchFolder() { return Promise.resolve([]); }
 
 const stubUrl = dataUrl(STUB_SOURCE);
 const host = await import(stubUrl);
+globalThis.window = {
+  paint_path(path, background) { return host.paintPath(path, background); },
+};
 
 const modelSource = await readFile(path.join(modDir, "model.js"), "utf8");
 const modelUrl = dataUrl(modelSource);
@@ -458,7 +460,7 @@ test("内容项使用低圆角与左侧状态光条的 Signal Card", () => {
   assert.equal(hasCall(card, "border_l", 2), true);
 });
 
-test("阶段轨道固定显示六个节点并使用 Aurora gradient", () => {
+test("Aurora 兼容没有 Background.opacity 的 Herdr runtime，并固定显示六个阶段节点", () => {
   const root = newView().render();
   const ambient = findById(root, "opc-dashboard-ambient");
   assert.ok(ambient, "看板区域应有 Aurora 环境光层");
@@ -470,6 +472,18 @@ test("阶段轨道固定显示六个节点并使用 Aurora gradient", () => {
   );
   for (const key of ["proposed", "drafting", "reviewing", "ready", "published", "reviewed"]) {
     assert.ok(findById(root, `opc-dashboard-rail-${key}`), `缺少阶段轨道节点：${key}`);
+  }
+});
+
+test("旧 Herdr 缺少 native gradient 时降级为主题色光层", () => {
+  host.setGradientEnabled(false);
+  try {
+    const root = newView().render();
+    const ambient = findById(root, "opc-dashboard-ambient");
+    assert.ok(ambient, "降级后仍应保留环境光层");
+    assert.equal(hasCall(ambient, "bg", "#000000"), true);
+  } finally {
+    host.setGradientEnabled(true);
   }
 });
 
