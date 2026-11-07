@@ -1,7 +1,7 @@
 name: lint
 
 # 模版仓库自检：确保公开仓库里没有任何真实业务。
-# 规则见 docs/同步机制.md 与 scripts/opc-lint.sh。
+# 规则见 template/tools/opc-lint 与 template/install-manifest.json。
 
 on:
   push:
@@ -11,29 +11,32 @@ on:
 
 jobs:
   lint:
-    strategy:
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    # GitHub-hosted macos-latest 连续两次拿不到 runner，排队 15 分钟后被平台取消，
+    # job 一步都没执行却把整条 CI 标红。macOS 在 owner 本机跑完整套；托管 CI 用
+    # Ubuntu 给出稳定、可复现的合并门禁。
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: 安装依赖
-        run: |
-          if command -v brew >/dev/null 2>&1; then brew install jq; else sudo apt-get update && sudo apt-get install -y jq; fi
+        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: 模版自检
-        run: scripts/opc-lint.sh --strict
+        run: python3 bin/opc lint --strict
 
-      - name: 工具测试
+      - name: Python 测试
         run: |
-          python3 tools/tests/test_opc_lint.py
-          python3 tools/tests/test_preflight.py
+          python3 tests/test_opc_lint.py
+          python3 tests/test_preflight.py
+          python3 tests/test_opc_workflow.py
+          python3 tests/test_opc_smoke.py
+          python3 tests/test_bin_opc.py
 
-  sync:
-    # 同步机制的场景回归：模版更新、冲突、种子升级、配置并集
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: 同步场景测试
-        run: bash tools/tests/test_opc_sync.sh
+      - name: 安装与升级测试
+        run: |
+          bash tests/test_opc_instance.sh
+          bash tests/test_opc_upgrade.sh
+          bash tests/test_opc_migrate.sh
+
+      - name: Mod 逻辑测试
+        run: node --test tests/test_opc_tabs_mod.mjs tests/test_opc_dashboard_mod.mjs

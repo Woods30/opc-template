@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "name": "opc-template",
+  "minOpcVersion": 1,
+  "mechanism": {
+    "dirs": ["scripts", "tools"],
+    "files": ["LICENSE"],
+    "executables": [
+      "tools/opc-workflow",
+      "tools/opc-lint",
+      "tools/preflight",
+      "tools/opc-smoke"
+    ]
+  },
+  "starters": {
+    "files": [
+      { "source": "AGENTS.md", "target": "AGENTS.md", "required": true }
+    ],
+    "dirs": [
+      { "source": "agents", "target": "agents" },
+      { "source": "skills", "target": "skills", "type": "skill" }
+    ]
+  },
+  "config": [
+    {
+      "source": "roles.json",
+      "target": "roles.json",
+      "arrayPath": "roles",
+      "key": "name",
+      "onNew": "append-disabled"
+    },
+    {
+      "source": "channels.json",
+      "target": "channels.json",
+      "arrayPath": "channels",
+      "key": "id",
+      "onNew": "append-disabled"
+    }
+  ],
+  "seeds": [
+    { "source": "seeds/README.md", "target": "README.md" },
+    { "source": "seeds/INSTANCE.md", "target": "INSTANCE.md" },
+    { "source": "seeds/root/CLAUDE.md", "target": "CLAUDE.md" },
+    { "source": "seeds/root/LESSONS.md", "target": "LESSONS.md" },
+    { "source": "seeds/root/gitignore", "target": ".gitignore" },
+    { "source": "seeds/knowledge/business/品牌口径.md", "target": "knowledge/business/品牌口径.md" },
+    { "source": "seeds/knowledge/business/选题日历.md", "target": "knowledge/business/选题日历.md" },
+    { "source": "seeds/knowledge/business/growth/指标.md", "target": "knowledge/business/growth/指标.md" },
+    { "source": "seeds/knowledge/business/growth/渠道计划.md", "target": "knowledge/business/growth/渠道计划.md" },
+    { "source": "seeds/knowledge/business/growth/转化路径.md", "target": "knowledge/business/growth/转化路径.md" },
+    { "source": "seeds/knowledge/business/product/README.md", "target": "knowledge/business/product/README.md" },
+    { "source": "seeds/knowledge/business/product/已知问题.md", "target": "knowledge/business/product/已知问题.md" }
+  ],
+  "ui": {
+    "mods": ["opc-dashboard", "opc-tabs"],
+    "layouts": [
+      { "source": "layouts/opc.json", "name": "opc", "asset": "layouts/opc.svg" },
+      { "source": "layouts/focus.json", "name": "opc-focus" },
+      { "source": "layouts/grid.json", "name": "opc-grid" },
+      { "source": "layouts/monitor.json", "name": "opc-monitor" }
+    ]
+  },
+  "templateOnly": ["install-manifest.json"],
+  "seedRules": {
+    "seeds/README.md": { "requirePlaceholder": false, "forbid": ["http://", "https://"] },
+    "seeds/INSTANCE.md": { "requirePlaceholder": true, "forbid": ["http://", "https://"] },
+    "seeds/knowledge/business/品牌口径.md": { "requirePlaceholder": true, "forbid": ["http://", "https://"] },
+    "seeds/knowledge/business/选题日历.md": { "requirePlaceholder": false, "forbid": ["http://", "https://"] },
+    "seeds/knowledge/business/growth/指标.md": { "requirePlaceholder": true, "forbid": ["http://", "https://"] },
+    "seeds/knowledge/business/growth/渠道计划.md": { "requirePlaceholder": true, "forbid": ["http://", "https://"] },
+    "seeds/knowledge/business/growth/转化路径.md": { "requirePlaceholder": true, "forbid": ["http://", "https://"] },
+    "seeds/knowledge/business/product/README.md": { "requirePlaceholder": false, "forbid": ["http://", "https://"] },
+    "seeds/knowledge/business/product/已知问题.md": { "requirePlaceholder": false, "forbid": ["http://", "https://"] }
+  },
+  "proposalDir": "knowledge/work/*/template-proposals",
+  "proposalSections": ["现象", "泛化需求", "期望模版改动", "影响文件", "脱敏自检"]
+}

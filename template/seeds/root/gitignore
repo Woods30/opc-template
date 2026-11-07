@@ -1,0 +1,19 @@
+# 安装脚本生成的实例配置（启动器含本机路径），不进版本库
+.opc/
+
+# 安装脚本按需重生成的派生物，跟踪只会产生无意义 diff
+knowledge/team.md
+knowledge/business/README.md
+
+# Python 字节码
+__pycache__/
+*.pyc
+
+# 浏览器自动化工具的临时产物
+.playwright-mcp/
+
+# 临时目录
+.tmp-*
+
+# macOS
+.DS_Store

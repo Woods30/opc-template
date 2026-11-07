@@ -1,0 +1,1465 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""发布前自检工具（preflight）——核对 canonical 稿件与品牌口径。
+
+一条命令读取 canonical 内容卡 / 发布卡、品牌口径与被检查稿件：
+
+    tools/preflight knowledge/content/<content_id>/主稿.md
+    tools/preflight knowledge/content/<content_id>/publications/<publication_id>/渠道稿.md
+    tools/preflight --content <content_id>
+    tools/preflight --publication <publication_id>
+
+规则来源（都从仓库文件里读，不写死在本脚本）：
+
+    - 禁用表述、术语表「不说什么」、作者人设的第一人称  → knowledge/business/品牌口径.md
+    - 内容是否存在、审批是否有效                          → knowledge/content/<id>/内容卡.md
+    - publication 归属、渠道与渠道稿审批                  → .../publications/<id>/发布卡.md
+
+选题日历是 generated 只读视图，不作为事实来源；旧的 knowledge/business/<channel>/
+稿件布局也不再支持。
+
+退出码：0 无硬性失败；1 有硬性失败；2 用法错误。
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BRAND_REL = os.path.join("knowledge", "business", "品牌口径.md")
+CONTENT_REL = os.path.join("knowledge", "content")
+CARD_NAME = "内容卡.md"
+MAIN_DRAFT_NAME = "主稿.md"
+PUBLICATIONS_DIR_NAME = "publications"
+PUBLICATION_CARD_NAME = "发布卡.md"
+CHANNEL_DRAFT_NAME = "渠道稿.md"
+
+STATUS_OK = "ok"
+STATUS_FAIL = "fail"
+STATUS_WARN = "warn"
+STATUS_SKIP = "skip"
+
+LEGACY_HINT = (
+    "只支持 canonical 位置：knowledge/content/<content_id>/{} 或 "
+    "knowledge/content/<content_id>/{}/<publication_id>/{}".format(
+        MAIN_DRAFT_NAME, PUBLICATIONS_DIR_NAME, CHANNEL_DRAFT_NAME
+    )
+)
+
+# 「不把「A」说成「B」」里只禁 B，A 可以写
+RE_NOT_PUT_AS = re.compile(r"不把「([^」]+)」说成「([^」]+)」")
+RE_QUOTED = re.compile(r"「([^」]+)」")
+RE_TABLE_SEP = re.compile(r"^:?-{2,}:?$")
+
+
+def load_workflow():
+    """复用 opc-workflow 的 canonical 解析与哈希，避免两套规则漂移。"""
+    cached = sys.modules.get("opc_workflow")
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opc-workflow")
+    spec = importlib.util.spec_from_loader(
+        "opc_workflow",
+        importlib.machinery.SourceFileLoader("opc_workflow", path),
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["opc_workflow"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+wf = load_workflow()
+
+
+# ---------- 基础读取 ----------
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def section(text, name):
+    """取 '## name' 标题到下一个 '## ' 之间的正文（含标题行）。取不到返回空串。"""
+    pattern = re.compile(
+        r"^##[ \t]+" + re.escape(name) + r"[ \t]*$.*?(?=^##[ \t]+|\Z)",
+        re.M | re.S,
+    )
+    match = pattern.search(text)
+    return match.group(0) if match else ""
+
+
+def table_blocks(text):
+    """把文档里所有连续的表格行切成若干个二维列表。"""
+    blocks = []
+    current = []
+    for line in text.splitlines():
+        if line.strip().startswith("|"):
+            current.append(line)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def parse_table(lines):
+    """解析表格行，返回 (表头, 数据行列表)。只认以 | 开头的行，分隔行会被丢掉。"""
+    rows = []
+    for line in lines:
+        if not line.strip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and all(RE_TABLE_SEP.match(cell or "-") for cell in cells):
+            continue
+        rows.append(cells)
+    if not rows:
+        return [], []
+    return rows[0], rows[1:]
+
+
+# ---------- 从品牌口径抽取禁用词 ----------
+
+
+def forbidden_terms(brand_text):
+    """从品牌口径.md 抽取「不能写」的词，分两组返回。
+
+    术语表组（term_table）：术语表「不说什么」列的词，按顿号、斜杠切分。
+    口径组（other）：禁用表述段与作者人设段里被「不说 / 不称 / 不写」引号框住的词；
+                    「不把「A」说成「B」」只禁 B，A 可以写。
+
+    返回 (全部词, 术语表组, 口径组)。
+    """
+    table_terms = []
+    other_terms = []
+    seen = set()
+
+    def add(bucket, term):
+        term = term.strip()
+        if not term or term in seen:
+            return
+        seen.add(term)
+        bucket.append(term)
+
+    # 术语表「不说什么」列
+    _, rows = parse_table(section(brand_text, "术语表").splitlines())
+    for cells in rows:
+        if len(cells) < 2:
+            continue
+        for term in re.split(r"[、,，/]", cells[1]):
+            add(table_terms, term)
+
+    # 禁用表述段
+    for line in section(brand_text, "禁用表述").splitlines():
+        line = line.strip()
+        if not line.startswith("-"):
+            continue
+        swapped = RE_NOT_PUT_AS.search(line)
+        if swapped:
+            add(other_terms, swapped.group(2))
+            line = line.replace(swapped.group(0), "")
+        for quoted in RE_QUOTED.findall(line):
+            add(other_terms, quoted)
+
+    # 作者人设段：「不称「我们」」
+    for line in section(brand_text, "作者人设").splitlines():
+        for quoted in RE_QUOTED.findall(line):
+            if re.search(r"不(?:说|称|用|写|提)\s*「" + re.escape(quoted) + r"」", line):
+                add(other_terms, quoted)
+
+    return table_terms + other_terms, table_terms, other_terms
+
+
+def base_channel(value):
+    """去掉括号注释与 markdown 标记，只留渠道名。"""
+    value = value.replace("*", "").strip()
+    value = re.sub(r"[（(][^）)]*[)）]", "", value)
+    return value.strip()
+
+
+def normalize_channel(value):
+    return base_channel(value or "").casefold()
+
+
+def is_placeholder_channel(value):
+    """TODO、待定、<占位> 都不算已配置的渠道。"""
+    text = base_channel(value or "")
+    return (
+        not text
+        or text in ("—", "-", "待定")
+        or text.startswith("<")
+        or text.upper().startswith("TODO")
+    )
+
+
+def brand_main_channel(brand_text):
+    """从品牌口径的「渠道口径」段里取主渠道名，取不到返回空串。"""
+    section_text = section(brand_text, "渠道口径")
+    match = re.search(r"主渠道\s*[：:]\s*([^\s（(、，,]+)", section_text)
+    if not match or is_placeholder_channel(match.group(1)):
+        return ""
+    return base_channel(match.group(1))
+
+
+def configured_channel_names(root):
+    """channels.json 的 id → 展示名；文件缺失或损坏时退回空表。"""
+    try:
+        details = wf.configured_channel_details(Path(root))
+    except wf.WorkflowError:
+        return {}
+    return {channel_id: detail["name"] for channel_id, detail in details.items()}
+
+
+def channel_candidates(root, channel_id):
+    """一个 channel id 可用于比对的别名：id 本身与 channels.json 的展示名。"""
+    names = {channel_id}
+    display = configured_channel_names(root).get(channel_id)
+    if display:
+        names.add(display)
+    return names
+
+
+def brand_channel_name(brand_text, candidates):
+    """在品牌口径的渠道表里找与 candidates 对应的那一行，返回表里的写法。"""
+    wanted = {normalize_channel(candidate) for candidate in candidates if candidate}
+    _, rows = parse_table(section(brand_text, "渠道口径").splitlines())
+    for cells in rows:
+        if cells and normalize_channel(cells[0]) in wanted:
+            return base_channel(cells[0])
+    return ""
+
+
+# ---------- 解析稿件 ----------
+
+
+@dataclass
+class Draft:
+    path: str
+    exists: bool
+    title: str
+    channel: str
+    lines: list = field(default_factory=list)
+
+
+def parse_draft(path):
+    draft = Draft(path=path, exists=os.path.isfile(path), title="", channel="")
+    if not draft.exists:
+        return draft
+    text = read_text(path)
+    draft.lines = text.splitlines()
+    for line in draft.lines:
+        heading = re.match(r"^#[ \t]+(.+?)[ \t]*$", line)
+        if heading and not draft.title:
+            draft.title = heading.group(1).strip()
+        channel = re.match(
+            r"^[ \t]*>[ \t]*(?:\*\*)?\s*渠道\s*(?:\*\*)?\s*[：:][ \t]*(.+?)[ \t]*$", line
+        )
+        if channel and not draft.channel:
+            draft.channel = channel.group(1).strip()
+        front = re.match(r"^channel\s*[：:]\s*(.+?)[ \t]*$", line)
+        if front and not draft.channel:
+            draft.channel = front.group(1).strip()
+    return draft
+
+
+# ---------- canonical 记录定位 ----------
+
+
+@dataclass
+class Target:
+    kind: str  # "main" | "channel"
+    draft_path: str
+    content_id: str
+    publication_id: str = ""
+    content_dir: str = ""
+    publication_dir: str = ""
+
+
+def relative(root, path):
+    try:
+        return os.path.relpath(path, root)
+    except ValueError:
+        return path
+
+
+def safe_path(root, path):
+    """拒绝 symlink 与越出实例目录的路径；返回 (real_path, 错误)。"""
+    absolute = os.path.abspath(path)
+    if os.path.islink(absolute):
+        return None, "路径不能是 symlink：{}".format(relative(root, absolute))
+    try:
+        root_real = os.path.realpath(root)
+        real = os.path.realpath(absolute)
+        if os.path.commonpath([root_real, real]) != root_real:
+            return None, "路径越出实例目录：{}".format(relative(root, absolute))
+    except ValueError:
+        return None, "无法解析路径：{}".format(relative(root, absolute))
+    return real, ""
+
+
+def parse_canonical_path(root, draft_path):
+    """按固定布局解析稿件位置；返回 (kind, content_id, publication_id, 原因)。"""
+    absolute = os.path.abspath(draft_path)
+    if not os.path.isabs(draft_path):
+        absolute = os.path.abspath(os.path.join(root, draft_path))
+    rel = os.path.relpath(absolute, os.path.abspath(root))
+    if rel == ".." or rel.startswith(".." + os.sep):
+        return None, "", "", "稿件不在实例目录内：{}".format(draft_path)
+    parts = rel.split(os.sep)
+    if (
+        len(parts) == 4
+        and parts[0] == "knowledge"
+        and parts[1] == "content"
+        and parts[3] == MAIN_DRAFT_NAME
+    ):
+        return "main", parts[2], "", ""
+    if (
+        len(parts) == 6
+        and parts[0] == "knowledge"
+        and parts[1] == "content"
+        and parts[3] == PUBLICATIONS_DIR_NAME
+        and parts[5] == CHANNEL_DRAFT_NAME
+    ):
+        return "channel", parts[2], parts[4], ""
+    return None, "", "", "不是 canonical 稿件位置：{}".format(relative(root, absolute))
+
+
+def find_publication_package(root, publication_id):
+    """按稳定 ID 找 publication 包；返回 [(content_id, package), ...]。"""
+    content_root = os.path.join(root, CONTENT_REL)
+    if not os.path.isdir(content_root):
+        return []
+    matches = []
+    for content_id in sorted(os.listdir(content_root)):
+        package = os.path.join(
+            content_root, content_id, PUBLICATIONS_DIR_NAME, publication_id
+        )
+        if os.path.isfile(os.path.join(package, PUBLICATION_CARD_NAME)):
+            matches.append((content_id, package))
+    return matches
+
+
+def resolve_target(root, draft_path, content_id, publication_id, checks):
+    """把稿件路径、content id 或 publication id 解析成 canonical 目标。"""
+    if publication_id and not content_id:
+        matches = find_publication_package(root, publication_id)
+        if not matches:
+            checks.append(
+                Check(
+                    "publication-record",
+                    "publication 记录存在",
+                    STATUS_FAIL,
+                    ["找不到 publication「{}」的发布卡".format(publication_id)],
+                    os.path.join(CONTENT_REL, "*/", PUBLICATIONS_DIR_NAME, publication_id, PUBLICATION_CARD_NAME),
+                )
+            )
+            return None
+        if len(matches) > 1:
+            checks.append(
+                Check(
+                    "publication-record",
+                    "publication 记录存在",
+                    STATUS_FAIL,
+                    [
+                        "publication ID「{}」在多个内容包下重复：{}".format(
+                            publication_id, "、".join(cid for cid, _ in matches)
+                        )
+                    ],
+                    os.path.join(CONTENT_REL),
+                )
+            )
+            return None
+        content_id, package = matches[0]
+    elif publication_id:
+        package = os.path.join(
+            root, CONTENT_REL, content_id, PUBLICATIONS_DIR_NAME, publication_id
+        )
+    elif content_id:
+        kind = "main"
+        package = ""
+    elif draft_path:
+        kind, content_id, publication_id, reason = parse_canonical_path(root, draft_path)
+        if kind is None:
+            checks.append(
+                Check("draft-location", "稿件位于 canonical 位置", STATUS_FAIL, [reason, LEGACY_HINT], draft_path)
+            )
+            return None
+        if not wf.CONTENT_ID_RE.fullmatch(content_id):
+            checks.append(
+                Check(
+                    "draft-location",
+                    "稿件位于 canonical 位置",
+                    STATUS_FAIL,
+                    ["目录名不是稳定 content ID：{}".format(content_id)],
+                    relative(root, content_id),
+                )
+            )
+            return None
+        if publication_id and not wf.PUBLICATION_ID_RE.fullmatch(publication_id):
+            checks.append(
+                Check(
+                    "draft-location",
+                    "稿件位于 canonical 位置",
+                    STATUS_FAIL,
+                    ["目录名不是稳定 publication ID：{}".format(publication_id)],
+                    draft_path,
+                )
+            )
+            return None
+        package = ""
+    else:
+        return None
+
+    if publication_id:
+        if not wf.PUBLICATION_ID_RE.fullmatch(publication_id):
+            checks.append(
+                Check(
+                    "publication-record",
+                    "publication 记录存在",
+                    STATUS_FAIL,
+                    ["publication ID 格式非法：{}".format(publication_id)],
+                    os.path.join(CONTENT_REL),
+                )
+            )
+            return None
+        for candidate, check_id, title in (
+            (package, "publication-record", "publication 记录存在"),
+            (
+                os.path.join(package, CHANNEL_DRAFT_NAME),
+                "draft-location",
+                "稿件位于 canonical 位置",
+            ),
+        ):
+            _real, error = safe_path(root, candidate)
+            if error:
+                checks.append(
+                    Check(
+                        check_id,
+                        title,
+                        STATUS_FAIL,
+                        [error],
+                        relative(root, candidate),
+                    )
+                )
+                return None
+        target = Target(
+            kind="channel",
+            draft_path=os.path.join(package, CHANNEL_DRAFT_NAME),
+            content_id=content_id,
+            publication_id=publication_id,
+            content_dir=os.path.join(root, CONTENT_REL, content_id),
+            publication_dir=package,
+        )
+        checks.append(
+            Check(
+                "draft-location",
+                "稿件位于 canonical 位置",
+                STATUS_OK,
+                [relative(root, target.draft_path)],
+                relative(root, target.draft_path),
+            )
+        )
+        return target
+
+    target = Target(
+        kind="main",
+        draft_path=os.path.join(root, CONTENT_REL, content_id, MAIN_DRAFT_NAME),
+        content_id=content_id,
+        content_dir=os.path.join(root, CONTENT_REL, content_id),
+    )
+    _real, error = safe_path(root, target.draft_path)
+    if error:
+        checks.append(
+            Check(
+                "draft-location",
+                "稿件位于 canonical 位置",
+                STATUS_FAIL,
+                [error],
+                relative(root, target.draft_path),
+            )
+        )
+        return None
+    checks.append(
+        Check(
+            "draft-location",
+            "稿件位于 canonical 位置",
+            STATUS_OK,
+            [relative(root, target.draft_path)],
+            relative(root, target.draft_path),
+        )
+    )
+    return target
+
+
+# ---------- 检查项 ----------
+
+
+@dataclass
+class Check:
+    id: str
+    title: str
+    status: str
+    detail: list = field(default_factory=list)
+    source: str = ""
+
+
+def scan_terms(draft, terms):
+    """在稿件正文里找禁用词，跳过围栏代码块。返回 (命中列表, 未命中列表)。"""
+    hits = []
+    missed = []
+    in_fence = False
+    for number, line in enumerate(draft.lines, 1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for term in terms:
+            if term in line:
+                snippet = stripped if len(stripped) <= 60 else stripped[:57] + "..."
+                hits.append((term, number, snippet))
+    for term in terms:
+        if not any(hit[0] == term for hit in hits):
+            missed.append(term)
+    return hits, missed
+
+
+def word_count(text):
+    """中文字符数 + 英文单词数 + 数字串数。围栏代码块不计入。"""
+    body = re.sub(r"```.*?```", "", text, flags=re.S)
+    body = re.sub(r"`[^`]*`", "", body)
+    cjk = len(re.findall(r"[一-鿿]", body))
+    latin = len(re.findall(r"[A-Za-z]+", body))
+    numbers = len(re.findall(r"\d+", body))
+    return cjk + latin + numbers
+
+
+def channel_word_limits(brand_text, channel):
+    """取某渠道的字数上限规则。
+
+    返回 (区间下限, 区间上限) —— 「N～M 字」这种单区间；
+    或 (None, [(标签, 上限), ...]) —— 多条上限（X：单条 ≤200、thread 每条 ≤140）。
+    取不到返回 (None, [])。
+    """
+    _, rows = parse_table(section(brand_text, "渠道口径").splitlines())
+    for cells in rows:
+        if len(cells) < 4:
+            continue
+        if base_channel(cells[0]) != channel:
+            continue
+        spec = cells[3]
+        match = re.search(r"(\d+)\s*[～~\-—]\s*(\d+)\s*字", spec)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+        limits = []
+        for label, limit in re.findall(r"([^\s；;，,]+)\s*≤\s*(\d+)\s*字", spec):
+            limits.append((label, int(limit)))
+        if limits:
+            return None, limits
+    return None, []
+
+
+def split_version_blocks(lines):
+    """把稿件按二级标题切成若干块，每块返回 (标题, 文本)。
+
+    改写稿常含「版本 A / 版本 B」等多版本，整篇计数没有意义。
+    """
+    blocks = []
+    current_title = ""
+    current = []
+    for line in lines:
+        heading = re.match(r"^##[ \t]+(.+?)[ \t]*$", line)
+        if heading:
+            if current:
+                blocks.append((current_title, current))
+            current_title = heading.group(1).strip()
+            current = []
+            continue
+        current.append(line)
+    if current:
+        blocks.append((current_title, current))
+    return blocks
+
+
+def count_thread_items(text):
+    """把 thread 正文按「**1/3**」这类序号标记切成单条。"""
+    parts = re.split(r"^\*\*\d+/\d+\*\*[ \t]*$", text, flags=re.M)
+    return [part for part in parts if part.strip()]
+
+
+def parse_tables(section_text):
+    """把一节里的所有表格切出来，返回 [(表头, 数据行), ...]。
+
+    一节里可能有多张表（口径表、CTA 表），不能只取第一张。
+    """
+    tables = []
+    for block in table_blocks(section_text):
+        header, rows = parse_table(block)
+        if header:
+            tables.append((header, rows))
+    return tables
+
+
+def strip_markdown(text):
+    """去掉 markdown 强调标记与首尾空白。"""
+    return text.replace("**", "").replace("*", "").strip()
+
+
+def required_phrases(cell):
+    """从一段 CTA 口径里抽出硬性必含话术。
+
+    口径单元格的写法是三段式，用 `→` 或 `；` 分段：
+      `**关注公众号**，后续更新第一时间看到 → 觉得有用就**点赞 / 在看** → 也欢迎**分享**`
+
+    只有**第一段的主 CTA** 算硬性项：
+      - 段内有粗体 → 取粗体短语；
+      - 没有粗体 → 取第一个逗号前的分句（如「关注公众号」）。
+    后续两段（点赞 / 在看、分享）属建议项，各渠道措辞不同，不做硬性判定；
+    「不得出现…」这类禁写段直接丢弃，由 cta_forbidden_terms 单独抽取。
+    """
+    for segment in re.split(r"[→⇒；;]", cell):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if RE_FORBIDDEN_LEAD.search(segment):
+            continue
+        bold = [strip_markdown(b) for b in re.findall(r"\*\*([^*]+)\*\*", segment)]
+        bold = [b for b in bold if b]
+        if bold:
+            return bold
+        head = re.split(r"[，,]", strip_markdown(segment))[0].strip()
+        return [head] if head else []
+    return []
+
+
+def phrase_matches(phrase, body):
+    """一句话术是否出现在正文里。
+
+    容差：去掉空白再比；并容忍尾部语气词（"关注后" → "关注"），
+    因为口径表里的粗体可能只是句子的一个片段。
+    """
+    candidates = {phrase}
+    stripped = re.sub(r"[后时了的呢吧]$", "", phrase)
+    if stripped:
+        candidates.add(stripped)
+    flat_body = re.sub(r"\s+", "", body)
+    for candidate in candidates:
+        if re.sub(r"\s+", "", candidate) in flat_body:
+            return True
+    return False
+
+
+RE_FORBIDDEN_LEAD = re.compile(r"(?:不得出现|不出现|不许出现|禁止|不写|不要出现|不使用)")
+
+
+def cta_forbidden_terms(section_text):
+    """从「渠道口径」一节的散文中抽禁写词。
+
+    写法如「正文不出现链接、二维码、邮箱」「也不写「订阅更新」字样」。
+    两条规则：
+      - 「不出现 / 不得出现 / 禁止」之后的顿号、逗号分隔的短词；
+      - 「不写 / 不用」之后被「」引起来的词。
+    """
+    terms = []
+    for line in section_text.splitlines():
+        stripped = line.strip().strip("|").strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for match in RE_FORBIDDEN_LEAD.finditer(stripped):
+            tail = stripped[match.end():]
+            tail = re.split(r"[；;。]", tail)[0]
+            for item in re.split(r"[、,，/]", tail):
+                item = strip_markdown(item).strip()
+                quoted = re.search(r"「([^」]+)」", item)
+                if quoted:
+                    if quoted.group(1) not in terms:
+                        terms.append(quoted.group(1))
+                    continue
+                item = item.strip("，。 ：:|")
+                # 去掉「也不写…」这类尾巴，只留纯名词
+                item = re.split(r"(?:也|并且|而且|同时|另外|此外)", item)[0]
+                if not item or len(item) > 8:
+                    continue
+                if re.search(r"[不没]", item):
+                    continue
+                if item not in terms:
+                    terms.append(item)
+    return terms
+
+
+def channel_cta_spec(brand_text, channel):
+    """从品牌口径「渠道口径」一节里取某渠道的 CTA 口径。
+
+    来源有两种，都在这一节里：
+      1. 表头含「CTA」的列（口径表直接加了 CTA 列）；
+      2. 表头含「CTA」的独立表格（口径表旁边单列一张 CTA 表）。
+
+    返回 {"required": [...], "forbidden": [...]}；两种来源都没有时返回 None。
+    """
+    section_text = section(brand_text, "渠道口径")
+    required = []
+    cta_cells = []
+    found = False
+
+    for header, rows in parse_tables(section_text):
+        cta_index = None
+        for index, name in enumerate(header):
+            if "CTA" in name:
+                cta_index = index
+                break
+        if cta_index is None:
+            continue
+        for cells in rows:
+            if len(cells) <= cta_index or base_channel(cells[0]) != channel:
+                continue
+            found = True
+            cta_cells.append(cells[cta_index])
+            required.extend(required_phrases(cells[cta_index]))
+
+    if not found:
+        return None
+
+    # 禁写词只看两处：本节表格之外的散文，以及该渠道自己的 CTA 单元格。
+    # 其他列（形态要求等）里的「不写…」不属于 CTA 口径，不参与判定。
+    prose = "\n".join(
+        line for line in section_text.splitlines() if not line.strip().startswith("|")
+    )
+    forbidden = cta_forbidden_terms(prose + "\n" + "\n".join(cta_cells))
+    return {"required": required, "forbidden": forbidden}
+
+
+def publish_body(draft):
+    """取出稿件的发布正文。
+
+    排除两块：
+      - 顶部元信息块（标题之后、正文之前的连续 `>` 引用行）；
+      - 「改写对照」小节（稿内注明非发布内容）。
+    """
+    body = []
+    in_meta = True
+    skipping_section = False
+    for line in draft.lines:
+        stripped = line.strip()
+        if in_meta:
+            if not stripped:
+                continue
+            if stripped.startswith(">"):
+                continue
+            if stripped.startswith("#"):
+                # 标题行之后仍处于元信息块，直到遇到第一行正文
+                body.append(line)
+                continue
+            in_meta = False
+        heading = re.match(r"^#{1,6}[ \t]+(.+?)[ \t]*$", stripped)
+        if heading:
+            skipping_section = "改写对照" in heading.group(1)
+            if skipping_section:
+                continue
+        if skipping_section:
+            continue
+        body.append(line)
+    return "\n".join(body)
+
+
+def cta_check(brand_text, draft, channel, label):
+    """CTA 话术一致性。
+
+    判定方式：
+      1. 口径里取到该渠道的 CTA 口径 → 逐条核对必含话术与禁写词；
+      2. 没取到 → 提示口径尚未补齐，本项不参与判定（警告）。
+
+    硬性失败的条件是「必含话术缺了」或「出现了禁写词」。
+    只取发布正文：顶部元信息块与「改写对照」小节不算。
+    """
+    if not channel:
+        return Check("cta-consistency", "CTA 话术与渠道口径一致", STATUS_SKIP, ["拿不到渠道名，跳过"])
+
+    spec = channel_cta_spec(brand_text, channel)
+    if spec is None:
+        return Check(
+            "cta-consistency",
+            "CTA 话术与渠道口径一致",
+            STATUS_WARN,
+            ["品牌口径「渠道口径」一节里没有 {} 的 CTA 口径列（表头含「CTA」的列或表），content 补齐后本项自动生效".format(label)],
+            os.path.join(BRAND_REL, "# 渠道口径"),
+        )
+
+    if not draft.exists:
+        return Check("cta-consistency", "CTA 话术与渠道口径一致", STATUS_SKIP, ["稿件不存在，跳过"])
+
+    body = publish_body(draft)
+    in_fence = False
+    visible = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            visible.append(line)
+    body = "\n".join(visible)
+
+    problems = []
+    for phrase in spec["required"]:
+        if not phrase_matches(phrase, body):
+            problems.append("缺必含话术「{}」".format(phrase))
+    for word in spec["forbidden"]:
+        if word and word in body:
+            problems.append("出现禁写内容「{}」".format(word))
+    detail = problems or [
+        "必含话术 {} 全部出现，禁写词 {} 均未出现".format(
+            "、".join(spec["required"]) or "（无）", "、".join(spec["forbidden"]) or "（无）"
+        )
+    ]
+    return Check(
+        "cta-consistency",
+        "CTA 话术与渠道口径一致",
+        STATUS_FAIL if problems else STATUS_OK,
+        detail,
+        os.path.join(BRAND_REL, "# 渠道口径 / CTA 口径"),
+    )
+
+
+def word_count_check(brand_text, draft, channel, label):
+    """字数是否落在渠道口径的限制内。
+
+    单区间（公众号 1800～3000、知乎 1500～2500）按全文计；
+    多条上限（X 单条 ≤200、thread 每条 ≤140）按版本块与 thread 单条分别计。
+    """
+    if not channel:
+        return Check("word-count", "字数在渠道口径区间内", STATUS_SKIP, ["拿不到渠道名，跳过"])
+    low, high_or_limits = channel_word_limits(brand_text, channel)
+    if not draft.exists:
+        return Check("word-count", "字数在渠道口径区间内", STATUS_SKIP, ["稿件不存在，跳过"])
+
+    if low is not None:
+        count = word_count("\n".join(draft.lines))
+        ok = low <= count <= high_or_limits
+        return Check(
+            "word-count",
+            "字数在渠道口径区间内",
+            STATUS_OK if ok else STATUS_WARN,
+            ["全文约 {} 字，「{}」口径是 {}～{} 字".format(count, channel, low, high_or_limits)],
+            os.path.join(BRAND_REL, "# 渠道口径 / 字数口径"),
+        )
+
+    limits = high_or_limits
+    if not limits:
+        return Check(
+            "word-count",
+            "字数在渠道口径区间内",
+            STATUS_SKIP,
+            ["「{}」没有可解析的字数口径，跳过".format(label)],
+        )
+
+    problems = []
+    checked = 0
+    for title, block in split_version_blocks(draft.lines):
+        limit = None
+        for label, value in limits:
+            if label in title:
+                limit = value
+                break
+        if limit is None:
+            continue
+        text = "\n".join(block)
+        if "thread" in title.lower() or re.search(r"\*\*\d+/\d+\*\*", text):
+            items = count_thread_items(text)
+            if items:
+                for index, item in enumerate(items, 1):
+                    count = word_count(item)
+                    checked += 1
+                    if count > limit:
+                        problems.append(
+                            "「{}」第 {} 条约 {} 字，超过 {} 字上限".format(title, index, count, limit)
+                        )
+                continue
+        count = word_count(text)
+        checked += 1
+        if count > limit:
+            problems.append("「{}」约 {} 字，超过 {} 字上限".format(title, count, limit))
+    if not checked:
+        return Check(
+            "word-count",
+            "字数在渠道口径区间内",
+            STATUS_SKIP,
+            ["「{}」的字数口径是 {}，但稿件里找不到对应的版本块，跳过".format(
+                channel, "、".join("{}≤{}字".format(l, v) for l, v in limits))],
+        )
+    return Check(
+        "word-count",
+        "字数在渠道口径区间内",
+        STATUS_OK if not problems else STATUS_WARN,
+        problems or ["已核对 {} 个版本块/单条，均在「{}」的字数上限内".format(checked, channel)],
+        os.path.join(BRAND_REL, "# 渠道口径 / 字数口径"),
+    )
+
+
+# ---------- canonical 记录检查 ----------
+
+
+def check_content_record(root, content_id):
+    card = os.path.join(root, CONTENT_REL, content_id, CARD_NAME)
+    source = relative(root, card)
+    _real, path_error = safe_path(root, card)
+    if path_error:
+        return (
+            None,
+            Check("content-record", "内容记录有效", STATUS_FAIL, [path_error], source),
+        )
+    if not os.path.isfile(card):
+        return (
+            None,
+            Check(
+                "content-record",
+                "内容记录有效",
+                STATUS_FAIL,
+                ["找不到内容卡：{}".format(source)],
+                source,
+            ),
+        )
+    record, _body, errors = wf.parse_card_document(Path(card), source)
+    if errors:
+        return (
+            None,
+            Check(
+                "content-record",
+                "内容记录有效",
+                STATUS_FAIL,
+                [error.message for error in errors],
+                source,
+            ),
+        )
+    problems = []
+    if record.get("record_type") != "content":
+        problems.append("record_type 必须是 content")
+    if record.get("content_id") != content_id:
+        problems.append(
+            "内容卡 content_id「{}」与目录「{}」不一致（引用断裂）".format(
+                record.get("content_id"), content_id
+            )
+        )
+    status = record.get("status")
+    if status not in wf.CONTENT_STATUSES:
+        problems.append("未知 status「{}」".format(status))
+    if problems:
+        return None, Check("content-record", "内容记录有效", STATUS_FAIL, problems, source)
+    return record, Check(
+        "content-record",
+        "内容记录有效",
+        STATUS_OK,
+        ["{} · status={}".format(content_id, status)],
+        source,
+    )
+
+
+def check_publication_record(root, content_id, publication_id, target):
+    card = os.path.join(target.publication_dir, PUBLICATION_CARD_NAME)
+    source = relative(root, card)
+    _real, path_error = safe_path(root, card)
+    if path_error:
+        return (
+            None,
+            Check(
+                "publication-record",
+                "publication 记录有效",
+                STATUS_FAIL,
+                [path_error],
+                source,
+            ),
+        )
+    if not os.path.isfile(card):
+        return (
+            None,
+            Check(
+                "publication-record",
+                "publication 记录有效",
+                STATUS_FAIL,
+                ["找不到发布卡：{}".format(source)],
+                source,
+            ),
+        )
+    record, _body, errors = wf.parse_card_document(Path(card), source)
+    if errors:
+        return (
+            None,
+            Check(
+                "publication-record",
+                "publication 记录有效",
+                STATUS_FAIL,
+                [error.message for error in errors],
+                source,
+            ),
+        )
+    problems = []
+    if record.get("record_type") != "publication":
+        problems.append("record_type 必须是 publication")
+    if record.get("publication_id") != publication_id:
+        problems.append(
+            "发布卡 publication_id「{}」与目录「{}」不一致（引用断裂）".format(
+                record.get("publication_id"), publication_id
+            )
+        )
+    if record.get("content_id") != content_id:
+        problems.append(
+            "publication 引用断裂：发布卡的 content_id 是「{}」，目录属于「{}」".format(
+                record.get("content_id"), content_id
+            )
+        )
+    if not isinstance(record.get("channel"), str) or not record["channel"].strip():
+        problems.append("发布卡 channel 缺失")
+    if record.get("channel_draft") != CHANNEL_DRAFT_NAME:
+        problems.append("发布卡 channel_draft 必须是 {}".format(CHANNEL_DRAFT_NAME))
+    status = record.get("status")
+    if status not in wf.PUBLICATION_STATUSES:
+        problems.append("未知 status「{}」".format(status))
+    if problems:
+        return None, Check(
+            "publication-record", "publication 记录有效", STATUS_FAIL, problems, source
+        )
+    return record, Check(
+        "publication-record",
+        "publication 记录有效",
+        STATUS_OK,
+        ["{} · channel={} · status={}".format(publication_id, record["channel"], status)],
+        source,
+    )
+
+
+def check_approval(record, card_source, draft, artifact, allowed_statuses):
+    if record is None:
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_SKIP,
+            ["canonical 记录不可用，跳过"],
+            card_source,
+        )
+    approval = record.get("approval")
+    if not isinstance(approval, dict):
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_FAIL,
+            ["{}没有审批记录：先提交审核并由 gm 落盘决定".format(artifact)],
+            card_source,
+        )
+    status = approval.get("status")
+    if status != "approved":
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_FAIL,
+            ["审批状态是「{}」，发布前需要 approved".format(status or "空")],
+            card_source,
+        )
+    record_status = record.get("status")
+    if record_status not in allowed_statuses:
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_FAIL,
+            [
+                "approved approval 与当前状态「{}」不符：应为 {}".format(
+                    record_status, "、".join(allowed_statuses)
+                )
+            ],
+            card_source,
+        )
+    if approval.get("artifact") != artifact:
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_FAIL,
+            ["审批覆盖的是「{}」，不是「{}」".format(approval.get("artifact"), artifact)],
+            card_source,
+        )
+    if not draft.exists:
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_FAIL,
+            ["稿件不存在，无法核对审批覆盖的 {}：{}".format(artifact, draft.path)],
+            card_source,
+        )
+    try:
+        current = wf.artifact_hash(Path(draft.path))
+    except wf.WorkflowError as error:
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_FAIL,
+            [str(error)],
+            card_source,
+        )
+    if approval.get("artifact_hash") != current:
+        return Check(
+            "approval-valid",
+            "审批有效且未失效",
+            STATUS_FAIL,
+            [
+                "审批失效：{} 在审批后已修改（SHA-256 不匹配），需重新提交并重新审批".format(
+                    artifact
+                )
+            ],
+            card_source,
+        )
+    return Check(
+        "approval-valid",
+        "审批有效且未失效",
+        STATUS_OK,
+        ["approved 覆盖当前 {}".format(artifact)],
+        card_source,
+    )
+
+
+def check_channel(root, target, draft, brand_text, channel_override, publication_record):
+    if target.kind == "channel":
+        if publication_record is None:
+            return Check(
+                "channel-match",
+                "稿件渠道与 canonical 记录一致",
+                STATUS_SKIP,
+                ["publication 记录不可用，跳过"],
+                relative(root, target.publication_dir),
+            )
+        channel_id = publication_record.get("channel")
+        candidates = channel_candidates(root, channel_id)
+        canonical = configured_channel_names(root).get(channel_id) or channel_id
+        source = relative(
+            root, os.path.join(target.publication_dir, PUBLICATION_CARD_NAME)
+        )
+    else:
+        canonical = brand_main_channel(brand_text)
+        if not canonical:
+            return Check(
+                "channel-match",
+                "稿件渠道与 canonical 记录一致",
+                STATUS_WARN,
+                ["品牌口径还没有「主渠道」，无法核对主稿渠道；补上后本项自动生效"],
+                os.path.join(BRAND_REL, "# 渠道口径"),
+            )
+        candidates = {canonical}
+        source = os.path.join(BRAND_REL, "# 渠道口径")
+
+    declared = channel_override or draft.channel
+    if not declared:
+        return Check(
+            "channel-match",
+            "稿件渠道与 canonical 记录一致",
+            STATUS_WARN,
+            ["稿件未标注渠道（也没用 --channel），按 canonical 记录核对「{}」".format(canonical)],
+            draft.path,
+        )
+    wanted = {normalize_channel(candidate) for candidate in candidates}
+    if normalize_channel(declared) in wanted:
+        return Check(
+            "channel-match",
+            "稿件渠道与 canonical 记录一致",
+            STATUS_OK,
+            ["两侧都是「{}」".format(canonical)],
+            draft.path,
+        )
+    return Check(
+        "channel-match",
+        "稿件渠道与 canonical 记录一致",
+        STATUS_FAIL,
+        ["稿件写「{}」，canonical 记录是「{}」".format(declared, canonical)],
+        draft.path,
+    )
+
+
+# ---------- 汇总 ----------
+
+
+def run_checks(
+    root,
+    draft_path=None,
+    channel_override=None,
+    content_id=None,
+    publication_id=None,
+):
+    brand_path = os.path.join(root, BRAND_REL)
+    checks = []
+
+    if not os.path.isfile(brand_path):
+        return [
+            Check(
+                "source-missing",
+                "源文件存在",
+                STATUS_FAIL,
+                ["缺少文件：{}".format(brand_path)],
+                brand_path,
+            )
+        ]
+
+    brand_text = read_text(brand_path)
+    target = resolve_target(root, draft_path, content_id, publication_id, checks)
+    if target is None:
+        return checks
+
+    draft = parse_draft(target.draft_path)
+
+    if draft.exists:
+        checks.append(Check("draft-exists", "稿件文件存在", STATUS_OK, [draft.path], draft.path))
+    else:
+        checks.append(
+            Check(
+                "draft-exists",
+                "稿件文件存在",
+                STATUS_FAIL,
+                ["找不到文件：{}".format(draft.path)],
+                draft.path,
+            )
+        )
+
+    content_record, content_check = check_content_record(root, target.content_id)
+    checks.append(content_check)
+
+    publication_record = None
+    if target.kind == "channel":
+        publication_record, publication_check = check_publication_record(
+            root, target.content_id, target.publication_id, target
+        )
+        checks.append(publication_check)
+
+    if target.kind == "channel":
+        checks.append(
+            check_approval(
+                publication_record,
+                relative(
+                    root,
+                    os.path.join(target.publication_dir, PUBLICATION_CARD_NAME),
+                ),
+                draft,
+                CHANNEL_DRAFT_NAME,
+                ("reviewing", "scheduled"),
+            )
+        )
+    else:
+        checks.append(
+            check_approval(
+                content_record,
+                relative(root, os.path.join(target.content_dir, CARD_NAME)),
+                draft,
+                MAIN_DRAFT_NAME,
+                ("ready",),
+            )
+        )
+
+    checks.append(
+        check_channel(
+            root, target, draft, brand_text, channel_override, publication_record
+        )
+    )
+
+    terms, table_terms, other_terms = forbidden_terms(brand_text)
+
+    if not draft.exists:
+        for check_id, title in (
+            ("forbidden-term", "未命中禁用表述"),
+            ("term-misuse", "术语表「不说什么」未被误用"),
+        ):
+            checks.append(
+                Check(check_id, title, STATUS_SKIP, ["稿件不存在，跳过"], draft.path)
+            )
+    else:
+        hits, missed = scan_terms(draft, other_terms)
+        detail = [
+            "第 {} 行命中「{}」：{}".format(number, term, snippet)
+            for term, number, snippet in hits
+        ]
+        checks.append(
+            Check(
+                "forbidden-term",
+                "未命中禁用表述",
+                STATUS_FAIL if hits else STATUS_OK,
+                detail or ["未命中 {} 个禁用词：{}".format(len(missed), "、".join(missed))],
+                os.path.join(BRAND_REL, "# 禁用表述 / # 作者人设"),
+            )
+        )
+
+        table_hits, table_missed = scan_terms(draft, table_terms)
+        detail = [
+            "第 {} 行命中「{}」：{}".format(number, term, snippet)
+            for term, number, snippet in table_hits
+        ]
+        checks.append(
+            Check(
+                "term-misuse",
+                "术语表「不说什么」未被误用",
+                STATUS_FAIL if table_hits else STATUS_OK,
+                detail or ["未误用 {} 个术语：{}".format(len(table_missed), "、".join(table_missed))],
+                os.path.join(BRAND_REL, "# 术语表"),
+            )
+        )
+
+    pending = [
+        (number, line.strip()[:50])
+        for number, line in enumerate(brand_text.splitlines(), 1)
+        if "【提案】" in line
+    ]
+    checks.append(
+        Check(
+            "brand-settled",
+            "品牌口径已去掉【提案】标记",
+            STATUS_WARN if pending else STATUS_OK,
+            ["品牌口径第 {} 行仍带【提案】：{}".format(n, s) for n, s in pending]
+            or ["品牌口径没有未确认标记"],
+            BRAND_REL,
+        )
+    )
+
+    if content_record is None:
+        checks.append(
+            Check(
+                "content-pillar",
+                "内容卡声明内容支柱",
+                STATUS_SKIP,
+                ["内容卡不可用，跳过"],
+                relative(root, os.path.join(target.content_dir, CARD_NAME)),
+            )
+        )
+    else:
+        pillar = content_record.get("pillar")
+        if isinstance(pillar, str) and pillar.strip():
+            checks.append(
+                Check(
+                    "content-pillar",
+                    "内容卡声明内容支柱",
+                    STATUS_OK,
+                    ["支柱：{}".format(pillar.strip())],
+                    relative(root, os.path.join(target.content_dir, CARD_NAME)),
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "content-pillar",
+                    "内容卡声明内容支柱",
+                    STATUS_WARN,
+                    ["内容卡未声明 pillar，内容支柱无法机器核对"],
+                    relative(root, os.path.join(target.content_dir, CARD_NAME)),
+                )
+            )
+
+    if target.kind == "channel" and publication_record is not None:
+        channel_id = publication_record.get("channel")
+        candidates = channel_candidates(root, channel_id)
+        display = configured_channel_names(root).get(channel_id) or channel_id
+    elif target.kind == "main":
+        display = brand_main_channel(brand_text)
+        candidates = {display} if display else set()
+    else:
+        display = ""
+        candidates = set()
+
+    brand_channel = brand_channel_name(brand_text, candidates) or display
+    checks.append(word_count_check(brand_text, draft, brand_channel, display))
+    checks.append(cta_check(brand_text, draft, brand_channel, display))
+
+    return checks
+
+
+# ---------- 输出 ----------
+
+
+STATUS_LABEL = {
+    STATUS_OK: "通过",
+    STATUS_FAIL: "失败",
+    STATUS_WARN: "警告",
+    STATUS_SKIP: "跳过",
+}
+
+
+def render(checks, label):
+    lines = ["preflight · 稿件 {}".format(label)]
+    for check in checks:
+        lines.append("[{}] {}".format(STATUS_LABEL[check.status], check.title))
+        for item in check.detail:
+            lines.append("       - {}".format(item))
+        lines.append("       来源：{}".format(check.source))
+    passed = sum(1 for c in checks if c.status == STATUS_OK)
+    failed = sum(1 for c in checks if c.status == STATUS_FAIL)
+    warned = sum(1 for c in checks if c.status == STATUS_WARN)
+    skipped = sum(1 for c in checks if c.status == STATUS_SKIP)
+    lines.append(
+        "汇总：通过 {} 项 / 失败 {} 项 / 警告 {} 项 / 跳过 {} 项".format(passed, failed, warned, skipped)
+    )
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="发布前自检：核对 canonical 稿件与品牌口径",
+    )
+    parser.add_argument("draft", nargs="?", help="稿件路径（canonical 主稿或渠道稿）")
+    parser.add_argument("--content", default=None, help="按稳定 content ID 定位主稿")
+    parser.add_argument("--publication", default=None, help="按稳定 publication ID 定位渠道稿")
+    parser.add_argument("--root", default=DEFAULT_ROOT, help="仓库根目录，默认取脚本所在仓库")
+    parser.add_argument("--channel", default=None, help="稿件渠道，稿件里没写渠道时手动指定")
+    parser.add_argument("--json", action="store_true", help="输出 JSON")
+    args = parser.parse_args(argv)
+
+    selectors = [bool(args.draft), bool(args.content), bool(args.publication)]
+    if sum(selectors) != 1:
+        parser.error("draft、--content、--publication 必须且只能指定一个")
+
+    root = os.path.abspath(args.root)
+    draft_path = args.draft
+    if draft_path is not None and not os.path.isabs(draft_path):
+        draft_path = os.path.join(root, draft_path)
+
+    if draft_path is not None and not os.path.isfile(draft_path):
+        print("找不到稿件：{}".format(draft_path), file=sys.stderr)
+        return 2
+
+    checks = run_checks(
+        root,
+        draft_path,
+        args.channel,
+        content_id=args.content,
+        publication_id=args.publication,
+    )
+    failed = any(c.status == STATUS_FAIL for c in checks)
+
+    label = draft_path
+    if label is None:
+        label = "content {}".format(args.content) if args.content else "publication {}".format(args.publication)
+
+    if args.json:
+        payload = {
+            "draft": label,
+            "content_id": args.content,
+            "publication_id": args.publication,
+            "checks": [
+                {
+                    "id": c.id,
+                    "title": c.title,
+                    "status": c.status,
+                    "detail": c.detail,
+                    "source": c.source,
+                }
+                for c in checks
+            ],
+            "failed": failed,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(render(checks, label))
+
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

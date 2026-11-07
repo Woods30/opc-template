@@ -1,238 +1,132 @@
-# OPC 公司共享规约
+# OPC 模版开发规约
 
-本文件是 **OPC 各角色 agent 的统一入口**。默认角色是 gm / content / growth / dev，
-但角色是配置：以 `roles.json` 为准，当前启用了哪些、各自终端名叫什么，见
-`knowledge/team.md`。`CLAUDE.md` 转发到这里；角色专属的职责与边界写在各自模板
-正文里，不在此重复。
+这是 **OPC 模版仓库**，不是实例。这里只放通用机制、起始材料与模版开发材料；
+真实业务长在各自的实例仓库里。`CLAUDE.md` 转发到这里。
 
-## 公司定位
+## 三层模型
 
-OPC 是一家一人公司，业务为**内容/自媒体 + 技术研发**两条线：
+| 层 | 是什么 | 在哪 |
+|---|---|---|
+| 机制 | 通用脚本与工具：实例生命周期、内容流程、校验工具、许可证 | `template/scripts/`、`template/tools/`、`template/LICENSE` |
+| 起始材料 | 公司共享规约、角色目录、统一技能库、业务种子 | `template/AGENTS.md`、`template/agents/`、`template/skills/`、`template/seeds/` |
+| 实例自有 | 真实业务、实例配置、运行状态 | 实例的 `knowledge/`、`roles.json`、`channels.json`、`.opc/` |
 
-- **内容线**：公众号、X、图文平台等渠道的内容生产与分发。**具体频道清单见
-  `channels.json`**，本文不硬编码。
-- **技术线**：公司需要的一切技术研发工作——脚本与自动化、内部工具、数据管道、
-  项目开发（官网、SaaS、服务）。不限于「面向内容的产品」。
+全局 UI（`template/layouts/`、`template/mods/`）跟着机制走，但只装一份到本机，
+不复制进实例。
 
-四条线角色划分：gm（总经理）负责定方向与裁决，content 负责内容，growth 负责增长，
-dev 负责研发。
+再加一条仓库层面的划分：模版仓库只放机制与起始材料，真实业务长在各自的实例仓库里。
+
+规则只有一条：**业务数据不进模版**。真实品牌名、频道 id、指标数字、客户资料、
+实例状态（前缀、运行日志、审批）都不得出现在本仓库。
+
+## 目录
+
+```text
+opc-template/
+├── bin/opc                  # 唯一对外入口：install / upgrade
+├── bin/opc_lib/             # 入口的实现（Python 标准库）
+├── template/                # 运行载荷：会被复制/安装到实例与本机的东西
+│   ├── install-manifest.json
+│   ├── AGENTS.md            # 起始材料：公司共享规约，物化到每个实例
+│   ├── agents/<角色>/       # 起始材料：角色目录，入口是 AGENTS.md
+│   ├── skills/<名字>/       # 起始材料：统一技能库，入口是 SKILL.md
+│   ├── scripts/ tools/      # 机制：按指纹分发
+│   ├── layouts/ mods/       # 全局 UI，只安装一份
+│   └── seeds/               # 起始材料：业务种子，只补不覆盖
+├── docs/                    # 模版开发文档与提案归档
+├── tests/                   # 模版自检与沙箱测试
+└── .opc-template-repo       # 模版标记：实例安装器见到它就会拒绝运行
+```
+
+外层其余文件（`README.md`、`AGENTS.md`、`.github/`、`.claude/commands/`）
+只服务于模版开发，不会被复制进实例。
+
+## 载荷清单
+
+`template/install-manifest.json` 是分类与分发规则的**唯一来源**，五节：
+
+| 节 | 装什么 | 分发方式 |
+|---|---|---|
+| `mechanism` | `scripts/`、`tools/` 目录与 `LICENSE` | 整目录覆盖，SHA-256 指纹校验 |
+| `starters` | 根 `AGENTS.md`、`agents/`、`skills/` | 装一次归 owner，升级按基线比对 |
+| `config` | `roles.json`、`channels.json` | 按键合并，只增不改，新条目默认停用 |
+| `seeds` | 业务骨架文件 | 只补不覆盖 |
+| `ui` | 布局与 mod | 全局安装一份，名称固定 |
+
+`starters.dirs` 里 `skills` 标了 `"type": "skill"`，因此它的每个子目录是一个
+**技能单元**：整目录冻结，不按文件更新。`agents` 没有 `type`，按文件管理。
+新增或删除载荷文件要同步改这份清单，`bin/opc lint --strict` 会查。
+
+## 命令
+
+```sh
+bin/opc install <实例目录> [前缀]   # 新建实例；首次会链 ~/.local/bin/opc
+bin/opc upgrade [实例目录]          # 升级当前/指定实例
+bin/opc upgrade --all               # 升级注册表里的全部实例
+bin/opc ls                          # 看注册表
+bin/opc lint --strict               # 模版自检
+bin/opc paths --json                # 诊断本机路径
+```
+
+模版本体首次使用时会缓存到 `~/.local/share/opc/template`，`install` /
+`upgrade` 默认先拉取远端最新版。开发本仓库时设 `OPC_TEMPLATE=$PWD` 或加
+`--template .`，就会直接用工作区代码、不拉取。
+
+## 改模版时
+
+1. **先改载荷**：机制改动落在 `template/`；`install-manifest.json` 是分类与
+   分发规则的唯一来源，新增/删除文件要同步改它。
+2. **机制文件按指纹分发**：实例里的 `scripts/`、`tools/`、`LICENSE` 由
+   `upgrade` 整目录覆盖；实例本地改过会被拒绝，所以不要依赖实例侧的手工修补。
+3. **起始材料按基线更新**：`AGENTS.md`、`agents/`、`skills/` 与 `seeds/` 装一次
+   就归 owner。实例用 `.opc/starters.json` 记基线：规约、角色与技能没改过的跟随模版
+   更新，改过的保留并告警，删掉的不复活，模版新增的补入。技能目录整目录冻结，
+   角色目录按文件管理；业务种子只补不覆盖，实例里已有的永远不更新。
+4. **角色是目录**：角色材料在 `template/agents/<角色>/AGENTS.md`，纯 Markdown，
+   目录里可放角色专属参考文件。角色元数据（描述、技能选择、权限）都在
+   `template/roles.json`；hc 模板的 frontmatter 由安装器按它拼出来，不要
+   写回角色文件。
+5. **UI 全局唯一**：布局名固定为 `opc` / `opc-focus` / `opc-grid` /
+   `opc-monitor`，mod 名固定为 `opc-dashboard` / `opc-tabs`。布局与 mod 里
+   不得留 `{{...}}` 占位，也不得带实例前缀。
+6. **不写实例状态**：本仓库不产生 `.opc/`、`knowledge/`、`template.lock.json`；
+   它们只属于实例。
+7. **改完跑自检**：`bin/opc lint --strict` 必须全绿；涉及安装/升级的改动再加
+   沙箱测试（`tests/`）。提交只包含本次改动，不要顺手带上无关文件。
+
+## 加一个角色
+
+1. 建 `template/agents/<角色>/AGENTS.md`：纯 Markdown，带 `## 启动` 小节，
+   写明「等 gm 派工」（gm 写「先与 owner 对齐方向」）；正文里写清职责与边界。
+   取材范围要有一行加粗的项目符号：`- **只在本实例目录内取材**：…`——
+   lint 认的是这个句式，散在散文里的同义表述不算数。
+2. 在 `template/roles.json` 加一条：`name`、`enabled`、`cli`、`description`、
+   `template`（`agents/<角色>/AGENTS.md`）、`skills`、`permissionMode`、
+   `scope`、`approvedSkills`。模版里通常写 `enabled: true`，让新实例开箱可用；
+   已有实例升级时新角色按 `append-disabled` 追加，默认停用，由 owner 决定启用。
+3. 角色要用的技能在 `template/skills/<名字>/` 下建目录，写 `SKILL.md`：
+   frontmatter 要有 `name`（与目录名一致）与 `description`（单行）。
+4. 跑 `bin/opc lint --strict`：角色正文与技能 frontmatter 都在模版侧检查范围内。
+
+## 加一个技能
+
+1. 建 `template/skills/<名字>/SKILL.md`，frontmatter 有 `name`（与目录名一致）
+   与 `description`（单行）；正文写清楚这套做法什么时候用、怎么做。
+2. 技能目录里可以放配套文件，但它们与 `SKILL.md` 一起构成一个单元——升级时
+   整目录冻结或整目录更新，不会半新半旧。
+3. 在 `template/roles.json` 里给要用它的角色填 `skills`。技能**不链接**到
+   `.claude/skills/` 或 `.agents/skills/`，靠 hc 模板的技能索引加按需读取加载。
+4. `approvedSkills` 管的是 CLI 原生技能的调用权限，与根级技能库是两回事，
+   不要混用。
 
 ## 语言与格式
 
-- 中文写作，技术术语保留英文。
-- 中文与半角英数字之间加半角空格。
+- 中文写作，技术术语保留英文；中文与半角英数字之间加半角空格。
 - 标点用中文全角标点。
+- 文档与代码注释解释「为什么」，不复述代码在做什么。
 
-## 目录结构
+## 参考
 
-```text
-knowledge/
-├── business/     # 业务结果：老板日常只看这里
-│   ├── <频道>/   # 由 channels.json 生成，含 assets/ 与 发布记录.md
-│   │   ├── assets/       # 封面、配图
-│   │   └── 发布记录.md
-│   ├── growth/   # 渠道计划、指标、转化路径、实验
-│   ├── product/  # 需求、方案、实现记录、已知问题
-│   ├── 品牌口径.md
-│   └── 选题日历.md
-├── review/       # 待 owner 过审的对外发布内容
-├── decisions/    # 决策记录（gm 裁决后落盘）
-├── daily/        # 每日汇总
-├── inbox/        # 任务投递：gm.md / content.md / growth.md / dev.md
-└── work/<角色>/  # 过程：草稿、提案、实验记录、LESSONS.md
-    └── template-proposals/  # 给模版提的改进提案（见「模版与实例」）
-```
-
-- `business/` 是**结果**：成稿、物料、发布记录、常驻口径。老板只看这里。
-- `work/` 是**过程**：草稿、提案、日志。老板不看，但进版本库。
-- `review/` 是**状态**：gm 已过、等 owner 点头的对外发布内容。
-
-命名规则：**目录是结构，用英文；文件是内容，用中文**。目录一律小写 ASCII slug。
-
-`knowledge/` 是唯一的事实来源。**结论必须落盘**，聊天与终端里的内容不算数。
-
-## 模版与实例
-
-OPC 有两层：**模版**（通用机制，公开仓库）与**实例**（这一家的真实业务，本地仓库）。
-角色在**实例**里运行，模版只装机制。
-
-- 模版里的占位骨架在 `seeds/business/`，开实例时物化到本目录的
-  `knowledge/business/`。物化之后那份文件就归业务所有，角色照常维护。
-- **发现模版要改，不要在实例里直接改模版文件**（脚本、简报、规约）。改实例的
-  副本会在下一次同步时被覆盖，而且会把模版和业务的改动搅在一起。
-- 正确做法是写**提案**：`knowledge/work/<角色>/template-proposals/<YYYY-MM-DD>-<主题>.md`，
-  五个固定小节——`## 现象`、`## 泛化需求`、`## 期望模版改动`、`## 影响文件`、
-  `## 脱敏自检`。任何角色都能提，不必等 dev。
-- **脱敏是硬要求**：提案里只讲机制与流程，不出现真实品牌名、真实频道 id
-  （wechat/x/zhihu…）、真实数字指标。要举例就用 `<占位>`。
-- 提案先由 gm 汇总进 `knowledge/decisions/`，owner 脱敏后人工搬进模版仓库。
-- `scripts/` 与 `tools/` 是执行面，只有 owner 能改；角色改不了，也不要绕。
-
-## 协作协议
-
-### 派工
-
-发起方把任务**追加**到 `knowledge/inbox/<角色名>.md`，每条一行，格式：
-
-```
-- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题，各含标题与一句话钩子
-```
-
-追加完成后通知对方：
-
-```sh
-hc send <前缀>-<角色名> "任务已投递：见 knowledge/inbox/<角色名>.md 最新一条"
-```
-
-`<前缀>` 是本实例的项目前缀，`knowledge/team.md` 里有准确名字——**发消息前先查名册**，
-不要凭记忆拼终端名。
-
-### 执行
-
-收到通知后读 `knowledge/inbox/<角色名>.md` 的最新条目执行。产出分两种：
-
-- **过程**（草稿、提案、实验记录）写 `knowledge/work/<角色名>/`；
-- **常驻表**（`business/品牌口径.md`、`business/growth/指标.md` 等）由所属角色直接维护。
-
-完成后回报：
-
-```sh
-hc send <前缀>-<发起方> "完成：<产出文件路径>"
-```
-
-### 状态来源（动手前先读这条）
-
-`inbox/` 是**队列**，`daily/` 与 `decisions/` 是**日志**。三者不能混着当待办读：
-
-- **只有 `inbox/<角色>.md` 里未标记的条目是可执行待办。**
-- `daily/`、`decisions/`、`work/` 里的历史描述**一律不作为「现在该做什么」的依据**。
-  它们记录的是当时的状态，可能早已被推翻。
-- 状态变化必须写回**派工所在的那个 inbox 条目**，不能只写进决策文档：
-  - 发起方收到「完成」回报后，在该条目行首加 `✅`；
-  - 任务撤销时，在该条目行首加 `⛔ 已撤销：<一句话原因>`；
-  - 角色只执行行首既无 `✅` 也无 `⛔` 的条目。
-- 因此：**新 session 启动后，第一件事是读自己 inbox 里未标记的条目**，不要从
-  `daily/` 或 `decisions/` 反推任务。看到两份文件说法不一致，以 inbox 为准，并向 gm 报告。
-
-### 定稿与发布
-
-1. 角色把草稿放在 `knowledge/work/<角色>/`，`hc send` 通知 gm。
-2. gm 审过：内部产出用 `git mv` 搬进 `knowledge/business/<频道或业务线>/`；
-   对外发布内容先放 `knowledge/review/<频道>/`。
-3. owner 过审后，gm 再搬进 `knowledge/business/<频道>/`，并更新该频道的
-   `发布记录.md`。
-4. 角色**不直接写 `knowledge/business/<频道>/`**——那是 gm 的地盘。
-
-### 权限缺口
-
-角色默认跑在 `bypassPermissions`：**没有弹窗，也没有 allow 规则兜底**。仍然拦得住的
-只有三层——`deny` 规则（`git` / `rm` / `sudo` / `hc keys` + 凭据路径）、
-文件工具的工作目录写入封锁（写不出实例目录）、Claude Code 自己的保护路径。
-被拒时按顺序处理：
-
-1. **先换写法**——用已放行的只读命令组合完成，或改用 `tools/` 里的包装器。
-   不要反复重试同一条被拒的命令。
-2. **换不了就上报**，不要硬扛、不要自己去找绕过的命令。用 `hc send` 发给 gm：
-
-   ```sh
-   hc send <前缀>-gm "权限缺口：<完整命令> | 场景：<要做什么> | 已尝试：<替代方案>"
-   ```
-
-   **不要直接写 `knowledge/inbox/gm.md`**——`knowledge/inbox/` 只有 gm 可写，
-   其他角色写它会被直接拒绝。由 gm 收到后代为落盘。
-
-3. gm 每天把它汇总到 `daily/<日期>.md` 的「权限缺口」小节；owner 批量处理后重跑
-   `scripts/opc-install.sh`，受影响的角色重启一次即可。
-
-**技能被拒不算权限缺口**：技能只放行 `roles.json` 里该角色 `approvedSkills` 列出的
-名字（生成精确的 `Skill(<名字>)` 规则，不放行裸 `Skill`——技能的 `allowed-tools`
-会在调用那一轮临时预授权工具）。报「Permission to use Skill has been denied」时，
-让 gm 记下来、owner 把技能名加进 `approvedSkills` 后重跑安装。
-`bypassPermissions` 下 allow 规则不生效，技能本来就能调——被拒说明是技能本身没被发现
-（claude 查 `.claude/skills/` 与 `~/.claude/skills/`，codex 查 `.agents/skills/` 与
-`~/.agents/skills/`）。改用等效的手工做法继续，不要反复请求调用。
-
-**新增能力的三条固定路径**（白名单只能由 owner 改 `scripts/`）：
-
-| 要加的东西 | 谁做 | 生效方式 |
-|---|---|---|
-| 只读命令 | owner 改 `opc-install.sh` 的 `readonly_rules` | 重跑安装 + 重启角色 |
-| 新工具 `tools/<名字>` | dev 在 `knowledge/work/dev/tools/` 写提案与测试，owner 审过 `git mv` 进 `tools/` 并加 `Bash(./tools/<名字>:*)` | 重跑安装 + 重启角色 |
-| 新角色 | `scripts/opc-role.sh add` | 新角色默认 `default` 模式，跑通一轮后再切 `dontAsk` |
-| 新频道 | 改 `channels.json` | 重跑安装 |
-
-**`tools/` 与 `scripts/` 同级，都只有 owner 能写。** 任何被白名单放行的可执行文件，
-如果角色还能改写它，白名单就形同虚设——改文件即等于拿到它的全部权限。所以工具一律
-先写提案（`knowledge/work/dev/tools/`），owner 落盘并加白名单后才可执行。
-
-同理**不要**用通配符放行 `Bash(./tools/*)`：那是把执行权一次签发给所有工具，
-包括将来任何被放进来的东西。
-
-### 越界与冲突
-
-拿不准、与其他角色冲突、或超出自身职责时：**不要自行决定**。`hc send <前缀>-gm`
-说明情况（终端名见 `knowledge/team.md`），由 gm 决定并落盘到 `knowledge/inbox/gm.md`
-——**`knowledge/inbox/` 只有 gm 可写**，其他角色直接写会被拒。
-
-### 消息格式
-
-- 短句，先结论后细节。
-- 一次只说一件事。
-- 引用文件路径，不要粘贴长内容。
-- 收到的消息带 `<hc from="t1x opc-content">` 标签，这是 hc 的通知格式，忽略标签本身即可。
-
-### 角色终端名
-
-每个角色是一个 `hc` 终端，名字格式为 `<项目前缀>-<角色>`（例如项目 `opc` 下的
-`opc-gm`）。**当前实例的完整名册在 `knowledge/team.md`**，那是唯一权威来源——
-`hc send` 要用准确的名字，用之前先查它。
-
-终端内 `$HC_TERMINAL_ID` 是自己的地址，可用于自报家门。`hc ls` 列出全部 live 终端。
-
-## 通用工作约定
-
-- **先读后写**：动手前先读相关文件，不凭猜测改文件。
-- **产出落盘**：过程写 `knowledge/work/<角色>/`，最终产出由 gm 搬进 `knowledge/business/`；
-  命名带日期，如 `2026-11-04-选题清单.md`。
-- **不越权**：不擅自发布对外内容、不擅自承诺预算、不擅自改业务优先级、不擅自对外承诺。
-- **遇到问题上报**，而不是硬扛或自行拍板。
-- **不启动子 agent**，除非 gm 明确指派。
-- **不修改本文件与 `CLAUDE.md`**；规约变更由 gm 决定。
-- **写文件用 Edit/Write 的既定工具**，不要用 shell 重定向改内容。
-- **一条命令只做一件事**：不要用 `;` / `&&` 把第二条命令串上去（如 `cmd; echo "exit=$?"`）。
-  复合命令会被拆成子命令逐条判定，白名单外的子命令照样弹审批——`echo` 不在白名单
-  （`echo > file` 能写文件，会绕过 Edit 子树隔离），挂在命令尾巴上就多一次审批。
-  要退出码直接看工具返回里带的退出码，不要另起一条 `echo`。
-- **跨终端读屏用终端名**：`hc read <前缀>-content`，不要用 `hc ls` 里给的地址
-  （`t43`）——白名单只放行本实例前缀的**名字**形式，地址形式没法按前缀限定，会
-  退回报批。hc 自己的报错提示（`read its screen first (hc read t49)`）会教你用
-  地址，别照抄，改成终端名。终端名见 `knowledge/team.md`。
-- **图片处理不要直接跑 `sips` / `file`**——两者都不在白名单；`sips` 还能原地改图
-  （`-Z` 缩放、`-s format` 另存），比 `echo` 更危险。需要查尺寸或转格式时，先提需求给
-  dev 做只读包装器，不要自己找命令绕过。
-- **可以用 Skill**：发现到的技能都在权限允许范围内，直接调用即可。技能在不同 CLI 下
-  来源不同（claude 看 `.claude/skills/` 与 `~/.claude/skills/`，codex 看 `.agents/skills/`
-  与 `~/.agents/skills/`），你要用的技能在当前 CLI 下找不到时，改用等效的手工做法，
-  不要反复请求调用权限。
-- **只动自己的地盘**：权限层锁住了「写不出实例目录」，但**没有**替你锁住「只写自己
-  那几棵子树」——那是你的责任。只写 `roles.json` 里 `scope` 列出的子树与
-  `knowledge/work/<角色>/`；`knowledge/business/` 的定稿、`scripts/`、`tools/`
-  都归 gm 与 owner，不要直接改（要改就走 gm）。
-
-## 每日汇总
-
-gm 每天在 `knowledge/daily/<YYYY-MM-DD>.md` 汇总：昨日各角色产出、今日待办、
-阻塞项。格式：
-
-```markdown
-# 2026-11-04
-
-## 昨日产出
-- content：<文件路径> — <一句话结论>
-
-## 今日待办
-- <角色>：<任务>（投递至 knowledge/inbox/<角色>.md）
-
-## 阻塞
-- <角色>：<阻塞点> — <需要什么决策>
-```
+- 安装、升级、迁移与缓存：[`docs/安装与升级.md`](docs/安装与升级.md)
+- 实例内的公司规约：`template/AGENTS.md`
+- 自检规则：`template/tools/opc-lint` 与 `template/install-manifest.json`

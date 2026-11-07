@@ -1,15 +1,12 @@
-# 安装脚本生成的实例配置（启动器含本机路径），不进版本库
-.opc/
-
-# 安装脚本按需重生成的派生物，跟踪只会产生无意义 diff
-knowledge/team.md
-knowledge/business/README.md
-
-# 浏览器自动化工具的临时产物
-.playwright-mcp/
-
-# 临时目录
-.tmp-*
-
-# macOS
+# 模版仓库自己的临时产物（锚定根目录：载荷里的 seeds/knowledge/ 要跟踪）
+/.opc/
+/knowledge/
+/.tmp-*
 .DS_Store
+.playwright-mcp/
+__pycache__/
+*.pyc
+
+# herdr 检查 mod 时在目录里生成的类型声明与编辑器配置，跟踪它们只会产生无意义 diff
+template/mods/*/gpui-kit.d.ts
+template/mods/*/jsconfig.json
