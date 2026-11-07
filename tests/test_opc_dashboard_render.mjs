@@ -74,6 +74,17 @@ function makeElement(kind) {
 export function div() { return makeElement("div"); }
 export function h_flex() { return makeElement("h_flex"); }
 export function v_flex() { return makeElement("v_flex"); }
+export const Background = {
+  linear_gradient(angle, from, to) {
+    return {
+      kind: "linear_gradient",
+      angle,
+      from,
+      to,
+      opacity(factor) { return { ...this, opacity: factor }; },
+    };
+  },
+};
 export const TextView = {
   markdown(id, text) { return makeElement("text"); },
 };
@@ -189,6 +200,7 @@ function newView(overrides = {}) {
   view.preview = null;
   view.previewEditor = null;
   view.previewRequest = 0;
+  view.motionEnabled = true;
   view.pending = null;
   view.pendingAt = 0;
   view.building = false;
@@ -422,4 +434,36 @@ test("内容项使用低圆角与左侧状态光条的 Signal Card", () => {
   assert.ok(card, "内容项应有稳定的 Signal Card id");
   assert.equal(hasCall(card, "rounded", 3), true);
   assert.equal(hasCall(card, "border_l", 2), true);
+});
+
+test("阶段轨道固定显示六个节点并使用 Aurora gradient", () => {
+  const root = newView().render();
+  const ambient = findById(root, "opc-dashboard-ambient");
+  assert.ok(ambient, "看板区域应有 Aurora 环境光层");
+  assert.equal(
+    (ambient.__calls ?? []).some(call => call[0] === "bg" && call[1]?.kind === "linear_gradient"),
+    true,
+  );
+  for (const key of ["proposed", "drafting", "reviewing", "ready", "published", "reviewed"]) {
+    assert.ok(findById(root, `opc-dashboard-rail-${key}`), `缺少阶段轨道节点：${key}`);
+  }
+});
+
+test("有记录的阶段节点与列边框使用原生 pulse", () => {
+  const root = newView().render();
+  const node = findById(root, "opc-dashboard-rail-drafting");
+  const glow = findById(root, "opc-dashboard-stage-glow-drafting");
+  assert.ok(node, "撰写阶段节点应存在");
+  assert.ok(glow, "有记录的撰写列应存在独立光效层");
+  assert.equal(hasCall(node, "loop", "opacity", { from: 0.45, to: 1, period: 1600, easing: "ease-in-out" }), true);
+  assert.equal(hasCall(glow, "loop", "opacity", { from: 0.18, to: 0.62, period: 2200, easing: "ease-in-out" }), true);
+});
+
+test("关闭动效后保留控制台结构但不挂载任何 loop", () => {
+  const view = newView();
+  view.toggleMotion();
+  const root = view.render();
+  assert.equal(textsOf(root).includes("动效 关"), true);
+  assert.equal(nodesOf(root).some(node => (node.__calls ?? []).some(call => call[0] === "loop")), false);
+  assert.ok(findById(root, "opc-dashboard-ambient"), "关闭动效不应移除 Aurora 背景结构");
 });

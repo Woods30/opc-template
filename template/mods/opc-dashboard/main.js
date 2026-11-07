@@ -1,6 +1,6 @@
 // OPC 业务看板：只读展示 canonical 记录编译出的 Dashboard JSON。
 // 不做业务写入：状态转换、审批、指标记录都还在 CLI 里，这里只看。
-import { View, div } from "gpui-kit";
+import { Background, View, div } from "gpui-kit";
 import { Editor, EditorState, h_flex, v_flex } from "gpui-base";
 import {
   props,
@@ -41,6 +41,11 @@ const POLL_INTERVAL = 300;
 const PREVIEW_LIMIT = 400000;
 const PREVIEW_WIDTH = 480;
 const STAGE_WIDTH = 260;
+const STAGE_HEADER_HEIGHT = 58;
+const NODE_PULSE_PERIOD = 1600;
+const STAGE_PULSE_PERIOD = 2200;
+const AMBIENT_PULSE_PERIOD = 5200;
+const BEAM_SWEEP_PERIOD = 3600;
 
 const EDITOR_LANGUAGES = {
   js: "javascript",
@@ -97,6 +102,7 @@ export default class OpcDashboard extends View {
     this.preview = null;
     this.previewEditor = null;
     this.previewRequest = 0;
+    this.motionEnabled = true;
     this.pending = null;
     this.pendingAt = 0;
     this.building = false;
@@ -298,6 +304,10 @@ export default class OpcDashboard extends View {
     this.filters = { ...this.filters, includeHistory: !this.filters.includeHistory };
   }
 
+  toggleMotion() {
+    this.motionEnabled = !this.motionEnabled;
+  }
+
   header(t) {
     const payload = this.payload;
     const counted = counts(payload);
@@ -320,6 +330,18 @@ export default class OpcDashboard extends View {
           ),
       )
       .child(div().flex_1())
+      .child(
+        div()
+          .id("opc-dashboard-motion")
+          .cursor_pointer()
+          .text_size(11.5)
+          .text_color(this.motionEnabled ? t.accent : t.dim)
+          .on_click((_event, cx) => {
+            this.toggleMotion();
+            cx.notify();
+          })
+          .child(`动效 ${this.motionEnabled ? "开" : "关"}`),
+      )
       .child(
         div()
           .id("opc-dashboard-refresh")
@@ -645,72 +667,202 @@ export default class OpcDashboard extends View {
       .when(links.length > 0, card => card.child(h_flex().gap(5).children(links)));
   }
 
+  ambientLayer(t) {
+    const ambient = div()
+      .id("opc-dashboard-ambient")
+      .absolute()
+      .inset_0()
+      .overflow_hidden()
+      .bg(Background.linear_gradient(24, t.background, t.accent).opacity(0.22))
+      .opacity(0.5)
+      .transition("opacity", { duration: 260, easing: "ease-out" })
+      .when(
+        this.motionEnabled,
+        layer =>
+          layer.loop("opacity", {
+            from: 0.32,
+            to: 0.72,
+            period: AMBIENT_PULSE_PERIOD,
+            easing: "ease-in-out",
+          }),
+      );
+    return ambient.child(
+      div()
+        .id("opc-dashboard-beam")
+        .absolute()
+        .left(-260)
+        .top(0)
+        .h_full()
+        .w(220)
+        .bg(Background.linear_gradient(90, t.background, t.accent).opacity(0.16))
+        .when(
+          this.motionEnabled,
+          beam =>
+            beam.loop("left", {
+              from: -260,
+              to: 1840,
+              period: BEAM_SWEEP_PERIOD,
+              easing: "linear",
+            }),
+        ),
+    );
+  }
+
+  progressRail(t, stages) {
+    return h_flex()
+      .id("opc-dashboard-progress-rail")
+      .h(44)
+      .flex_none()
+      .gap(10)
+      .children(
+        stages.map(stage => {
+          const occupied = stage.items.length > 0;
+          const node = div()
+            .id(`opc-dashboard-rail-${stage.key}`)
+            .size(8)
+            .flex_none()
+            .rounded(4)
+            .bg(occupied ? t.accent : t.border)
+            .opacity(occupied ? 1 : 0.5)
+            .when(
+              occupied && this.motionEnabled,
+              dot =>
+                dot.loop("opacity", {
+                  from: 0.45,
+                  to: 1,
+                  period: NODE_PULSE_PERIOD,
+                  easing: "ease-in-out",
+                }),
+            );
+          return v_flex()
+            .w(STAGE_WIDTH)
+            .flex_none()
+            .items_center()
+            .gap(4)
+            .child(
+              h_flex()
+                .w_full()
+                .items_center()
+                .child(div().flex_1().h(1).bg(occupied ? t.accent : t.border).opacity(0.45))
+                .child(node)
+                .child(div().flex_1().h(1).bg(occupied ? t.accent : t.border).opacity(0.45)),
+            )
+            .child(
+              div()
+                .text_size(9.5)
+                .text_color(occupied ? t.accent : t.dim)
+                .child(stage.label),
+            );
+        }),
+      );
+  }
+
+  stageColumn(t, stage) {
+    const occupied = stage.items.length > 0;
+    const glow = div()
+      .id(`opc-dashboard-stage-glow-${stage.key}`)
+      .absolute()
+      .inset_0()
+      .rounded(7)
+      .border_1()
+      .border_color(t.accent)
+      .opacity(0.32)
+      .transition("opacity", { duration: 220, easing: "ease-out" })
+      .when(
+        this.motionEnabled,
+        layer =>
+          layer.loop("opacity", {
+            from: 0.18,
+            to: 0.62,
+            period: STAGE_PULSE_PERIOD,
+            easing: "ease-in-out",
+          }),
+      );
+    return v_flex()
+      .id(`opc-dashboard-stage-${stage.key}`)
+      .w(STAGE_WIDTH)
+      .flex_none()
+      .min_h(0)
+      .relative()
+      .overflow_hidden()
+      .rounded(7)
+      .border_1()
+      .border_color(occupied ? t.accent : t.border)
+      .bg(t.chrome)
+      .when(occupied, column => column.child(glow))
+      .child(
+        v_flex()
+          .id(`opc-dashboard-stage-header-${stage.key}`)
+          .h(STAGE_HEADER_HEIGHT)
+          .flex_none()
+          .gap(3)
+          .px(10)
+          .py(9)
+          .border_b(1)
+          .border_color(t.border)
+          .child(
+            h_flex()
+              .items_center()
+              .child(
+                div()
+                  .text_size(12)
+                  .font_weight(600)
+                  .text_color(t.foreground)
+                  .child(stage.label),
+              )
+              .child(div().flex_1())
+              .child(
+                div()
+                  .text_size(10.5)
+                  .text_color(occupied ? t.accent : t.dim)
+                  .child(String(stage.items.length)),
+              ),
+          )
+          .child(div().text_size(10.5).text_color(t.dim).child(stage.hint)),
+      )
+      .child(
+        v_flex()
+          .flex_1()
+          .min_h(0)
+          .gap(8)
+          .p(8)
+          .overflow_y_scrollbar()
+          .when(
+            !occupied,
+            column =>
+              column.child(
+                div().text_size(10.5).text_color(t.dim).child("暂无记录"),
+              ),
+          )
+          .children(stage.items.map(item => this.stageCard(t, item))),
+      );
+  }
+
   stageBoard(t, view) {
     const stages = workflowStages(view);
-    return h_flex()
+    return v_flex()
       .flex_1()
       .min_h(0)
       .min_w(0)
-      .gap(10)
-      .p(12)
-      .overflow_x_scroll()
-      .children(
-        stages.map(stage =>
-          v_flex()
-            .w(STAGE_WIDTH)
-            .flex_none()
-            .min_h(0)
-            .rounded(7)
-            .border_1()
-            .border_color(t.border)
-            .bg(t.chrome)
-            .child(
-              v_flex()
-                .id(`opc-dashboard-stage-header-${stage.key}`)
-                .h(58)
-                .flex_none()
-                .gap(3)
-                .px(10)
-                .py(9)
-                .border_b(1)
-                .border_color(t.border)
-                .child(
-                  h_flex()
-                    .items_center()
-                    .child(
-                      div()
-                        .text_size(12)
-                        .font_weight(600)
-                        .text_color(t.foreground)
-                        .child(stage.label),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                      div()
-                        .text_size(10.5)
-                        .text_color(stage.items.length ? t.accent : t.dim)
-                        .child(String(stage.items.length)),
-                    ),
-                )
-                .child(div().text_size(10.5).text_color(t.dim).child(stage.hint)),
-            )
-            .child(
-              v_flex()
-                .flex_1()
-                .min_h(0)
-                .gap(8)
-                .p(8)
-                .overflow_y_scrollbar()
-                .when(
-                  stage.items.length === 0,
-                  column =>
-                    column.child(
-                      div().text_size(10.5).text_color(t.dim).child("暂无记录"),
-                    ),
-                )
-                .children(stage.items.map(item => this.stageCard(t, item))),
-            ),
-        ),
+      .relative()
+      .overflow_hidden()
+      .child(this.ambientLayer(t))
+      .child(
+        v_flex()
+          .flex_1()
+          .min_h(0)
+          .min_w(0)
+          .gap(6)
+          .p(12)
+          .overflow_x_scroll()
+          .child(this.progressRail(t, stages))
+          .child(
+            h_flex()
+              .flex_1()
+              .min_h(0)
+              .gap(10)
+              .children(stages.map(stage => this.stageColumn(t, stage))),
+          ),
       );
   }
 
