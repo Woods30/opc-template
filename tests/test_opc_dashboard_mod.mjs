@@ -340,6 +340,45 @@ test("当前行动按审批、阻塞、任务和复盘排序", () => {
   assert.equal(actions[0].role, "owner");
   assert.equal(actions[1].detail, "缺素材");
   assert.equal(actions[2].role, "content");
+  assert.equal(actions[3].role, "growth");
+});
+
+test("publication 先补指标再复盘，两项都归 growth", () => {
+  const publication = {
+    ...payload().publications[0],
+    role: "gm",
+    needs_metrics: true,
+    needs_review: true,
+  };
+  const missingMetrics = model
+    .currentActions(
+      model.applyFilters(
+        payload({ publications: [publication], approvals: [] }),
+        model.emptyFilters(),
+      ),
+    )
+    .filter(action => action.id === publication.publication_id);
+  assert.deepEqual(
+    missingMetrics.map(action => [action.kind, action.role]),
+    [["metrics", "growth"]],
+    "指标未完成时，尚不可执行的复盘不应出现在当前行动里",
+  );
+
+  const readyForReview = model
+    .currentActions(
+      model.applyFilters(
+        payload({
+          publications: [{ ...publication, needs_metrics: false }],
+          approvals: [],
+        }),
+        model.emptyFilters(),
+      ),
+    )
+    .filter(action => action.id === publication.publication_id);
+  assert.deepEqual(
+    readyForReview.map(action => [action.kind, action.role]),
+    [["review", "growth"]],
+  );
 });
 
 test("发布节奏分开计划与已发布", () => {

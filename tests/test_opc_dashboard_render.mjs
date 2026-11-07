@@ -24,6 +24,15 @@ function dataUrl(source) {
 const STUB_SOURCE = `
 export class View {}
 
+let taskDepth = 0;
+let queuedReads = [];
+export async function runTask(task, cx) {
+  taskDepth += 1;
+  try { return await task(cx); }
+  finally { taskDepth -= 1; }
+}
+export function queueRead(promise) { queuedReads.push(promise); }
+
 function makeElement(kind) {
   const state = { kind: kind, children: [] };
   const target = {
@@ -64,7 +73,14 @@ export const TextView = {
   markdown(id, text) { return makeElement("text"); },
 };
 export const EditorState = {
-  new(options) { return { options, release() {} }; },
+  new(options) {
+    if (taskDepth === 0) throw new Error("EditorState.new requires task context");
+    return {
+      options,
+      released: false,
+      release() { this.released = true; },
+    };
+  },
 };
 export const Editor = {
   new(state) { return makeElement("editor").child(\`CODE:\${state.options.value}\`); },
@@ -79,11 +95,16 @@ export function terminals() { return []; }
 export function settings() { return { font_family: "JetBrains Mono" }; }
 export function run() {}
 export function exec() { return { code: 0, stdout: "/instance/source.md", stderr: "" }; }
-export function readTextFile() { return Promise.resolve('---\\n{"title":"第一条选题"}\\n---\\n\\n# 第一条选题'); }
+export function readTextFile() {
+  return queuedReads.length
+    ? queuedReads.shift()
+    : Promise.resolve('---\\n{"title":"第一条选题"}\\n---\\n\\n# 第一条选题');
+}
 export function watchFolder() { return Promise.resolve([]); }
 `;
 
 const stubUrl = dataUrl(STUB_SOURCE);
+const host = await import(stubUrl);
 
 const modelSource = await readFile(path.join(modDir, "model.js"), "utf8");
 const modelUrl = dataUrl(modelSource);
@@ -168,7 +189,7 @@ function newView(overrides = {}) {
   view.building = false;
   view.cx = {
     notify() {},
-    spawn(task) { return task(this); },
+    spawn(task) { return host.runTask(task, this); },
   };
   Object.assign(view, overrides);
   return view;
@@ -181,6 +202,16 @@ function textsOf(node) {
   const out = [];
   for (const child of node.__children ?? []) out.push(...textsOf(child));
   return out;
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
 }
 
 test("一切正常时看板能渲染：告警条与预览面板都不该出现", () => {
@@ -231,6 +262,49 @@ test("选中源文件后在右侧用只读代码视图显示真实内容", async
   );
   assert.equal(view.previewEditor.options.readonly, true);
   assert.equal(view.previewEditor.options.language, "markdown");
+});
+
+test("快速切换文件时，较晚完成的旧读取不能覆盖新文件", async () => {
+  const view = newView();
+  const first = deferred();
+  const second = deferred();
+  host.queueRead(first.promise);
+  host.queueRead(second.promise);
+
+  const openingFirst = view.openSource("knowledge/content/content-1/内容卡.md");
+  const openingSecond = view.openSource("knowledge/content/content-1/主稿.md");
+  second.resolve("# 新文件");
+  await openingSecond;
+  first.resolve("# 旧文件");
+  await openingFirst;
+
+  assert.equal(view.preview.path, "knowledge/content/content-1/主稿.md");
+  assert.equal(view.previewEditor.options.value, "# 新文件");
+});
+
+test("切换文件会释放旧 EditorState", async () => {
+  const view = newView();
+  host.queueRead(Promise.resolve("# 第一个文件"));
+  await view.openSource("knowledge/content/content-1/内容卡.md");
+  const firstEditor = view.previewEditor;
+
+  host.queueRead(Promise.resolve("# 第二个文件"));
+  await view.openSource("knowledge/content/content-1/主稿.md");
+  assert.equal(firstEditor.released, true);
+  assert.equal(view.previewEditor.options.value, "# 第二个文件");
+});
+
+test("读取中关闭预览后，迟到的结果不能重新打开面板", async () => {
+  const view = newView();
+  const pending = deferred();
+  host.queueRead(pending.promise);
+  const opening = view.openSource("knowledge/content/content-1/主稿.md");
+  view.closePreview();
+  pending.resolve("# 迟到的文件");
+  await opening;
+
+  assert.equal(view.preview, null);
+  assert.equal(view.previewEditor, null);
 });
 
 // 实例里的载荷是全的：名册、渠道、发布、审批都有。

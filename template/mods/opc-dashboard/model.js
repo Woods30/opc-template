@@ -450,17 +450,16 @@ export function currentActions(view) {
         id: publication.publication_id,
         title: `补齐 ${publication.publication_id} 的指标`,
         detail: publication.metrics?.summary || "指标未记录完整",
-        role: publication.role || "",
+        role: "growth",
         source_path: publication.metrics_path || publication.source_path || null,
       });
-    }
-    if (publication.needs_review) {
+    } else if (publication.needs_review) {
       actions.push({
         kind: "review",
         id: publication.publication_id,
         title: `复盘 ${publication.publication_id}`,
         detail: publication.review?.conclusion || "发布后复盘未完成",
-        role: publication.role || "",
+        role: "growth",
         source_path: publication.source_path || null,
       });
     }

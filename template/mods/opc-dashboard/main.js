@@ -249,6 +249,13 @@ export default class OpcDashboard extends View {
     cx.notify();
   }
 
+  closePreview() {
+    this.previewRequest += 1;
+    this.previewEditor?.release();
+    this.previewEditor = null;
+    this.preview = null;
+  }
+
   // 终端名来自实例名册，不按命名规则猜地址。
   async focusTerminal(role) {
     const terminal = findTeamTerminal(this.payload?.team ?? [], role);
@@ -741,10 +748,7 @@ export default class OpcDashboard extends View {
                   .text_size(11)
                   .text_color(t.accent)
                   .on_click((_event, cx) => {
-                    this.previewRequest += 1;
-                    this.previewEditor?.release();
-                    this.previewEditor = null;
-                    this.preview = null;
+                    this.closePreview();
                     cx.notify();
                   })
                   .child("关闭"),
