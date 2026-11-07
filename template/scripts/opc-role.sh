@@ -79,8 +79,8 @@ case "$cmd" in
 
 - 动手前先读 \`AGENTS.md\` 与 \`knowledge/team.md\`。
 - 产出写进自己负责的子树，命名带日期。
-- 完成后 \`hc send {{PREFIX}}-gm "完成：<文件路径>"\`。
-- 拿不准时写 \`knowledge/inbox/gm.md\` 并 \`hc send {{PREFIX}}-gm\`。
+- 完成后 \`hc send {{PREFIX}}-gm "完成：<一句话结论> | 产出：<文件路径>"\`，由 gm 把结果回写原任务记录。
+- 拿不准时用 \`hc send {{PREFIX}}-gm\` 说明问题；不要直接写 \`knowledge/inbox/\`，它只有 gm 可写。
 
 ## 启动
 

@@ -310,6 +310,29 @@ class SmokeTestCase(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("通过", result.stdout)
 
+    def test_automatic_root_requires_both_instance_marker_and_workflow(self):
+        result = run_smoke(self.instance)
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("找不到实例根", result.stderr)
+        self.assertNotIn("实例里缺少 tools/opc-workflow", result.stderr)
+
+    def test_explicit_root_requires_both_instance_marker_and_workflow(self):
+        workflow_only = Path(self.tmp) / "workflow-only"
+        (workflow_only / "tools").mkdir(parents=True)
+        shutil.copy2(WORKFLOW, workflow_only / "tools" / "opc-workflow")
+
+        result = run_smoke(
+            self.instance,
+            "--instance-root",
+            str(workflow_only),
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("不是完整 OPC 实例根", result.stderr)
+        self.assertIn(".opc/instance.json", result.stderr)
+        self.assertIn("tools/opc-workflow", result.stderr)
+
     # ---- 失败路径 ----
 
     def test_missing_workflow_is_reported_not_crashed(self):

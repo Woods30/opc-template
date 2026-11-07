@@ -58,6 +58,23 @@ class SmokeError(Exception):
     """冒烟失败：带一句人能看懂的原因。"""
 
 
+def is_instance_root(candidate: Path) -> bool:
+    return (
+        (candidate / ".opc" / "instance.json").is_file()
+        and (candidate / "tools" / "opc-workflow").is_file()
+    )
+
+
+def require_instance_root(candidate: Path) -> Path:
+    if not is_instance_root(candidate):
+        raise SmokeError(
+            "不是完整 OPC 实例根（需要 .opc/instance.json 与 tools/opc-workflow）：{}".format(
+                candidate
+            )
+        )
+    return candidate
+
+
 def find_instance_root(start: Path | None = None) -> Path:
     """实例根 = 最近的、同时含实例标记与工作流工具的祖先目录。
 
@@ -65,12 +82,10 @@ def find_instance_root(start: Path | None = None) -> Path:
     提案目录里的副本也顺着同一棵树往上走）与**当前工作目录**（工具被拷到
     实例外面、但人还在实例里跑时靠它兜底）。
 
-    两处都按可信度分三轮找：先找**同时含实例标记与工作流工具**的目录（那才是
-    真实例），都找不到才放宽到只含实例标记（实例在但工作流没了，好让后面报
-    一句「缺少 tools/opc-workflow」，而不是含混的「找不到实例根」），再放宽到
-    只含工作流工具（工具在但实例标记没了）。同一轮里脚本那棵树先于当前目录。
+    只有同时含实例标记与工作流工具的目录才算实例根；半套目录不能作为候选，
+    否则脚本可能在错误的目录里构造或读取现场。同一轮里脚本那棵树先于当前目录。
 
-    也可用 --instance-root 显式指定，不走这套查找。
+    也可用 --instance-root 显式指定；显式路径仍要满足同一完整性条件。
     """
     origins = []
     if start is not None:
@@ -82,21 +97,6 @@ def find_instance_root(start: Path | None = None) -> Path:
         except OSError:
             pass
 
-    def has_instance(candidate: Path) -> bool:
-        return (candidate / ".opc" / "instance.json").is_file()
-
-    def has_workflow(candidate: Path) -> bool:
-        return (candidate / "tools" / "opc-workflow").is_file()
-
-    def nearest(chain, check):
-        for candidate in chain:
-            if check(candidate):
-                return candidate
-        return None
-
-    def both(candidate):
-        return has_instance(candidate) and has_workflow(candidate)
-
     chains = []
     for origin in origins:
         resolved = origin.resolve()
@@ -105,12 +105,10 @@ def find_instance_root(start: Path | None = None) -> Path:
             continue
         chains.append(chain)
 
-    # 先在所有起点里找完整实例，再按可信度放宽；同一轮里脚本那棵树优先。
-    for check in (both, has_instance, has_workflow):
-        for chain in chains:
-            found = nearest(chain, check)
-            if found is not None:
-                return found
+    for chain in chains:
+        for candidate in chain:
+            if is_instance_root(candidate):
+                return candidate
 
     where = "、".join(str(origin) for origin in origins)
     raise SmokeError(
@@ -372,8 +370,8 @@ def main(argv=None) -> int:
 
     scene = {}
     try:
-        root = (Path(args.instance_root).resolve() if args.instance_root
-                else find_instance_root())
+        root = (require_instance_root(Path(args.instance_root).resolve())
+                if args.instance_root else find_instance_root())
         result = run_smoke(root, keep=args.keep, scene=scene)
     except Exception as error:  # 工具坏了也要说人话，不要甩 traceback
         return report_failure(error, args.json, scene.get("kept_dir"))

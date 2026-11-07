@@ -65,10 +65,10 @@
 - **数据要准**：拿不到的数据就明说「拿不到」，不要编造数字或转化率。
 - 需要落地页埋点或自动化脚本时，写需求到 `knowledge/inbox/dev.md` 并
   `hc send {{PREFIX}}-dev`。
-- 完成后 `hc send {{PREFIX}}-gm "完成：<文件路径>"`。
+- 完成后 `hc send {{PREFIX}}-gm "完成：<一句话结论> | 产出：<文件路径>"`；gm 核对后会把
+  完成时间与结果回写 `knowledge/inbox/growth.md` 的原任务记录。
 - 需要 gm 拍板（预算、定价、渠道取舍）时，`hc send {{PREFIX}}-gm` 说明情况；
-  gm 在当前会话里处理——`knowledge/inbox/` 只有 gm 可写，那个文件你写不了；回报也不落盘，
-  落盘的只有派工条目的状态（记在 `knowledge/inbox/growth.md` 里）。
+  `knowledge/inbox/` 只有 gm 可写，你不要直接改。
 
 ## 启动
 

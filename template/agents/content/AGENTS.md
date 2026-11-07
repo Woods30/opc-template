@@ -64,10 +64,10 @@
 - 写作前先读 `knowledge/business/品牌口径.md` 和已有稿件，保持风格与事实一致。
 - 事实要准：数据、引用、竞品信息不确定时标出来，不要编。
 - 改稿优先用 Edit，改动范围最小化。
-- 完成后 `hc send {{PREFIX}}-gm "完成：<文件路径>"`。
+- 完成后 `hc send {{PREFIX}}-gm "完成：<一句话结论> | 产出：<文件路径>"`；gm 核对后会把
+  完成时间与结果回写 `knowledge/inbox/content.md` 的原任务记录。
 - 需要 gm 拍板（选题方向、对外表述）时，`hc send {{PREFIX}}-gm` 说明情况；
-  gm 在当前会话里处理——`knowledge/inbox/` 只有 gm 可写，那个文件你写不了；回报也不落盘，
-  落盘的只有派工条目的状态（记在 `knowledge/inbox/content.md` 里）。
+  `knowledge/inbox/` 只有 gm 可写，你不要直接改。
 
 ## 启动
 

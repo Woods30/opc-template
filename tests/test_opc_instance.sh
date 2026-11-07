@@ -128,16 +128,17 @@ check "重跑安装器不改写实例的角色正文" "$before" \
 expect "hc 模板反映改后的正文" \
   grep -q "owner 的补充说明" "$HERDR_CORE_HOME/templates/t-gm.md"
 
-# ---- 1c. 收件箱文件头按角色分措辞 ----
-# 上报只在会话里处理、不落盘。gm 的收件箱头若还写「上报」，下一个 gm 会以为该落盘；
-# 其余角色的头保持原样。措辞类规则靠 review，这里守住的是「gm 那版不讲上报」。
-expect "gm 收件箱头不讲上报" \
-  bash -c "! grep -q '上报' '$INST/knowledge/inbox/gm.md'"
-expect "gm 收件箱头讲清落盘的只有派工状态" \
-  grep -q "落盘的只有派工状态" "$INST/knowledge/inbox/gm.md"
-for role in content growth dev; do
-  expect "收件箱 $role 保留派工与上报的原措辞" \
-    grep -q "派工与上报都追加到本文件末尾" "$INST/knowledge/inbox/$role.md"
+# ---- 1c. 所有收件箱共用同一套任务与结果格式 ----
+# 每个任务只占收件人的一条记录；完成时回写原行，不另造「上报」条目。
+for role in gm content growth dev; do
+  expect "收件箱 $role 讲清派工与结果回写原记录" \
+    grep -q "派工写入本文件，结果回写原记录" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 给出完整派工格式" \
+    grep -q "| 任务 ID：task-.*| 业务引用：.*| 任务：.*| 验收：" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 给出完整完成格式" \
+    grep -q "完成时间：YYYY-MM-DD HH:MM | 结果：<一句话结论与产出路径>" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 明确结果必填" \
+    grep -q "结果.*必填" "$INST/knowledge/inbox/$role.md"
 done
 for role in gm content growth dev; do
   expect "收件箱 $role 保留当前队列小节" \
@@ -268,6 +269,8 @@ expect "新角色的收件箱保留当前队列小节" \
   grep -q "## 当前队列" "$INST/knowledge/inbox/tester.md"
 expect "新角色的收件箱保留完成与撤销规则" \
   bash -c "grep -q '✅' '$INST/knowledge/inbox/tester.md' && grep -q '⛔ 已撤销' '$INST/knowledge/inbox/tester.md'"
+expect "新角色的简报不要求写 gm 收件箱" \
+  bash -c "! grep -q '写.*knowledge/inbox/gm.md' '$INST/agents/tester/AGENTS.md'"
 expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/tester/AGENTS.md"
 expect "新角色的 roles.json 里有描述" \
   test -n "$(jq -r '.roles[] | select(.name=="tester") | .description' "$INST/roles.json")"
