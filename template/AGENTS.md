@@ -88,8 +88,9 @@ OPC 分两层仓库、三层载荷。
 | 层 | 内容 | 归谁 |
 |---|---|---|
 | 机制 | `scripts/`、`tools/` | 模版：升级整目录覆盖，本地改过会被拒绝 |
-| 起始材料 | 根 `AGENTS.md`、`agents/<角色>/`、`skills/<名字>/`、业务种子 | owner：装一次就归 owner，升级只更新没改过的 |
-| 实例自有 | `knowledge/`、`roles.json`、`channels.json`、`.opc/` | 实例：升级永不覆盖 |
+| 起始材料 | 根 `AGENTS.md`、`agents/<角色>/`、`skills/<名字>/` | owner：装一次就归 owner，升级只更新没改过的 |
+| 起始材料 | 业务种子 | owner：只补不覆盖，已有的不更新，删掉的不复活 |
+| 实例自有 | `knowledge/`、`roles.json`、`channels.json`、`.opc/` | 实例：业务内容不动，配置只增不改，运行状态由工具重建 |
 
 - 模版里的占位骨架随模版分发，开实例时由 `opc install` 物化到本目录的
   `knowledge/business/` 等位置。物化之后通常归业务所有；标有
@@ -98,7 +99,8 @@ OPC 分两层仓库、三层载荷。
   副本会在下一次升级时被拒绝（机制文件按指纹校验），而且会把模版和业务的改动搅在一起。
 - 起始材料（`AGENTS.md`、角色目录、技能库）改起来是安全的：升级只更新你没改过的
   文件，改过的保留并告警，删掉的不复活，模版新增的才补入。但**技能目录例外**：
-  技能以目录为单位冻结，目录里任一文件被改过，整个技能就不再更新。
+  技能以目录为单位冻结，目录里任一文件被改过，整个技能就不再更新。业务种子更保守：
+  只补不覆盖，实例里已有的永远不随模版更新。
 - 正确做法是写**提案**：`knowledge/work/<角色>/template-proposals/<YYYY-MM-DD>-<主题>.md`，
   五个固定小节——`## 现象`、`## 泛化需求`、`## 期望模版改动`、`## 影响文件`、
   `## 脱敏自检`。任何角色都能提，不必等 dev。
@@ -430,13 +432,8 @@ owner 负责实际对外发布；gm 负责把 approval 决定与发布事实落�
 - <受影响的角色、内容或 publication>
 ```
 
-## Agent skills
+## 项目文档
 
-### Issue tracker
-
-Issues 与 specs 使用 GitHub Issues。详见 `docs/agents/issue-tracker.md`。
-
-### Domain docs
-
-采用 single-context：根 `CONTEXT.md` 与 `docs/adr/` 按需创建和读取。详见
-`docs/agents/domain.md`。
+- Issues 与 specs 使用 GitHub Issues；具体仓库若有额外约定，以实例内可见的规约为准。
+- 需要沉淀领域模型时，可按需创建根 `CONTEXT.md`；架构决策放进 `docs/adr/`。
+  这些文件只在实例确实需要时创建，不依赖模版仓库外层的开发文档。
