@@ -2463,6 +2463,28 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertIsNone(task["result"])
         self.assertEqual(["task-noresult"], self.dashboard()["scope"]["task_ids"])
 
+    def test_completed_inbox_entry_accepts_legacy_line_start_checkmark(self):
+        self.write_inbox(
+            "growth",
+            [
+                "✅ - [2026-11-04 09:30] 发起方：gm | 任务 ID：task-legacy-start | "
+                "业务引用：- | 任务：整理渠道 | 验收：给出清单 | "
+                "完成时间：2026-11-04 11:20 | 结果：候选清单见 knowledge/work/growth/渠道.md",
+            ],
+        )
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        tasks = self.dashboard()["tasks"]
+        self.assertEqual(1, len(tasks), "行首 legacy 完成条目不应被 parser 返回 None")
+        task = tasks[0]
+
+        self.assertEqual("done", task["state"])
+        self.assertEqual("2026-11-04 11:20", task["completed_at"])
+        self.assertEqual(
+            "候选清单见 knowledge/work/growth/渠道.md",
+            task["result"],
+        )
+
     def test_completed_inbox_entry_accepts_legacy_checkmark_dash_prefix(self):
         self.write_inbox(
             "growth",

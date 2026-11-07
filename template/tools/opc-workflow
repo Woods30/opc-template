@@ -3357,6 +3357,8 @@ def split_task_fields(text: str):
 def parse_inbox_entry(line: str, role: str, source: str):
     """解析一行派工条目；不是派工条目时返回 None。"""
     stripped = line.strip()
+    if stripped.startswith("✅ - ["):
+        stripped = "- ✅ [" + stripped[len("✅ - [") :]
     if not stripped.startswith("- "):
         return None
     body = stripped[2:].strip()
