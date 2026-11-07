@@ -1641,7 +1641,8 @@ def entry_file_problems(path, label, filename):
     problems = []
     text = read_text(path)
     if text is None:
-        return problems
+        return ["{} 的 {} 不是可读文本".format(label, filename)]
+    references = []
     for num, line in enumerate(text.splitlines(), 1):
         stripped = line.strip()
         if not stripped:
@@ -1649,6 +1650,12 @@ def entry_file_problems(path, label, filename):
         if stripped not in ("@AGENTS.md", "@./AGENTS.md"):
             problems.append("{} 的 {}:{} 不是对 AGENTS.md 的引用：{}".format(
                 label, filename, num, stripped[:40]))
+        else:
+            references.append(stripped)
+    if not references:
+        problems.append("{} 的 {} 没有对 AGENTS.md 的引用".format(label, filename))
+    elif len(references) > 1:
+        problems.append("{} 的 {} 只能有一行对 AGENTS.md 的引用".format(label, filename))
     return problems
 
 

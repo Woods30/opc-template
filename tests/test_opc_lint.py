@@ -68,6 +68,7 @@ MANIFEST = {
     "seeds": [
         {"source": "seeds/knowledge/business/品牌口径.md",
          "target": "knowledge/business/品牌口径.md"},
+        {"source": "seeds/root/GEMINI.md", "target": "GEMINI.md"},
     ],
     "ui": {
         "mods": ["opc-dashboard", "opc-tabs"],
@@ -120,6 +121,7 @@ def build_template_repo(base):
     """造一个最小的模版仓库：载荷在 template/，够跑通规则又不含真实业务。"""
     payload = os.path.join(base, "template")
     os.makedirs(os.path.join(payload, "seeds", "knowledge", "business"), exist_ok=True)
+    os.makedirs(os.path.join(payload, "seeds", "root"), exist_ok=True)
     os.makedirs(os.path.join(payload, "scripts"), exist_ok=True)
     os.makedirs(os.path.join(payload, "agents"), exist_ok=True)
     os.makedirs(os.path.join(payload, "layouts"), exist_ok=True)
@@ -138,6 +140,8 @@ def build_template_repo(base):
         json.dump({"channels": []}, fh, ensure_ascii=False, indent=2)
     with open(os.path.join(payload, "seeds", "knowledge", "business", "品牌口径.md"), "w", encoding="utf-8") as fh:
         fh.write(SEED)
+    with open(os.path.join(payload, "seeds", "root", "GEMINI.md"), "w", encoding="utf-8") as fh:
+        fh.write("@./AGENTS.md\n")
     with open(os.path.join(payload, "AGENTS.md"), "w", encoding="utf-8") as fh:
         fh.write(
             "# 共有规约\n\n## 启动不自主开工\n\n启动后先汇报现状，等 gm 派工。\n\n"
@@ -262,6 +266,19 @@ class LintTestCase(unittest.TestCase):
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L2"].status)
 
+    def test_root_gemini_seed_not_declared_fails(self):
+        path = os.path.join(self.repo, "template", "install-manifest.json")
+        with open(path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        manifest["seeds"] = [
+            seed for seed in manifest["seeds"]
+            if seed["source"] != "seeds/root/GEMINI.md"
+        ]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, ensure_ascii=False, indent=2)
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L2"].status)
+
     # ---- L34 CLI 入口文件 ----
 
     def test_role_missing_cli_entry_file_fails(self):
@@ -272,6 +289,23 @@ class LintTestCase(unittest.TestCase):
     def test_role_entry_file_with_body_copy_fails(self):
         # 入口文件里一旦拷进正文，两份从此各走各的，再也合不回来。
         self.write("agents/gm/CLAUDE.md", "# gm 角色\n\n你现在是总经理。\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L34"].status)
+
+    def test_role_entry_file_without_reference_fails(self):
+        self.write("agents/gm/GEMINI.md", "\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L34"].status)
+
+    def test_role_entry_file_with_multiple_references_fails(self):
+        self.write("agents/gm/GEMINI.md", "@AGENTS.md\n@./AGENTS.md\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L34"].status)
+
+    def test_binary_role_entry_file_fails(self):
+        path = os.path.join(self.repo, "template", "agents", "gm", "GEMINI.md")
+        with open(path, "wb") as fh:
+            fh.write(b"@AGENTS.md\0")
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L34"].status)
 

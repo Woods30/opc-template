@@ -91,6 +91,8 @@ $startup
 EOF
       echo "已创建角色简报：${tpl}（请补全职责与边界）"
     fi
+    [[ -f "$ROOT/agents/$name/CLAUDE.md" ]] || printf '%s\n' '@AGENTS.md' > "$ROOT/agents/$name/CLAUDE.md"
+    [[ -f "$ROOT/agents/$name/GEMINI.md" ]] || printf '%s\n' '@./AGENTS.md' > "$ROOT/agents/$name/GEMINI.md"
 
     inbox="$ROOT/knowledge/inbox/$name.md"
     if [[ ! -f "$inbox" ]]; then

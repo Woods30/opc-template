@@ -1,7 +1,7 @@
 # OPC 模版开发规约
 
 这是 **OPC 模版仓库**，不是实例。这里只放通用机制、起始材料与模版开发材料；
-真实业务长在各自的实例仓库里。`CLAUDE.md` 转发到这里。
+真实业务长在各自的实例仓库里。`CLAUDE.md` 与 `GEMINI.md` 转发到这里。
 
 ## 三层模型
 
@@ -100,13 +100,15 @@ bin/opc paths --json                # 诊断本机路径
    写明「等 gm 派工」（gm 写「先与 owner 对齐方向」）；正文里写清职责与边界。
    取材范围要有一行加粗的项目符号：`- **只在本实例目录内取材**：…`——
    lint 认的是这个句式，散在散文里的同义表述不算数。
-2. 在 `template/roles.json` 加一条：`name`、`enabled`、`cli`、`description`、
+2. 同目录建 `CLAUDE.md` 与 `GEMINI.md`，内容分别只写 `@AGENTS.md` 与
+   `@./AGENTS.md`；不要复制角色正文，避免三份规约各自分叉。
+3. 在 `template/roles.json` 加一条：`name`、`enabled`、`cli`、`description`、
    `template`（`agents/<角色>/AGENTS.md`）、`skills`、`permissionMode`、
    `scope`、`approvedSkills`。模版里通常写 `enabled: true`，让新实例开箱可用；
    已有实例升级时新角色按 `append-disabled` 追加，默认停用，由 owner 决定启用。
-3. 角色要用的技能在 `template/skills/<名字>/` 下建目录，写 `SKILL.md`：
+4. 角色要用的技能在 `template/skills/<名字>/` 下建目录，写 `SKILL.md`：
    frontmatter 要有 `name`（与目录名一致）与 `description`（单行）。
-4. 跑 `bin/opc lint --strict`：角色正文与技能 frontmatter 都在模版侧检查范围内。
+5. 跑 `bin/opc lint --strict`：角色正文、CLI 入口与技能 frontmatter 都在模版侧检查范围内。
 
 ## 加一个技能
 

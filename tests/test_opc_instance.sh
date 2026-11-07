@@ -256,6 +256,12 @@ expect "生成视图无需 Herdr 即可读取" test -s knowledge/business/选题
 # 角色一启动就会自己开题——那正是 L17 要拦的。
 (cd "$INST" && scripts/opc-role.sh add tester --scope knowledge/work/tester >/dev/null 2>&1) || true
 expect "新角色的简报已生成" test -f "$INST/agents/tester/AGENTS.md"
+expect "新角色有 Claude 的入口文件" test -f "$INST/agents/tester/CLAUDE.md"
+expect "新角色有 Gemini 的入口文件" test -f "$INST/agents/tester/GEMINI.md"
+expect "新角色的 Claude 入口文件只引用 AGENTS.md" \
+  only_ref "$INST/agents/tester/CLAUDE.md"
+expect "新角色的 Gemini 入口文件只引用 AGENTS.md" \
+  only_ref "$INST/agents/tester/GEMINI.md"
 expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/tester/AGENTS.md"
 expect "新角色的 roles.json 里有描述" \
   test -n "$(jq -r '.roles[] | select(.name=="tester") | .description' "$INST/roles.json")"
