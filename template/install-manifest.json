@@ -41,6 +41,7 @@
     { "source": "seeds/README.md", "target": "README.md" },
     { "source": "seeds/INSTANCE.md", "target": "INSTANCE.md" },
     { "source": "seeds/root/CLAUDE.md", "target": "CLAUDE.md" },
+    { "source": "seeds/root/GEMINI.md", "target": "GEMINI.md" },
     { "source": "seeds/root/LESSONS.md", "target": "LESSONS.md" },
     { "source": "seeds/root/gitignore", "target": ".gitignore" },
     { "source": "seeds/knowledge/business/品牌口径.md", "target": "knowledge/business/品牌口径.md" },

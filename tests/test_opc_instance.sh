@@ -89,11 +89,25 @@ expect "全局看板 mod 已安装" test -d "$HERDR_APP_HOME/mods/opc-dashboard"
 expect "实例已登记到注册表" grep -q "$INST" "$OPC_CONFIG_DIR/instances.json"
 
 # ---- 1b. 角色目录与 hc 模板 ----
+only_ref() { # only_ref <文件>：入口文件只能是对 AGENTS.md 的引用，不能拷正文
+  local body
+  body="$(tr -d '[:space:]' < "$1")"
+  [[ "$body" == "@AGENTS.md" || "$body" == "@./AGENTS.md" ]]
+}
 for role in gm content growth dev; do
   expect "角色 $role 有自己的目录" test -d "$INST/agents/$role"
   expect "角色 $role 的入口文件在" test -f "$INST/agents/$role/AGENTS.md"
+  expect "角色 $role 有 Claude 的入口文件" test -f "$INST/agents/$role/CLAUDE.md"
+  expect "角色 $role 有 Gemini 的入口文件" test -f "$INST/agents/$role/GEMINI.md"
+  expect "角色 $role 的 Claude 入口文件只引用 AGENTS.md" \
+    only_ref "$INST/agents/$role/CLAUDE.md"
+  expect "角色 $role 的 Gemini 入口文件只引用 AGENTS.md" \
+    only_ref "$INST/agents/$role/GEMINI.md"
   expect "角色 $role 的 hc 模板已生成" test -f "$HERDR_CORE_HOME/templates/t-$role.md"
 done
+expect "实例根有 Claude 的入口文件" test -f "$INST/CLAUDE.md"
+expect "实例根有 Gemini 的入口文件" test -f "$INST/GEMINI.md"
+expect "实例根的入口文件只引用 AGENTS.md" only_ref "$INST/GEMINI.md"
 expect "角色正文不带 hc frontmatter" \
   bash -c "! head -n 1 '$INST/agents/gm/AGENTS.md' | grep -q '^---$'"
 expect "hc 模板的 frontmatter 带前缀名" grep -q "^name: t-gm$" "$HERDR_CORE_HOME/templates/t-gm.md"

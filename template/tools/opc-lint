@@ -1633,6 +1633,66 @@ def check_l33_hc_template(root):
     return c
 
 
+def entry_file_problems(path, label, filename):
+    """入口文件只能是对 AGENTS.md 的引用行，不能把正文拷进去。
+
+    拷进去的那一份从此与原文各走各的，谁也不会再回头比对。
+    """
+    problems = []
+    text = read_text(path)
+    if text is None:
+        return problems
+    for num, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped not in ("@AGENTS.md", "@./AGENTS.md"):
+            problems.append("{} 的 {}:{} 不是对 AGENTS.md 的引用：{}".format(
+                label, filename, num, stripped[:40]))
+    return problems
+
+
+def check_l34_cli_entry_files(root):
+    """角色目录要有各 CLI 的入口文件，且入口文件只引用规范文件。
+
+    规范的事实来源是 AGENTS.md：Codex 原生读它，Claude Code 读 CLAUDE.md，
+    Gemini CLI 读 GEMINI.md。少一个入口文件，就有一类 CLI 读不到角色规约——
+    角色在自己的目录里开 CLI，读到的可能是隔壁项目的东西。
+    """
+    c = Check("L34", "CLI 入口文件齐备且只含引用",
+              source="agents/<角色>/{CLAUDE,GEMINI}.md")
+    payload = payload_root(root)
+    agents_dir = os.path.join(payload, "agents")
+    if not os.path.isdir(agents_dir):
+        c.status = STATUS_FAIL
+        c.detail.append("找不到 agents 目录")
+        return c
+    fails = []
+    for name in sorted(os.listdir(agents_dir)):
+        role_dir = os.path.join(agents_dir, name)
+        if not os.path.isdir(role_dir):
+            continue
+        if not os.path.isfile(os.path.join(role_dir, "AGENTS.md")):
+            fails.append("角色 {} 缺少 AGENTS.md".format(name))
+        for filename in ("CLAUDE.md", "GEMINI.md"):
+            path = os.path.join(role_dir, filename)
+            if not os.path.isfile(path):
+                fails.append("角色 {} 缺少 {}：不同 CLI 各读各的入口文件，少一个就有一类 CLI 读不到规约".format(
+                    name, filename))
+                continue
+            fails.extend(entry_file_problems(path, "角色 {}".format(name), filename))
+    # 根目录的转发文件：模版侧的实例根种子只含对规范文件的引用。
+    for path in (os.path.join(payload, "seeds", "root", n)
+                 for n in ("CLAUDE.md", "GEMINI.md")):
+        if not os.path.isfile(path):
+            continue
+        fails.extend(entry_file_problems(path, "根转发文件", os.path.basename(path)))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
 # ---------------------------------------------------------------- 驱动
 
 
@@ -1669,6 +1729,7 @@ def run_checks(root, strict=False, words_file=None):
             check_l19_payload_split(root, tracked),
             check_l20_no_dead_refs(root, payload_tracked),
             check_l23_skills(root),
+            check_l34_cli_entry_files(root),
         ]
         if policy is not None:
             checks.append(check_l13_proposals(root, policy))
@@ -1678,7 +1739,7 @@ def run_checks(root, strict=False, words_file=None):
     else:
         skipped = Check("SKIP", "模版侧规则跳过", source="这是实例仓库")
         skipped.status = STATUS_SKIP
-        skipped.detail.append("L1–L5、L7–L12、L15、L17–L23 是模版侧内容规则，"
+        skipped.detail.append("L1–L5、L7–L12、L15、L17–L23、L34 是模版侧内容规则，"
                               "在实例里跑没有意义：实例的角色正文归 owner 管")
         checks.append(skipped)
         if policy is not None:

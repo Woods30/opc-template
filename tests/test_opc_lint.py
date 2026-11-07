@@ -152,6 +152,10 @@ def build_template_repo(base):
             "## 工作方式\n\n"
             "- **只在本实例目录内取材**：实例目录外的东西不是本实例的业务，不读。\n"
         )
+    with open(os.path.join(payload, "agents", "gm", "CLAUDE.md"), "w", encoding="utf-8") as fh:
+        fh.write("@AGENTS.md\n")
+    with open(os.path.join(payload, "agents", "gm", "GEMINI.md"), "w", encoding="utf-8") as fh:
+        fh.write("@./AGENTS.md\n")
     with open(os.path.join(payload, "scripts", "lib.sh"), "w", encoding="utf-8") as fh:
         fh.write('# 判断是不是模版仓库\nopc_is_template_repo() {\n  [[ -f "$1/.opc-template-repo" ]]\n}\n')
     with open(os.path.join(payload, "scripts", "opc-install.sh"), "w", encoding="utf-8") as fh:
@@ -208,6 +212,8 @@ class LintTestCase(unittest.TestCase):
         )
         self.write("roles.json", json.dumps(roles, ensure_ascii=False))
         self.write("agents/{}/AGENTS.md".format(name), template_text)
+        self.write("agents/{}/CLAUDE.md".format(name), "@AGENTS.md\n")
+        self.write("agents/{}/GEMINI.md".format(name), "@./AGENTS.md\n")
 
     def instance_copy(self, name):
         """造一个实例：载荷从 template/ 铺到根目录，有实例元数据。"""
@@ -255,6 +261,23 @@ class LintTestCase(unittest.TestCase):
         os.remove(os.path.join(self.repo, "template", "seeds", "knowledge", "business", "品牌口径.md"))
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_FAIL, checks["L2"].status)
+
+    # ---- L34 CLI 入口文件 ----
+
+    def test_role_missing_cli_entry_file_fails(self):
+        os.remove(os.path.join(self.repo, "template", "agents", "gm", "GEMINI.md"))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L34"].status)
+
+    def test_role_entry_file_with_body_copy_fails(self):
+        # 入口文件里一旦拷进正文，两份从此各走各的，再也合不回来。
+        self.write("agents/gm/CLAUDE.md", "# gm 角色\n\n你现在是总经理。\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L34"].status)
+
+    def test_role_entry_files_present_passes(self):
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_OK, checks["L34"].status)
 
     # ---- L3 占位 ----
 

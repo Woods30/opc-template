@@ -234,7 +234,7 @@ expect "hc 模板里没有技能索引" bash -c "! grep -q '技能索引' '$HERD
 committed="$(git -C "$INST2" diff-tree --no-commit-id --name-only -r --no-renames HEAD \
   | sort | tr '\n' ' ')"
 check "升级提交只含迁移相关文件" \
-  "AGENTS.md agents/content/AGENTS.md agents/gm/AGENTS.md agents/opc-content.md agents/opc-gm.md roles.json " \
+  "AGENTS.md agents/content/AGENTS.md agents/content/CLAUDE.md agents/content/GEMINI.md agents/gm/AGENTS.md agents/gm/CLAUDE.md agents/gm/GEMINI.md agents/opc-content.md agents/opc-gm.md roles.json " \
   "$committed"
 
 # 幂等：再升级一次不重做迁移
