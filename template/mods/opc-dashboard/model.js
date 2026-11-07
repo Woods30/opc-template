@@ -346,17 +346,135 @@ export function urgentItems(view) {
   return items;
 }
 
-export function pipeline(view) {
-  const order = ["proposed", "drafting", "reviewing", "ready", "closed", "cancelled"];
-  const buckets = new Map(order.map(status => [status, []]));
-  for (const content of view.contents) {
-    const status = content.status || "proposed";
-    if (!buckets.has(status)) buckets.set(status, []);
-    buckets.get(status).push(content);
+export const WORKFLOW_STAGES = [
+  { key: "proposed", label: "选题", hint: "确定要解决的问题" },
+  { key: "drafting", label: "撰写", hint: "形成内容或渠道稿" },
+  { key: "reviewing", label: "审核", hint: "校对并等待审批" },
+  { key: "ready", label: "就绪", hint: "排期并准备发布" },
+  { key: "published", label: "已发布", hint: "补齐指标数据" },
+  { key: "reviewed", label: "已复盘", hint: "沉淀结论与动作" },
+];
+
+const CONTENT_STAGE = {
+  proposed: "proposed",
+  drafting: "drafting",
+  reviewing: "reviewing",
+  ready: "ready",
+  closed: "reviewed",
+  cancelled: "reviewed",
+};
+
+const PUBLICATION_STAGE = {
+  adapting: "drafting",
+  reviewing: "reviewing",
+  scheduled: "ready",
+  published: "published",
+  reviewed: "reviewed",
+  cancelled: "reviewed",
+};
+
+function stageItem(kind, entity) {
+  const content = kind === "content";
+  const id = content ? entity.content_id : entity.publication_id;
+  return {
+    kind,
+    id,
+    title: content
+      ? entity.title || id
+      : [entity.channel, entity.publication_id].filter(Boolean).join(" · "),
+    status: entity.status || (content ? "proposed" : "adapting"),
+    role: entity.role || "",
+    detail: content ? entity.content_id : entity.content_id || "",
+    priority: entity.priority || null,
+    blocked: Boolean(entity.blocked),
+    block_reason: entity.block_reason || "",
+    source_path: entity.source_path || null,
+    draft_path: entity.draft_path || null,
+  };
+}
+
+// 阶段始终完整返回，空列也不折叠；这样看板的位置本身就表达流程。
+export function workflowStages(view) {
+  const stages = WORKFLOW_STAGES.map(stage => ({ ...stage, items: [] }));
+  const byKey = new Map(stages.map(stage => [stage.key, stage]));
+  for (const content of view.contents || []) {
+    const key = CONTENT_STAGE[content.status || "proposed"];
+    if (key) byKey.get(key).items.push(stageItem("content", content));
   }
-  return order
-    .filter(status => buckets.get(status).length > 0)
-    .map(status => ({ status, items: buckets.get(status) }));
+  for (const publication of view.publications || []) {
+    const key = PUBLICATION_STAGE[publication.status || "adapting"];
+    if (key) byKey.get(key).items.push(stageItem("publication", publication));
+  }
+  return stages;
+}
+
+// 顶部行动条按“需要 owner 决策 → 已阻塞 → 已派工 → 发布后补账”排序。
+export function currentActions(view) {
+  const actions = [];
+  for (const approval of view.approvals || []) {
+    actions.push({
+      kind: "approval",
+      id: approval.id,
+      title: `审批 ${approval.artifact || approval.id}`,
+      detail: approval.id,
+      role: "owner",
+      source_path: approval.source_path || null,
+    });
+  }
+  for (const entity of [...(view.contents || []), ...(view.publications || [])]) {
+    if (!entity.blocked) continue;
+    actions.push({
+      kind: "blocked",
+      id: entity.content_id || entity.publication_id,
+      title: entity.title || entity.publication_id || entity.content_id,
+      detail: entity.block_reason || "需要解除阻塞",
+      role: entity.role || "",
+      source_path: entity.source_path || null,
+    });
+  }
+  for (const task of view.tasks || []) {
+    if (task.state !== "open") continue;
+    actions.push({
+      kind: "task",
+      id: task.task_id,
+      title: task.task || task.task_id,
+      detail: task.acceptance ? `验收：${task.acceptance}` : "",
+      role: task.role || "",
+      source_path: task.source_path || null,
+    });
+  }
+  for (const publication of view.publications || []) {
+    if (publication.needs_metrics) {
+      actions.push({
+        kind: "metrics",
+        id: publication.publication_id,
+        title: `补齐 ${publication.publication_id} 的指标`,
+        detail: publication.metrics?.summary || "指标未记录完整",
+        role: publication.role || "",
+        source_path: publication.metrics_path || publication.source_path || null,
+      });
+    }
+    if (publication.needs_review) {
+      actions.push({
+        kind: "review",
+        id: publication.publication_id,
+        title: `复盘 ${publication.publication_id}`,
+        detail: publication.review?.conclusion || "发布后复盘未完成",
+        role: publication.role || "",
+        source_path: publication.source_path || null,
+      });
+    }
+  }
+  return actions;
+}
+
+export function pipeline(view) {
+  return workflowStages(view)
+    .filter(stage => stage.items.some(item => item.kind === "content"))
+    .map(stage => ({
+      status: stage.key,
+      items: stage.items.filter(item => item.kind === "content"),
+    }));
 }
 
 export function publicationCalendar(view) {

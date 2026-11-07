@@ -1,7 +1,7 @@
 // OPC 业务看板：只读展示 canonical 记录编译出的 Dashboard JSON。
 // 不做业务写入：状态转换、审批、指标记录都还在 CLI 里，这里只看。
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex, TextView } from "gpui-base";
+import { Editor, EditorState, h_flex, v_flex } from "gpui-base";
 import {
   props,
   theme,
@@ -9,8 +9,8 @@ import {
   exec,
   readTextFile,
   watchFolder,
-  terminals,
   spaces,
+  settings,
 } from "herdr";
 import {
   parseDashboard,
@@ -19,12 +19,8 @@ import {
   filterOptions,
   counts,
   diagnostics,
-  urgentItems,
-  pipeline,
-  publicationCalendar,
-  pendingForOwner,
-  channelGrowth,
-  reviewItems,
+  workflowStages,
+  currentActions,
   shouldRebuild,
   staleState,
   parseBuildDiagnostics,
@@ -42,6 +38,24 @@ const KNOWLEDGE_RELATIVE = "knowledge";
 const REFRESH_INTERVAL = 30000;
 const DEBOUNCE_MS = 400;
 const POLL_INTERVAL = 300;
+const PREVIEW_LIMIT = 400000;
+const PREVIEW_WIDTH = 480;
+const STAGE_WIDTH = 260;
+
+const EDITOR_LANGUAGES = {
+  js: "javascript",
+  json: "json",
+  md: "markdown",
+  py: "python",
+  ts: "typescript",
+  yaml: "yaml",
+  yml: "yaml",
+};
+
+function editorLanguage(path) {
+  const extension = String(path || "").split(".").pop().toLowerCase();
+  return EDITOR_LANGUAGES[extension] || extension || "text";
+}
 
 function joinPath(root, relative) {
   return `${root.replace(/\/+$/, "")}/${relative}`;
@@ -81,6 +95,8 @@ export default class OpcDashboard extends View {
     this.filters = emptyFilters();
     this.changed = [];
     this.preview = null;
+    this.previewEditor = null;
+    this.previewRequest = 0;
     this.pending = null;
     this.pendingAt = 0;
     this.building = false;
@@ -181,35 +197,56 @@ export default class OpcDashboard extends View {
       this.cx.notify();
       return;
     }
-    // canonical 源文件直接在这里读出来看：看板是只读的，不去改它。
-    this.readPreview(sourcePath);
+    // EditorState 需要 live host context；异步读取放进 task，不能在普通 Promise continuation 里创建。
+    return this.cx.spawn(async cx => this.readPreview(sourcePath, cx));
   }
 
-  async readPreview(sourcePath) {
+  async readPreview(sourcePath, cx = this.cx) {
+    const request = ++this.previewRequest;
+    this.previewEditor?.release();
+    this.previewEditor = null;
+    this.preview = { path: sourcePath, error: "" };
+    cx.notify();
     try {
       const text = await readCanonicalSource(this.instance, sourcePath);
+      if (request !== this.previewRequest) return;
       if (text === null || text === undefined) {
-        this.preview = { path: sourcePath, text: "", error: "这个源文件已经不在了" };
+        this.preview = { path: sourcePath, error: "这个源文件已经不在了" };
+      } else if (text.includes("\0")) {
+        this.preview = { path: sourcePath, error: "这是二进制文件，不能作为文本查看" };
       } else {
-        const limit = 20000;
-        this.preview = {
-          path: sourcePath,
-          text:
-            text.length > limit
-              ? `${text.slice(0, limit)}\n\n…（预览到此截断，完整内容见源文件）`
-              : text,
-          error: "",
-        };
+        const value =
+          text.length > PREVIEW_LIMIT
+            ? `${text.slice(0, PREVIEW_LIMIT)}\n…（文件过大，预览到此截断）`
+            : text;
+        const t = theme();
+        this.previewEditor = EditorState.new({
+          language: editorLanguage(sourcePath),
+          readonly: true,
+          value,
+          font_family: settings().font_family,
+          font_size: 12,
+          syntax: {
+            keyword: t.ansi5,
+            string: t.ansi2,
+            comment: t.dim,
+            function: t.ansi4,
+            type: t.ansi3,
+            number: t.ansi1,
+            constant: t.ansi6,
+          },
+        });
+        this.preview = { path: sourcePath, error: "" };
       }
       this.actionError = "";
     } catch (error) {
+      if (request !== this.previewRequest) return;
       this.preview = {
         path: sourcePath,
-        text: "",
         error: `打不开源文件：${error?.message ?? error}`,
       };
     }
-    this.cx.notify();
+    cx.notify();
   }
 
   // 终端名来自实例名册，不按命名规则猜地址。
@@ -364,9 +401,10 @@ export default class OpcDashboard extends View {
 
   filterBar(t) {
     const options = filterOptions(this.payload);
-    // entries 是 [值, 显示名]：值用于过滤，显示名给人看。
+    // 筛选器横向滚动，不再换行挤占业务看板的纵向空间。
     const group = (label, entries, key, current) =>
       h_flex()
+        .flex_none()
         .items_center()
         .gap(4)
         .child(div().text_size(11).text_color(t.dim).child(label))
@@ -380,394 +418,360 @@ export default class OpcDashboard extends View {
       ["30d", "30 天"],
       ["90d", "90 天"],
     ];
-    return v_flex()
-      .gap(6)
+    return h_flex()
+      .flex_none()
+      .items_center()
+      .gap(14)
       .px(14)
-      .py(8)
+      .py(7)
+      .overflow_x_scroll()
+      .border_b(1)
+      .border_color(t.border)
+      .child(group("时间", timeEntries, "time", this.filters.time))
+      .child(
+        group(
+          "渠道",
+          options.channels.map(value => [value, value]),
+          "channel",
+          this.filters.channel,
+        ),
+      )
+      .child(
+        group(
+          "内容状态",
+          options.contentStatuses.map(value => [value, value]),
+          "contentStatus",
+          this.filters.contentStatus,
+        ),
+      )
+      .child(
+        group(
+          "发布状态",
+          options.publicationStatuses.map(value => [value, value]),
+          "publicationStatus",
+          this.filters.publicationStatus,
+        ),
+      )
+      .child(
+        group(
+          "角色",
+          options.roles.map(value => [value, value]),
+          "role",
+          this.filters.role,
+        ),
+      )
+      .child(
+        group(
+          "优先级",
+          options.priorities.map(value => [value, value]),
+          "priority",
+          this.filters.priority,
+        ),
+      )
+      .child(
+        group(
+          "阻塞",
+          [
+            ["yes", "受阻"],
+            ["no", "未受阻"],
+          ],
+          "blocked",
+          this.filters.blocked,
+        ),
+      )
+      .child(
+        this.chip(t, "含历史", this.filters.includeHistory, () => this.toggleHistory()),
+      );
+  }
+
+  actionStrip(t, view) {
+    const labels = {
+      approval: "待你审批",
+      blocked: "解除阻塞",
+      task: "推进任务",
+      metrics: "补齐指标",
+      review: "完成复盘",
+    };
+    const actions = currentActions(view);
+    return v_flex()
+      .flex_none()
+      .gap(7)
+      .px(14)
+      .py(10)
       .border_b(1)
       .border_color(t.border)
       .child(
         h_flex()
           .items_center()
-          .gap(14)
-          .flex_wrap()
-          .child(group("时间", timeEntries, "time", this.filters.time))
-          .child(
-            group(
-              "渠道",
-              options.channels.map(value => [value, value]),
-              "channel",
-              this.filters.channel,
-            ),
-          )
-          .child(
-            group(
-              "内容状态",
-              options.contentStatuses.map(value => [value, value]),
-              "contentStatus",
-              this.filters.contentStatus,
-            ),
-          )
-          .child(
-            group(
-              "发布状态",
-              options.publicationStatuses.map(value => [value, value]),
-              "publicationStatus",
-              this.filters.publicationStatus,
-            ),
-          )
-          .child(
-            group(
-              "角色",
-              options.roles.map(value => [value, value]),
-              "role",
-              this.filters.role,
-            ),
-          )
-          .child(
-            group(
-              "优先级",
-              options.priorities.map(value => [value, value]),
-              "priority",
-              this.filters.priority,
-            ),
-          )
-          .child(
-            group(
-              "阻塞",
-              [
-                ["yes", "受阻"],
-                ["no", "未受阻"],
-              ],
-              "blocked",
-              this.filters.blocked,
-            ),
-          ),
-      )
-      .child(
-        h_flex()
-          .items_center()
           .gap(8)
           .child(
-            this.chip(t, "含历史（closed / archived）", this.filters.includeHistory, () =>
-              this.toggleHistory(),
-            ),
+            div()
+              .text_size(12)
+              .font_weight(600)
+              .text_color(t.foreground)
+              .child("当前该做什么"),
+          )
+          .child(
+            div()
+              .text_size(11)
+              .text_color(t.dim)
+              .child(actions.length ? `按优先级排列，共 ${actions.length} 项` : "当前没有待处理事项"),
+          ),
+      )
+      .when(
+        actions.length > 0,
+        el =>
+          el.child(
+            h_flex()
+              .gap(8)
+              .overflow_x_scroll()
+              .children(
+                actions.map(action =>
+                  v_flex()
+                    .id(`opc-dashboard-action-${action.kind}-${action.id}`)
+                    .w(280)
+                    .flex_none()
+                    .gap(4)
+                    .px(9)
+                    .py(7)
+                    .rounded(6)
+                    .border_1()
+                    .border_color(action.kind === "blocked" ? t.blocked : t.border)
+                    .bg(t.surface)
+                    .cursor_pointer()
+                    .on_click((_event, cx) => {
+                      this.openSource(action.source_path);
+                      cx.notify();
+                    })
+                    .child(
+                      h_flex()
+                        .items_center()
+                        .gap(7)
+                        .child(
+                          div()
+                            .text_size(10.5)
+                            .text_color(action.kind === "blocked" ? t.blocked : t.accent)
+                            .child(labels[action.kind] || action.kind),
+                        )
+                        .child(div().flex_1())
+                        .child(div().text_size(10.5).text_color(t.dim).child(action.role || "—")),
+                    )
+                    .child(
+                      div()
+                        .text_size(11.5)
+                        .font_weight(500)
+                        .text_color(t.foreground)
+                        .truncate()
+                        .child(action.title || action.id),
+                    )
+                    .when(
+                      Boolean(action.detail),
+                      card =>
+                        card.child(
+                          div().text_size(10.5).text_color(t.muted).truncate().child(action.detail),
+                        ),
+                    ),
+                ),
+              ),
           ),
       );
   }
 
-  section(t, title, children) {
+  fileLink(t, item, label, path) {
+    return div()
+      .id(`opc-dashboard-file-${item.kind}-${item.id}-${label}`)
+      .cursor_pointer()
+      .rounded(4)
+      .px(5)
+      .py(2)
+      .bg(t.chrome)
+      .text_size(10.5)
+      .text_color(t.accent)
+      .on_click((_event, cx) => {
+        this.openSource(path);
+        cx.notify();
+      })
+      .child(label);
+  }
+
+  stageCard(t, item) {
+    const kindLabel = item.kind === "content" ? "内容" : "发布";
+    const links = [
+      item.source_path ? this.fileLink(t, item, item.kind === "content" ? "内容卡" : "发布卡", item.source_path) : null,
+      item.draft_path ? this.fileLink(t, item, item.kind === "content" ? "主稿" : "渠道稿", item.draft_path) : null,
+    ].filter(Boolean);
     return v_flex()
       .gap(6)
-      .child(div().text_size(11.5).text_color(t.dim).child(title))
-      .children(children);
-  }
-
-  row(t, item, onOpen) {
-    const clickable = item.source_path ? onOpen : null;
-    const row = h_flex()
-      .items_center()
-      .gap(8)
-      .px(8)
-      .py(4)
-      .rounded(4)
+      .p(9)
+      .rounded(6)
+      .border_1()
+      .border_color(item.blocked ? t.blocked : t.border)
       .bg(t.surface)
-      .child(div().text_size(11.5).text_color(t.foreground).child(item.title || item.id))
-      .child(div().flex_1())
-      .child(div().text_size(11).text_color(t.muted).child(item.detail || ""));
-    if (clickable) {
-      row.cursor_pointer().on_click((_event, cx) => {
-        clickable();
-        cx.notify();
-      });
-    }
-    return row;
+      .child(
+        h_flex()
+          .items_center()
+          .gap(7)
+          .child(div().text_size(10.5).text_color(t.accent).child(kindLabel))
+          .child(div().text_size(10.5).text_color(t.dim).child(item.status))
+          .child(div().flex_1())
+          .child(div().text_size(10.5).text_color(t.muted).child(item.role || "—")),
+      )
+      .child(
+        div()
+          .text_size(11.5)
+          .font_weight(500)
+          .text_color(t.foreground)
+          .child(item.title || item.id),
+      )
+      .when(
+        Boolean(item.blocked),
+        card =>
+          card.child(
+            div()
+              .text_size(10.5)
+              .text_color(t.blocked)
+              .child(item.block_reason || "当前受阻"),
+          ),
+      )
+      .when(links.length > 0, card => card.child(h_flex().gap(5).children(links)));
   }
 
-  urgentColumn(t, view) {
-    const items = urgentItems(view);
-    const owner = pendingForOwner(view);
-    const growth = channelGrowth(view, this.filters);
-    return v_flex()
-      .gap(14)
-      .children([
-        this.section(
-          t,
-          `紧急项（${items.length}）`,
-          items.length
-            ? items.map(item => this.row(t, item, () => this.openSource(item.source_path)))
-            : [div().text_size(11.5).text_color(t.dim).child("没有紧急项")],
-        ),
-        this.section(
-          t,
-          `待 owner / gm 处理（${owner.length}）`,
-          owner.length
-            ? owner.map(item => this.row(t, item, () => this.openSource(item.source_path)))
-            : [div().text_size(11.5).text_color(t.dim).child("没有待处理事项")],
-        ),
-        this.section(
-          t,
-          "渠道增长",
-          growth.length
-            ? growth.map(channel =>
-                h_flex()
-                  .items_center()
-                  .gap(8)
-                  .px(8)
-                  .py(4)
-                  .rounded(4)
-                  .bg(t.surface)
-                  .child(
-                    div()
-                      .text_size(11.5)
-                      .text_color(t.foreground)
-                      .child(`${channel.name}（${channel.channel}）`),
-                  )
-                  .child(div().flex_1())
-                  .child(
-                    div()
-                      .text_size(11)
-                      .text_color(t.muted)
-                      .child(
-                        Object.entries(channel.account_metrics)
-                          .map(([key, value]) => `${key}=${value}`)
-                          .join("、") || `发布 ${channel.publication_count} 条`,
-                      ),
-                  ),
-              )
-            : [div().text_size(11.5).text_color(t.dim).child("没有渠道数据")],
-        ),
-      ]);
-  }
-
-  mainColumn(t, view) {
-    const stages = pipeline(view);
-    const calendar = publicationCalendar(view);
-    const reviews = reviewItems(view);
-    const team = this.payload?.team ?? [];
-    const agents = terminals();
-    return v_flex()
-      .gap(14)
-      .children([
-        this.section(
-          t,
-          "内容流水线",
-          stages.length
-            ? stages.map(stage =>
-                v_flex()
-                  .gap(4)
-                  .child(
-                    div()
-                      .text_size(11)
-                      .text_color(t.muted)
-                      .child(`${stage.status}（${stage.items.length}）`),
-                  )
-                  .children(
-                    stage.items.map(content =>
-                      h_flex()
-                        .items_center()
-                        .gap(8)
-                        .px(8)
-                        .py(3)
-                        .rounded(4)
-                        .bg(t.surface)
-                        .cursor_pointer()
-                        .on_click((_event, cx) => {
-                          this.openSource(content.source_path);
-                          cx.notify();
-                        })
-                        .child(
-                          div()
-                            .text_size(11.5)
-                            .text_color(t.foreground)
-                            .child(content.title || content.content_id),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                          div().text_size(11).text_color(t.dim).child(content.content_id),
-                        ),
+  stageBoard(t, view) {
+    const stages = workflowStages(view);
+    return h_flex()
+      .flex_1()
+      .min_h(0)
+      .min_w(0)
+      .gap(10)
+      .p(12)
+      .overflow_x_scroll()
+      .children(
+        stages.map(stage =>
+          v_flex()
+            .w(STAGE_WIDTH)
+            .flex_none()
+            .min_h(0)
+            .rounded(7)
+            .border_1()
+            .border_color(t.border)
+            .bg(t.chrome)
+            .child(
+              v_flex()
+                .flex_none()
+                .gap(3)
+                .px(10)
+                .py(9)
+                .border_b(1)
+                .border_color(t.border)
+                .child(
+                  h_flex()
+                    .items_center()
+                    .child(
+                      div()
+                        .text_size(12)
+                        .font_weight(600)
+                        .text_color(t.foreground)
+                        .child(stage.label),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                      div()
+                        .text_size(10.5)
+                        .text_color(stage.items.length ? t.accent : t.dim)
+                        .child(String(stage.items.length)),
                     ),
-                  ),
-              )
-            : [div().text_size(11.5).text_color(t.dim).child("没有内容")],
+                )
+                .child(div().text_size(10.5).text_color(t.dim).child(stage.hint)),
+            )
+            .child(
+              v_flex()
+                .flex_1()
+                .min_h(0)
+                .gap(8)
+                .p(8)
+                .overflow_y_scrollbar()
+                .when(
+                  stage.items.length === 0,
+                  column =>
+                    column.child(
+                      div().text_size(10.5).text_color(t.dim).child("暂无记录"),
+                    ),
+                )
+                .children(stage.items.map(item => this.stageCard(t, item))),
+            ),
         ),
-        this.section(
-          t,
-          `发布节奏（计划 ${calendar.scheduled.length} / 已发布 ${calendar.published.length}）`,
-          [...calendar.scheduled, ...calendar.published].length
-            ? [...calendar.scheduled, ...calendar.published].map(publication =>
-                h_flex()
-                  .items_center()
-                  .gap(8)
-                  .px(8)
-                  .py(4)
-                  .rounded(4)
-                  .bg(t.surface)
-                  .cursor_pointer()
-                  .on_click((_event, cx) => {
-                    this.openSource(publication.source_path);
-                    cx.notify();
-                  })
-                  .child(
-                    div()
-                      .text_size(11.5)
-                      .text_color(t.foreground)
-                      .child(`${publication.channel} · ${publication.publication_id}`),
-                  )
-                  .child(div().flex_1())
-                  .child(
-                    div()
-                      .text_size(11)
-                      .text_color(t.muted)
-                      .child(
-                        [
-                          publication.planned_at ? `计划 ${publication.planned_at}` : "",
-                          publication.published_at ? `发布 ${publication.published_at}` : "",
-                          publication.metrics?.summary ?? "",
-                        ]
-                          .filter(Boolean)
-                          .join(" · "),
-                      ),
-                  ),
-              )
-            : [div().text_size(11.5).text_color(t.dim).child("没有 publication")],
-        ),
-        this.section(
-          t,
-          `增长复盘（${reviews.length}）`,
-          reviews.length
-            ? reviews.map(review =>
-                h_flex()
-                  .items_center()
-                  .gap(8)
-                  .px(8)
-                  .py(4)
-                  .rounded(4)
-                  .bg(t.surface)
-                  .cursor_pointer()
-                  .on_click((_event, cx) => {
-                    this.openSource(review.source_path);
-                    cx.notify();
-                  })
-                  .child(
-                    div()
-                      .text_size(11.5)
-                      .text_color(t.foreground)
-                      .child(`${review.channel} · ${review.publication_id}`),
-                  )
-                  .child(div().flex_1())
-                  .child(
-                    div()
-                      .text_size(11)
-                      .text_color(t.muted)
-                      .child(review.conclusion || (review.needs_review ? "待复盘" : "")),
-                  ),
-              )
-            : [div().text_size(11.5).text_color(t.dim).child("没有待复盘的发布")],
-        ),
-        this.section(
-          t,
-          "角色终端（辅助）",
-          team.length
-            ? team.map(member =>
-                h_flex()
-                  .items_center()
-                  .gap(8)
-                  .px(8)
-                  .py(3)
-                  .rounded(4)
-                  .bg(t.surface)
-                  .child(
-                    div()
-                      .text_size(11.5)
-                      .text_color(t.foreground)
-                      .child(member.role),
-                  )
-                  .child(div().flex_1())
-                  .child(
-                    div()
-                      .id(`opc-dashboard-role-${member.role}`)
-                      .cursor_pointer()
-                      .text_size(11)
-                      .text_color(t.accent)
-                      .on_click((_event, cx) => {
-                        this.focusTerminal(member.role);
-                        cx.notify();
-                      })
-                      .child(member.terminal),
-                  ),
-              )
-            : [div().text_size(11.5).text_color(t.dim).child("名册为空")],
-        ),
-        this.section(
-          t,
-          `终端状态（辅助，${agents.length}）`,
-          [
-            h_flex()
-              .items_center()
-              .gap(8)
-              .px(8)
-              .py(3)
-              .rounded(4)
-              .bg(t.surface)
-              .child(div().text_size(11.5).text_color(t.foreground).child("存活终端"))
-              .child(div().flex_1())
-              .child(div().text_size(11).text_color(t.dim).child(String(agents.length))),
-          ],
-        ),
-      ]);
+      );
   }
 
-  // 源文件预览：点条目后在这里读出 canonical 原文，只读不改。
+  // 源文件在右侧原生 Editor 中展开，保留看板上下文，只读不改。
   previewPanel(t) {
     const preview = this.preview;
     if (!preview) return null;
     return v_flex()
-      .gap(6)
-      .px(14)
-      .py(8)
-      .border_b(1)
+      .w(PREVIEW_WIDTH)
+      .flex_none()
+      .min_h(0)
+      .border_l(1)
       .border_color(t.border)
+      .bg(t.background)
       .child(
-        h_flex()
-          .items_center()
-          .gap(8)
-          .child(div().text_size(11.5).text_color(t.dim).child("源文件"))
+        v_flex()
+          .flex_none()
+          .gap(3)
+          .px(12)
+          .py(9)
+          .border_b(1)
+          .border_color(t.border)
           .child(
-            div()
-              .text_size(11.5)
-              .text_color(t.foreground)
-              .child(preview.path),
+            h_flex()
+              .items_center()
+              .gap(8)
+              .child(
+                div()
+                  .text_size(11.5)
+                  .font_weight(600)
+                  .text_color(t.foreground)
+                  .child("文件内容"),
+              )
+              .child(div().flex_1())
+              .child(
+                div()
+                  .id("opc-dashboard-preview-close")
+                  .cursor_pointer()
+                  .text_size(11)
+                  .text_color(t.accent)
+                  .on_click((_event, cx) => {
+                    this.previewRequest += 1;
+                    this.previewEditor?.release();
+                    this.previewEditor = null;
+                    this.preview = null;
+                    cx.notify();
+                  })
+                  .child("关闭"),
+              ),
           )
-          .child(div().flex_1())
           .child(
             div()
-              .id("opc-dashboard-preview-close")
-              .cursor_pointer()
-              .text_size(11)
-              .text_color(t.accent)
-              .on_click((_event, cx) => {
-                this.preview = null;
-                cx.notify();
-              })
-              .child("关闭"),
+              .text_size(10.5)
+              .text_color(t.dim)
+              .truncate()
+              .child(preview.path),
           ),
       )
       .when(
         Boolean(preview.error),
         el =>
           el.child(
-            div().text_size(11.5).text_color(t.blocked).child(preview.error),
+            div().p(12).text_size(11.5).text_color(t.blocked).child(preview.error),
           ),
       )
       .when(
-        Boolean(preview.text),
-        el =>
-          el.child(
-            TextView.markdown(`opc-dashboard-preview-${preview.path}`, preview.text)
-              .selectable(true)
-              .scrollable(true),
-          ),
+        !preview.error && !this.previewEditor,
+        el => el.child(div().p(12).text_size(11.5).text_color(t.dim).child("正在读取文件…")),
+      )
+      .when(
+        Boolean(this.previewEditor),
+        el => el.child(Editor.new(this.previewEditor).flex_1().min_h(0)),
       );
   }
 
@@ -869,18 +873,17 @@ export default class OpcDashboard extends View {
     const preview = this.previewPanel(t);
     return v_flex()
       .size_full()
+      .min_h(0)
       .child(this.header(t))
       .when(Boolean(banner), el => el.child(banner))
-      .when(Boolean(preview), el => el.child(preview))
       .child(this.filterBar(t))
+      .child(this.actionStrip(t, view))
       .child(
         h_flex()
           .flex_1()
-          .gap(14)
-          .p(14)
-          .overflow_y_scroll()
-          .child(v_flex().w(340).gap(14).child(this.urgentColumn(t, view)))
-          .child(v_flex().flex_1().gap(14).child(this.mainColumn(t, view))),
+          .min_h(0)
+          .child(this.stageBoard(t, view))
+          .when(Boolean(preview), el => el.child(preview)),
       );
   }
 }

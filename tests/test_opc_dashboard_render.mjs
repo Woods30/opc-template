@@ -63,6 +63,12 @@ export function v_flex() { return makeElement("v_flex"); }
 export const TextView = {
   markdown(id, text) { return makeElement("text"); },
 };
+export const EditorState = {
+  new(options) { return { options, release() {} }; },
+};
+export const Editor = {
+  new(state) { return makeElement("editor").child(\`CODE:\${state.options.value}\`); },
+};
 
 export function theme() {
   return new Proxy({}, { get: () => "#000000" });
@@ -70,9 +76,10 @@ export function theme() {
 export function props() { return {}; }
 export function spaces() { return []; }
 export function terminals() { return []; }
+export function settings() { return { font_family: "JetBrains Mono" }; }
 export function run() {}
-export function exec() { return { code: 0, stdout: "", stderr: "" }; }
-export function readTextFile() { return Promise.resolve(""); }
+export function exec() { return { code: 0, stdout: "/instance/source.md", stderr: "" }; }
+export function readTextFile() { return Promise.resolve('---\\n{"title":"第一条选题"}\\n---\\n\\n# 第一条选题'); }
 export function watchFolder() { return Promise.resolve([]); }
 `;
 
@@ -154,10 +161,15 @@ function newView(overrides = {}) {
   view.filters = model.emptyFilters();
   view.changed = [];
   view.preview = null;
+  view.previewEditor = null;
+  view.previewRequest = 0;
   view.pending = null;
   view.pendingAt = 0;
   view.building = false;
-  view.cx = { notify() {} };
+  view.cx = {
+    notify() {},
+    spawn(task) { return task(this); },
+  };
   Object.assign(view, overrides);
   return view;
 }
@@ -177,7 +189,7 @@ test("一切正常时看板能渲染：告警条与预览面板都不该出现",
   assert.doesNotThrow(() => view.render(), "渲染不应把 null 交给 child()");
   const texts = textsOf(view.render());
   assert.equal(texts.includes("校验报错 1 条：看板用的是上一版缓存"), false);
-  assert.equal(texts.includes("源文件"), false);
+  assert.equal(texts.includes("文件内容"), false);
 });
 
 test("有校验报错时告警条照常出现", () => {
@@ -206,17 +218,19 @@ test("有校验提醒时告警条照常出现", () => {
   assert.equal(texts.includes("有 1 条校验提醒"), true);
 });
 
-test("选中源文件后预览面板照常出现", () => {
-  const view = newView({
-    preview: {
-      path: "knowledge/content/content-1/内容卡.md",
-      text: "# 第一条选题",
-      error: "",
-    },
-  });
+test("选中源文件后在右侧用只读代码视图显示真实内容", async () => {
+  const view = newView();
+  await view.openSource("knowledge/content/content-1/内容卡.md");
   const texts = textsOf(view.render());
-  assert.equal(texts.includes("源文件"), true);
+  assert.equal(texts.includes("文件内容"), true);
   assert.equal(texts.includes("knowledge/content/content-1/内容卡.md"), true);
+  assert.equal(
+    texts.includes('CODE:---\n{"title":"第一条选题"}\n---\n\n# 第一条选题'),
+    true,
+    "应由 Editor 展示包含 frontmatter 的原文，而不是交给 Markdown 渲染",
+  );
+  assert.equal(view.previewEditor.options.readonly, true);
+  assert.equal(view.previewEditor.options.language, "markdown");
 });
 
 // 实例里的载荷是全的：名册、渠道、发布、审批都有。
@@ -286,9 +300,10 @@ test("载荷完整时各栏都渲染得出来", () => {
   });
   const texts = textsOf(view.render());
   assert.equal(texts.includes("OPC 看板"), true);
-  assert.equal(texts.includes("内容流水线"), true);
-  assert.equal(texts.includes("发布节奏（计划 0 / 已发布 1）"), true);
-  assert.equal(texts.includes("增长复盘（1）"), true);
-  assert.equal(texts.includes("角色终端（辅助）"), true);
-  assert.equal(texts.includes("myopc-gm"), true);
+  assert.equal(texts.includes("当前该做什么"), true);
+  for (const label of ["选题", "撰写", "审核", "就绪", "已发布", "已复盘"]) {
+    assert.equal(texts.includes(label), true, `缺少阶段：${label}`);
+  }
+  assert.equal(texts.includes("内容卡"), true);
+  assert.equal(texts.includes("主稿"), true);
 });
