@@ -3357,6 +3357,8 @@ def split_task_fields(text: str):
 def parse_inbox_entry(line: str, role: str, source: str):
     """解析一行派工条目；不是派工条目时返回 None。"""
     stripped = line.strip()
+    if stripped.startswith("✅ - ["):
+        stripped = "- ✅ [" + stripped[len("✅ - [") :]
     if not stripped.startswith("- "):
         return None
     body = stripped[2:].strip()
@@ -3377,6 +3379,14 @@ def parse_inbox_entry(line: str, role: str, source: str):
     task = fields.get("任务")
     if not task:
         return None
+    completed_at = fields.get("完成时间") or None
+    result = fields.get("结果") or None
+    # 完成必须同时留下时间与结果；缺任一项都仍是开放任务，避免一个裸 ✅
+    # 把事实不完整的任务从待办范围里静默移走。
+    if state == "done" and (not completed_at or not result):
+        state = "open"
+        completed_at = None
+        result = None
     reason = None
     if state == "cancelled":
         reason = prefix
@@ -3404,6 +3414,8 @@ def parse_inbox_entry(line: str, role: str, source: str):
         "acceptance": fields.get("验收"),
         "reference": reference,
         "state": state,
+        "completed_at": completed_at,
+        "result": result,
         "reason": reason,
         "source_path": source,
     }

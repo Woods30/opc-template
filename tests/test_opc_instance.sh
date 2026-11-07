@@ -89,11 +89,25 @@ expect "全局看板 mod 已安装" test -d "$HERDR_APP_HOME/mods/opc-dashboard"
 expect "实例已登记到注册表" grep -q "$INST" "$OPC_CONFIG_DIR/instances.json"
 
 # ---- 1b. 角色目录与 hc 模板 ----
+only_ref() { # only_ref <文件>：入口文件只能是对 AGENTS.md 的引用，不能拷正文
+  local body
+  body="$(tr -d '[:space:]' < "$1")"
+  [[ "$body" == "@AGENTS.md" || "$body" == "@./AGENTS.md" ]]
+}
 for role in gm content growth dev; do
   expect "角色 $role 有自己的目录" test -d "$INST/agents/$role"
   expect "角色 $role 的入口文件在" test -f "$INST/agents/$role/AGENTS.md"
+  expect "角色 $role 有 Claude 的入口文件" test -f "$INST/agents/$role/CLAUDE.md"
+  expect "角色 $role 有 Gemini 的入口文件" test -f "$INST/agents/$role/GEMINI.md"
+  expect "角色 $role 的 Claude 入口文件只引用 AGENTS.md" \
+    only_ref "$INST/agents/$role/CLAUDE.md"
+  expect "角色 $role 的 Gemini 入口文件只引用 AGENTS.md" \
+    only_ref "$INST/agents/$role/GEMINI.md"
   expect "角色 $role 的 hc 模板已生成" test -f "$HERDR_CORE_HOME/templates/t-$role.md"
 done
+expect "实例根有 Claude 的入口文件" test -f "$INST/CLAUDE.md"
+expect "实例根有 Gemini 的入口文件" test -f "$INST/GEMINI.md"
+expect "实例根的入口文件只引用 AGENTS.md" only_ref "$INST/GEMINI.md"
 expect "角色正文不带 hc frontmatter" \
   bash -c "! head -n 1 '$INST/agents/gm/AGENTS.md' | grep -q '^---$'"
 expect "hc 模板的 frontmatter 带前缀名" grep -q "^name: t-gm$" "$HERDR_CORE_HOME/templates/t-gm.md"
@@ -113,6 +127,42 @@ check "重跑安装器不改写实例的角色正文" "$before" \
   "$(shasum "$INST/agents/gm/AGENTS.md" | awk '{print $1}')"
 expect "hc 模板反映改后的正文" \
   grep -q "owner 的补充说明" "$HERDR_CORE_HOME/templates/t-gm.md"
+
+# ---- 1c. 所有收件箱共用同一套任务与结果格式 ----
+# 每个任务只占收件人的一条记录；完成时回写原行，不另造「上报」条目。
+for role in gm content growth dev; do
+  expect "收件箱 $role 讲清派工与结果回写原记录" \
+    grep -q "派工写入本文件，结果回写原记录" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 给出完整派工格式" \
+    grep -q "| 任务 ID：task-.*| 业务引用：.*| 任务：.*| 验收：" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 给出完整完成格式" \
+    grep -q "完成时间：YYYY-MM-DD HH:MM | 结果：<一句话结论与产出路径>" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 明确结果必填" \
+    grep -q "结果.*必填" "$INST/knowledge/inbox/$role.md"
+done
+for role in gm content growth dev; do
+  expect "收件箱 $role 保留当前队列小节" \
+    grep -q "## 当前队列" "$INST/knowledge/inbox/$role.md"
+  expect "收件箱 $role 保留空队列占位" \
+    grep -q "（空）" "$INST/knowledge/inbox/$role.md"
+done
+# printf 没把 Markdown 打坏：占位符全部替换，反引号、完成/撤销标记、条目竖线原样输出
+expect "收件箱头没留下未替换的占位符" \
+  bash -c "! grep -q '%s' '$INST/knowledge/inbox/content.md'"
+expect "收件箱头保留反引号" \
+  grep -q '`knowledge/inbox/`' "$INST/knowledge/inbox/gm.md"
+expect "收件箱头保留完成标记" \
+  grep -q "✅" "$INST/knowledge/inbox/gm.md"
+expect "收件箱头保留撤销标记" \
+  grep -q "⛔ 已撤销" "$INST/knowledge/inbox/gm.md"
+expect "收件箱头保留条目格式的竖线" \
+  grep -q "| 任务 ID：task-" "$INST/knowledge/inbox/content.md"
+
+# 收件箱只在文件缺失时创建：已有的头不被改写，由 gm 在会话内自行对齐
+before_inbox="$(shasum "$INST/knowledge/inbox/gm.md" | awk '{print $1}')"
+(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
+check "重跑安装器不改写已有收件箱" "$before_inbox" \
+  "$(shasum "$INST/knowledge/inbox/gm.md" | awk '{print $1}')"
 
 # ---- 2. 完整生命周期：proposed → ready → publication → published → metrics → reviewed → closed ----
 cd "$INST" || exit 1
@@ -207,6 +257,20 @@ expect "生成视图无需 Herdr 即可读取" test -s knowledge/business/选题
 # 角色一启动就会自己开题——那正是 L17 要拦的。
 (cd "$INST" && scripts/opc-role.sh add tester --scope knowledge/work/tester >/dev/null 2>&1) || true
 expect "新角色的简报已生成" test -f "$INST/agents/tester/AGENTS.md"
+expect "新角色有 Claude 的入口文件" test -f "$INST/agents/tester/CLAUDE.md"
+expect "新角色有 Gemini 的入口文件" test -f "$INST/agents/tester/GEMINI.md"
+expect "新角色的 Claude 入口文件只引用 AGENTS.md" \
+  only_ref "$INST/agents/tester/CLAUDE.md"
+expect "新角色的 Gemini 入口文件只引用 AGENTS.md" \
+  only_ref "$INST/agents/tester/GEMINI.md"
+expect "新角色的收件箱用统一任务格式" \
+  grep -q "| 任务 ID：task-" "$INST/knowledge/inbox/tester.md"
+expect "新角色的收件箱保留当前队列小节" \
+  grep -q "## 当前队列" "$INST/knowledge/inbox/tester.md"
+expect "新角色的收件箱保留完成与撤销规则" \
+  bash -c "grep -q '✅' '$INST/knowledge/inbox/tester.md' && grep -q '⛔ 已撤销' '$INST/knowledge/inbox/tester.md'"
+expect "新角色的简报不要求写 gm 收件箱" \
+  bash -c "! grep -q '写.*knowledge/inbox/gm.md' '$INST/agents/tester/AGENTS.md'"
 expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/tester/AGENTS.md"
 expect "新角色的 roles.json 里有描述" \
   test -n "$(jq -r '.roles[] | select(.name=="tester") | .description' "$INST/roles.json")"

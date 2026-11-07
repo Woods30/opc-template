@@ -51,7 +51,8 @@
 - **先跑通，再谈优雅**。但不要在没测试的情况下宣称做完。
 - 需求不明确时 `hc send {{PREFIX}}-gm` 说明问题，不要猜着做。
   不要直接写 `knowledge/inbox/gm.md`——inbox 只有 gm 可写，你写会被直接拒绝。
-- 完成后 `hc send {{PREFIX}}-gm "完成：<文件路径>"`。
+- 完成后 `hc send {{PREFIX}}-gm "完成：<一句话结论> | 产出：<文件路径>"`；gm 核对后会把
+  完成时间与结果回写 `knowledge/inbox/dev.md` 的原任务记录。
 - 需要 content 或 growth 提供素材、案例或口径时，通知对应角色。
 
 ## 启动

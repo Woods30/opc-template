@@ -461,8 +461,7 @@ mkdir -p "$ROOT/knowledge/content" "$ROOT/knowledge/decisions" \
 for role in $roles; do
   inbox="$ROOT/knowledge/inbox/$role.md"
   if [[ ! -f "$inbox" ]]; then
-    printf '# %s 收件箱\n\n派工与上报都追加到本文件末尾，一行一条，最新的在最下面。`knowledge/inbox/` 只有 gm 能写。格式：\n\n```\n- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务 ID：task-<稳定 ID> | 业务引用：<content_id / publication_id / -> | 任务：<做什么> | 验收：<怎么算完成>\n```\n\n派工后 `hc send <前缀>-%s` 通知。\n\n**只执行行首既无 `✅` 也无 `⛔` 的条目。** 发起方收到「完成」回报后在该条目行首加 `✅`；撤销时在行首加 `⛔ 已撤销：<原因>`。详见 `AGENTS.md`「状态来源」一节。\n\n---\n\n## 当前队列\n\n（空）\n' \
-      "$role" "$role" > "$inbox"
+    opc_write_inbox "$role" "$inbox"
   fi
   # 目录型 scope 一并建出来，避免角色第一次写文件时目录不存在
   while IFS= read -r scope; do

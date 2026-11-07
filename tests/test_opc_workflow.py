@@ -2200,7 +2200,8 @@ class WorkflowTestCase(unittest.TestCase):
             "gm",
             [
                 "- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题",
-                "- ✅ [2026-11-03 08:00] 发起方：gm | 任务：修掉旧日历 | 验收：已删除",
+                "- ✅ [2026-11-03 08:00] 发起方：gm | 任务：修掉旧日历 | 验收：已删除 | "
+                "完成时间：2026-11-03 09:15 | 结果：旧日历已删除，见 knowledge/business/选题日历.md",
             ],
         )
         self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/inbox/gm.md` |"])
@@ -2239,6 +2240,13 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertTrue(tasks[0]["task_id"].startswith("task-"))
         self.assertEqual("产出本周选题清单", tasks[0]["task"])
         self.assertEqual("10 个选题", tasks[0]["acceptance"])
+        self.assertIsNone(tasks[0]["completed_at"])
+        self.assertIsNone(tasks[0]["result"])
+        self.assertEqual("2026-11-03 09:15", tasks[1]["completed_at"])
+        self.assertEqual(
+            "旧日历已删除，见 knowledge/business/选题日历.md",
+            tasks[1]["result"],
+        )
 
         self.assertEqual(
             [{"role": "gm", "terminal": "opc-gm"}],
@@ -2418,7 +2426,8 @@ class WorkflowTestCase(unittest.TestCase):
             "gm",
             [
                 "- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题",
-                "- ✅ [2026-11-03 08:00] 发起方：gm | 任务：修掉旧日历 | 验收：已删除",
+                "- ✅ [2026-11-03 08:00] 发起方：gm | 任务：修掉旧日历 | 验收：已删除 | "
+                "完成时间：2026-11-03 09:15 | 结果：旧日历已删除",
                 "- ⛔ 已撤销：不再需要 - [2026-11-02 08:00] 发起方：gm | 任务：换个方向 | 验收：无",
             ],
         )
@@ -2434,6 +2443,66 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(
             [payload["tasks"][0]["task_id"]],
             payload["scope"]["task_ids"],
+        )
+
+    def test_completed_inbox_entry_requires_a_nonempty_result(self):
+        self.write_inbox(
+            "dev",
+            [
+                "- ✅ [2026-11-04 09:30] 发起方：gm | 任务 ID：task-noresult | "
+                "业务引用：- | 任务：修复冒烟 | 验收：测试通过 | "
+                "完成时间：2026-11-04 10:00",
+            ],
+        )
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        task = self.dashboard()["tasks"][0]
+
+        self.assertEqual("open", task["state"])
+        self.assertIsNone(task["completed_at"])
+        self.assertIsNone(task["result"])
+        self.assertEqual(["task-noresult"], self.dashboard()["scope"]["task_ids"])
+
+    def test_completed_inbox_entry_accepts_legacy_line_start_checkmark(self):
+        self.write_inbox(
+            "growth",
+            [
+                "✅ - [2026-11-04 09:30] 发起方：gm | 任务 ID：task-legacy-start | "
+                "业务引用：- | 任务：整理渠道 | 验收：给出清单 | "
+                "完成时间：2026-11-04 11:20 | 结果：候选清单见 knowledge/work/growth/渠道.md",
+            ],
+        )
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        tasks = self.dashboard()["tasks"]
+        self.assertEqual(1, len(tasks), "行首 legacy 完成条目不应被 parser 返回 None")
+        task = tasks[0]
+
+        self.assertEqual("done", task["state"])
+        self.assertEqual("2026-11-04 11:20", task["completed_at"])
+        self.assertEqual(
+            "候选清单见 knowledge/work/growth/渠道.md",
+            task["result"],
+        )
+
+    def test_completed_inbox_entry_accepts_legacy_checkmark_dash_prefix(self):
+        self.write_inbox(
+            "growth",
+            [
+                "- ✅ - [2026-11-04 09:30] 发起方：gm | 任务 ID：task-legacy | "
+                "业务引用：- | 任务：整理渠道 | 验收：给出清单 | "
+                "完成时间：2026-11-04 11:20 | 结果：候选清单见 knowledge/work/growth/渠道.md",
+            ],
+        )
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        task = self.dashboard()["tasks"][0]
+
+        self.assertEqual("done", task["state"])
+        self.assertEqual("2026-11-04 11:20", task["completed_at"])
+        self.assertEqual(
+            "候选清单见 knowledge/work/growth/渠道.md",
+            task["result"],
         )
 
     def test_end_to_end_dashboard_covers_content_publish_metrics_and_tasks(self):

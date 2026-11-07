@@ -79,8 +79,8 @@ case "$cmd" in
 
 - 动手前先读 \`AGENTS.md\` 与 \`knowledge/team.md\`。
 - 产出写进自己负责的子树，命名带日期。
-- 完成后 \`hc send {{PREFIX}}-gm "完成：<文件路径>"\`。
-- 拿不准时写 \`knowledge/inbox/gm.md\` 并 \`hc send {{PREFIX}}-gm\`。
+- 完成后 \`hc send {{PREFIX}}-gm "完成：<一句话结论> | 产出：<文件路径>"\`，由 gm 把结果回写原任务记录。
+- 拿不准时用 \`hc send {{PREFIX}}-gm\` 说明问题；不要直接写 \`knowledge/inbox/\`，它只有 gm 可写。
 
 ## 启动
 
@@ -91,11 +91,12 @@ $startup
 EOF
       echo "已创建角色简报：${tpl}（请补全职责与边界）"
     fi
+    [[ -f "$ROOT/agents/$name/CLAUDE.md" ]] || printf '%s\n' '@AGENTS.md' > "$ROOT/agents/$name/CLAUDE.md"
+    [[ -f "$ROOT/agents/$name/GEMINI.md" ]] || printf '%s\n' '@./AGENTS.md' > "$ROOT/agents/$name/GEMINI.md"
 
     inbox="$ROOT/knowledge/inbox/$name.md"
     if [[ ! -f "$inbox" ]]; then
-      printf '# %s 收件箱\n\n派工与上报都追加到本文件末尾，一行一条，最新的在最下面。格式：\n\n```\n- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务：<做什么> | 验收：<怎么算完成>\n```\n\n派工后 `hc send <前缀>-%s` 通知。\n\n---\n' \
-        "$name" "$name" > "$inbox"
+      opc_write_inbox "$name" "$inbox"
       echo "已创建收件箱：knowledge/inbox/$name.md"
     fi
 

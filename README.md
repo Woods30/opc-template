@@ -113,12 +113,13 @@ opc upgrade --all          # 升级注册表里的所有实例
 ```
 roles.json           角色注册表：启用/停用、CLI、一句话描述、可写子树、权限模式、技能选择
 channels.json        频道清单：id / 中文名 / 是否启用
-AGENTS.md            各角色共用的规约（Claude Code 自动加载）
+AGENTS.md            各角色共用的规约（Codex 原生加载）
 LESSONS.md           全局经验教训库（gm 维护；角色写各自的 work/<角色>/LESSONS.md）
-CLAUDE.md            一行：@AGENTS.md
+CLAUDE.md            Claude Code 入口，一行：@AGENTS.md
+GEMINI.md            Gemini CLI 入口，一行：@./AGENTS.md
 INSTANCE.md          本实例专属信息（前缀、频道、运行参数、待办）
-agents/              各角色的材料目录：`agents/<角色>/AGENTS.md` 是入口，
-                     目录里还可以放角色专属参考文件
+agents/              各角色的材料目录：`agents/<角色>/AGENTS.md` 是规范文件，
+                     同目录的 CLAUDE.md / GEMINI.md 只转发到它
 skills/              统一技能库：`skills/<名字>/SKILL.md`，角色按 roles.json 选用
 knowledge/           唯一事实来源：
                      ├── content/   canonical 内容包：内容卡、主稿、publications/
