@@ -34,7 +34,7 @@ export async function runTask(task, cx) {
 export function queueRead(promise) { queuedReads.push(promise); }
 
 function makeElement(kind) {
-  const state = { kind: kind, children: [] };
+  const state = { kind: kind, children: [], calls: [] };
   const target = {
     child(value) {
       if (value === null || value === undefined) {
@@ -58,9 +58,14 @@ function makeElement(kind) {
   const proxy = new Proxy(target, {
     get(t, prop) {
       if (prop === "__children") return state.children;
+      if (prop === "__calls") return state.calls;
+      if (prop === "__kind") return state.kind;
       if (prop in t) return t[prop];
-      // 其余都是样式方法（gap/px/bg/...）：调用即可，不改变结构。
-      return () => proxy;
+      // 记录样式与 id 调用，让结构测试能验证 gpui 元素的真实布局契约。
+      return (...args) => {
+        state.calls.push([prop, ...args]);
+        return proxy;
+      };
     },
   });
   return proxy;
@@ -202,6 +207,25 @@ function textsOf(node) {
   const out = [];
   for (const child of node.__children ?? []) out.push(...textsOf(child));
   return out;
+}
+
+function nodesOf(node) {
+  if (!node || typeof node !== "object") return [];
+  const out = [node];
+  for (const child of node.__children ?? []) out.push(...nodesOf(child));
+  return out;
+}
+
+function hasCall(node, method, ...args) {
+  return (node.__calls ?? []).some(call =>
+    call[0] === method && JSON.stringify(call.slice(1)) === JSON.stringify(args)
+  );
+}
+
+function findById(root, id) {
+  return nodesOf(root).find(node =>
+    (node.__calls ?? []).some(call => call[0] === "id" && call[1] === id)
+  );
 }
 
 function deferred() {
@@ -380,4 +404,22 @@ test("载荷完整时各栏都渲染得出来", () => {
   }
   assert.equal(texts.includes("内容卡"), true);
   assert.equal(texts.includes("主稿"), true);
+});
+
+test("六个阶段列头固定等高，让列内容从同一水平线开始", () => {
+  const root = newView().render();
+  for (const key of ["proposed", "drafting", "reviewing", "ready", "published", "reviewed"]) {
+    const header = findById(root, `opc-dashboard-stage-header-${key}`);
+    assert.ok(header, `缺少阶段列头：${key}`);
+    assert.equal(hasCall(header, "h", 58), true, `${key} 列头应固定为 58px`);
+    assert.equal(hasCall(header, "flex_none"), true, `${key} 列头不应被卡片内容挤压`);
+  }
+});
+
+test("内容项使用低圆角与左侧状态光条的 Signal Card", () => {
+  const root = newView().render();
+  const card = findById(root, "opc-dashboard-card-content-content-1");
+  assert.ok(card, "内容项应有稳定的 Signal Card id");
+  assert.equal(hasCall(card, "rounded", 3), true);
+  assert.equal(hasCall(card, "border_l", 2), true);
 });

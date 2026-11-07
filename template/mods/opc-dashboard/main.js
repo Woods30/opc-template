@@ -608,11 +608,13 @@ export default class OpcDashboard extends View {
       item.draft_path ? this.fileLink(t, item, item.kind === "content" ? "主稿" : "渠道稿", item.draft_path) : null,
     ].filter(Boolean);
     return v_flex()
-      .gap(6)
+      .id(`opc-dashboard-card-${item.kind}-${item.id}`)
+      .gap(5)
       .p(9)
-      .rounded(6)
+      .rounded(3)
       .border_1()
-      .border_color(item.blocked ? t.blocked : t.border)
+      .border_l(2)
+      .border_color(item.blocked ? t.blocked : t.accent)
       .bg(t.surface)
       .child(
         h_flex()
@@ -664,6 +666,8 @@ export default class OpcDashboard extends View {
             .bg(t.chrome)
             .child(
               v_flex()
+                .id(`opc-dashboard-stage-header-${stage.key}`)
+                .h(58)
                 .flex_none()
                 .gap(3)
                 .px(10)
