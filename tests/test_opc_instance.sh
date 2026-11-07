@@ -332,30 +332,32 @@ expect "选中技能缺失时有告警" grep -q "instance-ops" <<< "$out"
 expect "缺失的技能不进索引" \
   bash -c "! grep -q 'instance-ops' '$HERDR_CORE_HOME/templates/t-dev.md'"
 
-# 技能文件是指向实例外的软链接：跳过并告警，外部内容不进提示词
+# 技能文件是指向实例外的软链接：安装失败，外部内容不进提示词。
+# 技能正文会被读进角色提示词，等于交给终端执行，所以越界读取要拦住。
 printf -- '---\nname: instance-ops\ndescription: 外部机密\n---\n\n外部机密内容\n' \
   > "$WORK/outside.md"
 mkdir -p "$INST/skills/instance-ops"
 ln -s "$WORK/outside.md" "$INST/skills/instance-ops/SKILL.md"
+cp "$HERDR_CORE_HOME/templates/t-dev.md" "$WORK/t-dev.before"
 out="$( (cd "$INST" && scripts/opc-install.sh --no-input t) 2>&1 )"
 rc=$?
-check "技能指向实例外时安装仍成功" "0" "$rc"
-expect "技能指向实例外时有告警" grep -q "指向实例外" <<< "$out"
-expect "指向实例外的技能不进索引" \
-  bash -c "! grep -q 'instance-ops' '$HERDR_CORE_HOME/templates/t-dev.md'"
+check "技能指向实例外时安装失败" "1" "$rc"
+expect "技能指向实例外时说明原因" grep -q "实例外" <<< "$out"
+expect "失败后原有模板没被截断" \
+  cmp -s "$WORK/t-dev.before" "$HERDR_CORE_HOME/templates/t-dev.md"
 expect "外部文件内容不进提示词" \
   bash -c "! grep -q '外部机密内容' '$HERDR_CORE_HOME/templates/t-dev.md'"
 
-# 整个技能库指向实例外：所有技能都跳过
+# 整个技能库指向实例外：同样拦住
 rm -rf "$INST/skills"
 mkdir -p "$WORK/outside-skills"
 ln -s "$WORK/outside-skills" "$INST/skills"
 out="$( (cd "$INST" && scripts/opc-install.sh --no-input t) 2>&1 )"
 rc=$?
-check "技能库指向实例外时安装仍成功" "0" "$rc"
-expect "技能库指向实例外时有告警" grep -q "技能目录指向实例外" <<< "$out"
-expect "技能库指向实例外时索引为空" \
-  bash -c "! grep -q '技能索引' '$HERDR_CORE_HOME/templates/t-gm.md'"
+check "技能库指向实例外时安装失败" "1" "$rc"
+expect "技能库指向实例外时说明原因" grep -q "实例外" <<< "$out"
+expect "技能库指向实例外时模板没被重写" \
+  cmp -s "$WORK/t-dev.before" "$HERDR_CORE_HOME/templates/t-dev.md"
 
 # ---- 9. 端到端验收：安装产物、起始材料升级、实例 lint ----
 # 前 8 节把 $INST 改得面目全非（技能库被换成软链接、角色被停用），这里另开

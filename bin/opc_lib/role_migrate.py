@@ -192,7 +192,7 @@ def effective_roles(roles, result):
 
 def written_targets(result):
     """迁移当次会写出来的角色入口路径。"""
-    return [item["target"] for item in result["roles"] if item["write"]]
+    return [item["target"] for item in result["roles"] if item.get("write")]
 
 
 def records(result):
@@ -212,7 +212,8 @@ def detach(starter_result, result):
     """
     files = starter_result.setdefault("baseline", {}).setdefault("files", {})
     for rel, record in records(result).items():
-        if not any(item["target"] == rel and item["write"] for item in result["roles"]):
+        if not any(item.get("target") == rel and item.get("write")
+                   for item in result["roles"]):
             continue
         starter_result["copy"] = [row for row in starter_result.get("copy") or []
                                   if row[2] != rel]
@@ -254,7 +255,7 @@ def paths(result):
     for item in result.get("roles") or []:
         if item.get("skipped"):
             continue
-        if item["write"]:
+        if item.get("write"):
             out.append(item["target"])
         out.append(item["old"])
     return out

@@ -318,6 +318,48 @@ else
   bad "非法旧角色名被静默跳过"
 fi
 
+say "旧角色名不合法"
+
+# 角色名带大写与点：迁移不擅自改名，但也不能崩——要跳过并说明原因
+INST4="$WORK/inst-badname"
+"$ROOT/bin/opc" install "$INST4" t4 --template "$ROOT" --no-input --skip-smoke >/dev/null 2>&1
+check "非法角色名的实例准备就绪" "0" "$?"
+python3 - "$INST4" <<'PY'
+import json
+import pathlib
+import shutil
+import sys
+
+inst = pathlib.Path(sys.argv[1])
+roles = json.loads((inst / "roles.json").read_text(encoding="utf-8"))
+for role in roles["roles"]:
+    if role["name"] == "gm":
+        role["name"] = "Bad.Name"
+        role["template"] = "agents/opc-Bad.Name.md"
+        role.pop("description", None)
+        role.pop("skills", None)
+(inst / "agents" / "opc-Bad.Name.md").write_text(
+    "---\nname: Bad.Name\ndescription: 旧角色\n---\n\n旧正文\n", encoding="utf-8")
+shutil.rmtree(inst / "agents" / "gm")
+(inst / "roles.json").write_text(
+    json.dumps(roles, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+rm -f "$INST4/.opc/starters.json"
+(
+  cd "$INST4" || exit 1
+  git add -A
+  git -c user.name="$OPC_GIT_NAME" -c user.email="$OPC_GIT_EMAIL" \
+    commit -m "旧角色名不合法" >/dev/null 2>&1
+)
+
+out="$("$ROOT/bin/opc" upgrade "$INST4" --template "$ROOT" --skip-smoke 2>&1)"
+if grep -q "Traceback" <<< "$out"; then
+  bad "非法旧角色名让升级崩了"
+else
+  ok "非法旧角色名没让升级崩"
+fi
+expect "升级说明角色名不合法" grep -q "角色名不合法" <<< "$out"
+
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"
 [[ "$FAIL" -eq 0 ]]
