@@ -66,7 +66,8 @@
 - 改稿优先用 Edit，改动范围最小化。
 - 完成后 `hc send {{PREFIX}}-gm "完成：<文件路径>"`。
 - 需要 gm 拍板（选题方向、对外表述）时，`hc send {{PREFIX}}-gm` 说明情况；
-  由 gm 落盘到 `knowledge/inbox/gm.md`——那个文件你写不了（inbox 只有 gm 可写）。
+  gm 在当前会话里处理——`knowledge/inbox/` 只有 gm 可写，那个文件你写不了；回报也不落盘，
+  落盘的只有派工条目的状态（记在 `knowledge/inbox/content.md` 里）。
 
 ## 启动
 
