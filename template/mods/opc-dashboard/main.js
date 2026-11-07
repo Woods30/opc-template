@@ -1,6 +1,6 @@
 // OPC 业务看板：只读展示 canonical 记录编译出的 Dashboard JSON。
 // 不做业务写入：状态转换、审批、指标记录都还在 CLI 里，这里只看。
-import { Background, View, div } from "gpui-kit";
+import { Background, PathBuilder, View, div } from "gpui-kit";
 import { Editor, EditorState, h_flex, v_flex } from "gpui-base";
 import {
   props,
@@ -46,6 +46,13 @@ const NODE_PULSE_PERIOD = 1600;
 const STAGE_PULSE_PERIOD = 2200;
 const AMBIENT_PULSE_PERIOD = 5200;
 const BEAM_SWEEP_PERIOD = 3600;
+const FULL_BOUNDS_PATH = PathBuilder.fill()
+  .move_to("0%", "0%")
+  .line_to("100%", "0%")
+  .line_to("100%", "100%")
+  .line_to("0%", "100%")
+  .close()
+  .build();
 
 const EDITOR_LANGUAGES = {
   js: "javascript",
@@ -668,12 +675,15 @@ export default class OpcDashboard extends View {
   }
 
   ambientLayer(t) {
-    const ambient = div()
+    const ambient = this.cx
+      .paint_path(
+        FULL_BOUNDS_PATH,
+        Background.linear_gradient(24, t.background, t.accent).opacity(0.22),
+      )
       .id("opc-dashboard-ambient")
       .absolute()
       .inset_0()
       .overflow_hidden()
-      .bg(Background.linear_gradient(24, t.background, t.accent).opacity(0.22))
       .opacity(0.5)
       .transition("opacity", { duration: 260, easing: "ease-out" })
       .when(
@@ -687,14 +697,17 @@ export default class OpcDashboard extends View {
           }),
       );
     return ambient.child(
-      div()
+      this.cx
+        .paint_path(
+          FULL_BOUNDS_PATH,
+          Background.linear_gradient(90, t.background, t.accent).opacity(0.16),
+        )
         .id("opc-dashboard-beam")
         .absolute()
         .left(-260)
         .top(0)
         .h_full()
         .w(220)
-        .bg(Background.linear_gradient(90, t.background, t.accent).opacity(0.16))
         .when(
           this.motionEnabled,
           beam =>

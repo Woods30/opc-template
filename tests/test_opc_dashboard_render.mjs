@@ -36,6 +36,13 @@ export function queueRead(promise) { queuedReads.push(promise); }
 function makeElement(kind) {
   const state = { kind: kind, children: [], calls: [] };
   const target = {
+    bg(value) {
+      if (value?.kind === "linear_gradient") {
+        throw new TypeError("bg(value) expects Color, not Background");
+      }
+      state.calls.push(["bg", value]);
+      return proxy;
+    },
     child(value) {
       if (value === null || value === undefined) {
         throw new Error(
@@ -85,6 +92,20 @@ export const Background = {
     };
   },
 };
+export const PathBuilder = {
+  fill() {
+    return {
+      points: [],
+      move_to(x, y) { this.points.push([x, y]); return this; },
+      line_to(x, y) { this.points.push([x, y]); return this; },
+      close() { this.closed = true; return this; },
+      build() { return { kind: "path", points: this.points, closed: this.closed }; },
+    };
+  },
+};
+export function paintPath(path, background) {
+  return makeElement("paint_path").paint_background(background).paint_geometry(path);
+}
 export const TextView = {
   markdown(id, text) { return makeElement("text"); },
 };
@@ -207,6 +228,7 @@ function newView(overrides = {}) {
   view.cx = {
     notify() {},
     spawn(task) { return host.runTask(task, this); },
+    paint_path(path, background) { return host.paintPath(path, background); },
   };
   Object.assign(view, overrides);
   return view;
@@ -441,7 +463,9 @@ test("阶段轨道固定显示六个节点并使用 Aurora gradient", () => {
   const ambient = findById(root, "opc-dashboard-ambient");
   assert.ok(ambient, "看板区域应有 Aurora 环境光层");
   assert.equal(
-    (ambient.__calls ?? []).some(call => call[0] === "bg" && call[1]?.kind === "linear_gradient"),
+    (ambient.__calls ?? []).some(call =>
+      call[0] === "paint_background" && call[1]?.kind === "linear_gradient"
+    ),
     true,
   );
   for (const key of ["proposed", "drafting", "reviewing", "ready", "published", "reviewed"]) {
