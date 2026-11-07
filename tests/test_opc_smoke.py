@@ -38,6 +38,9 @@ class SmokeTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.instance = Path(self.tmp) / "instance"
         (self.instance / "tools").mkdir(parents=True)
+        (self.instance / ".opc").mkdir(parents=True)
+        (self.instance / ".opc" / "instance.json").write_text(
+            json.dumps({"kind": "opc-instance", "version": 1}), encoding="utf-8")
         shutil.copy2(SMOKE, self.instance / "tools" / "opc-smoke")
         (self.instance / "tools" / "opc-smoke").chmod(0o755)
 
@@ -84,6 +87,68 @@ class SmokeTestCase(unittest.TestCase):
         leftovers = [p.name for p in Path(tempfile.gettempdir()).glob("opc-smoke-*")
                      if not p.name.startswith("opc-smoke-test-")]
         self.assertEqual([], leftovers)
+
+    # ---- 角色环境 ----
+
+    def test_smoke_passes_when_the_parent_process_carries_a_role(self):
+        # 角色终端里 OPC_ROLE 由启动器导出，冒烟必须能在这种环境下跑通：
+        # 脚本用多个 actor 连调工作流，继承下来的角色会污染每一步。
+        self.install_workflow()
+        env = dict(os.environ)
+        env["OPC_ROLE"] = "gm"
+        tool = self.instance / "tools" / "opc-smoke"
+        result = subprocess.run(
+            [sys.executable, str(tool)],
+            cwd=str(self.instance),
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("通过", result.stdout)
+
+    def test_smoke_keeps_other_environment_variables(self):
+        # 只隔离角色变量，其余环境变量照常继承——别的工具靠它们定位实例。
+        self.install_workflow()
+        env = dict(os.environ)
+        env["OPC_ROLE"] = "gm"
+        env["OPC_TEST_MARKER"] = "kept"
+        tool = self.instance / "tools" / "opc-smoke"
+        result = subprocess.run(
+            [sys.executable, str(tool), "--json"],
+            cwd=str(self.instance),
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["ok"])
+
+    def test_keep_really_keeps_the_temporary_directory(self):
+        self.install_workflow()
+        result = run_smoke(self.instance, "--keep", "--json")
+        self.assertEqual(0, result.returncode, result.stderr)
+        kept = json.loads(result.stdout).get("kept_dir")
+        self.assertTrue(kept, "冒烟没报告保留的临时目录")
+        self.assertTrue(Path(kept).is_dir(), "保留的临时目录不存在")
+        self.addCleanup(shutil.rmtree, kept, True)
+
+    def test_smoke_finds_the_instance_root_from_another_directory(self):
+        # 脚本不在 <实例>/tools/ 下时也要能定位实例根（提案目录里评审用）。
+        self.install_workflow()
+        elsewhere = self.instance / "knowledge" / "work" / "dev" / "tools"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        tool = elsewhere / "opc-smoke"
+        shutil.copy2(self.instance / "tools" / "opc-smoke", tool)
+        tool.chmod(0o755)
+        result = subprocess.run(
+            [sys.executable, str(tool)],
+            cwd=str(self.instance),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("通过", result.stdout)
 
     # ---- 失败路径 ----
 

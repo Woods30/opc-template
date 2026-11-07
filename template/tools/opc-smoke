@@ -15,16 +15,28 @@ knowledge/：自己在临时目录里造一份最小实例（一个假频道、�
 因此「有些目录可能不存在」不影响冒烟：fixture 自带目录，实例少什么都能跑。
 反过来，实例的工具坏了、workflow 改坏了，这里就会红。
 
+三处要点：
+
+1. **每一步有自己的环境**：工作流按「actor 与当前角色 OPC_ROLE 一致」做误用
+   检查，冒烟用多个 actor 连调，所以每一步都把继承来的 OPC_ROLE 换成这一步
+   自己的 actor；不带 actor 的步骤（如 build）则完全不设这个变量。直接把
+   OPC_ROLE 删掉也能跑通，但等于把这条防线绕过去了——冒烟就不再验证它。
+2. **实例根向上找**：脚本装在 <实例>/tools/ 下、放在提案目录里评审，都能定位
+   到同一个实例；也可用 --instance-root 显式指定。
+3. **--keep 真的保留**：保留临时目录并打印路径，便于排查。
+
 用法：
-    tools/opc-smoke            # 跑一遍，退出码 0 表示通过
-    tools/opc-smoke --keep     # 保留临时目录，便于排查
-    tools/opc-smoke --json     # 输出机器可读的结果
+    tools/opc-smoke                    # 跑一遍，退出码 0 表示通过
+    tools/opc-smoke --keep             # 保留临时目录，便于排查
+    tools/opc-smoke --json             # 输出机器可读的结果
+    tools/opc-smoke --instance-root .  # 显式指定实例根
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -45,9 +57,31 @@ class SmokeError(Exception):
     """冒烟失败：带一句人能看懂的原因。"""
 
 
-def instance_root() -> Path:
-    """实例根 = 工具所在目录的父目录。工具只在实例里工作。"""
-    return Path(__file__).resolve().parent.parent
+def find_instance_root(start: Path | None = None) -> Path:
+    """实例根 = 脚本所在位置的祖先目录，按可信度从高到低认：
+
+    1. 同时含实例标记与工作流工具的目录 —— 真实例；
+    2. 只含实例标记的目录 —— 实例在但工作流没了，返回它，好让后面报
+       「缺少 tools/opc-workflow」，而不是一句含混的「找不到实例根」；
+    3. 只含工作流工具的目录 —— 工具在但实例标记没了。
+
+    从脚本所在目录向上找，所以脚本装在 <实例>/tools/ 下、或者放在提案目录里
+    评审，都能定位到同一个实例。
+    """
+    current = (start or Path(__file__).resolve().parent).resolve()
+    candidates = [current, *current.parents]
+    for candidate in candidates:
+        if ((candidate / ".opc" / "instance.json").is_file()
+                and (candidate / "tools" / "opc-workflow").is_file()):
+            return candidate
+    for candidate in candidates:
+        if (candidate / ".opc" / "instance.json").is_file():
+            return candidate
+    for candidate in candidates:
+        if (candidate / "tools" / "opc-workflow").is_file():
+            return candidate
+    raise SmokeError(
+        "找不到实例根（需要 .opc/instance.json 与 tools/opc-workflow）：从 {} 向上没找到".format(current))
 
 
 def write(path: Path, text: str) -> None:
@@ -104,15 +138,41 @@ def install_workflow(root: Path, source: Path) -> Path:
 
 
 class Runner:
-    def __init__(self, workflow: Path, root: Path):
+    """按步骤调 workflow，每一步都有自己干净的环境。"""
+
+    def __init__(self, workflow: Path, root: Path, base_env=None):
         self.workflow = workflow
         self.root = root
+        self.base_env = dict(os.environ if base_env is None else base_env)
         self.steps = []
+
+    @staticmethod
+    def actor_of(args) -> str | None:
+        """从命令参数里取 --actor 的值。"""
+        for index, value in enumerate(args):
+            if value == "--actor" and index + 1 < len(args):
+                return args[index + 1]
+        return None
+
+    def step_env(self, args) -> dict:
+        """这一步要传给子进程的环境。
+
+        OPC_ROLE 是唯一要管的变量：opc-workflow 用它做「actor 与当前角色是否
+        一致」的误用检查。冒烟用多个 actor 连调，所以每一步都要把父进程继承来的
+        OPC_ROLE 换成这一步自己的 actor；不带 actor 的步骤则完全不设这个变量。
+        """
+        env = dict(self.base_env)
+        env.pop("OPC_ROLE", None)
+        actor = self.actor_of(args)
+        if actor:
+            env["OPC_ROLE"] = actor
+        return env
 
     def run(self, *args):
         result = subprocess.run(
             [sys.executable, str(self.workflow), *args],
             cwd=str(self.root),
+            env=self.step_env(args),
             capture_output=True,
             text=True,
         )
@@ -161,7 +221,7 @@ def check_dashboard(root: Path) -> dict:
     return payload
 
 
-def run_smoke(root: Path) -> dict:
+def run_smoke(root: Path, keep: bool = False) -> dict:
     workflow_source = root / "tools" / "opc-workflow"
     if not workflow_source.is_file():
         raise SmokeError("实例里缺少 tools/opc-workflow：{}".format(workflow_source))
@@ -228,26 +288,32 @@ def run_smoke(root: Path) -> dict:
             raise SmokeError("build 没有生成选题日历：{}".format(calendar))
 
         payload = check_dashboard(instance)
-        return {
+        result = {
             "ok": True,
             "steps": len(runner.steps),
             "content_id": content_id,
             "publication_id": publication_id,
             "counts": payload.get("counts", {}),
         }
+        if keep:
+            result["kept_dir"] = str(temp)
+        return result
     finally:
-        shutil.rmtree(temp, ignore_errors=True)
+        if not keep:
+            shutil.rmtree(temp, ignore_errors=True)
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="OPC 主流程冒烟检查")
     parser.add_argument("--keep", action="store_true", help="保留临时目录，便于排查")
     parser.add_argument("--json", action="store_true", help="输出机器可读的结果")
+    parser.add_argument("--instance-root", help="显式指定实例根（默认向上自动找）")
     args = parser.parse_args(argv)
 
-    root = instance_root()
     try:
-        result = run_smoke(root)
+        root = (Path(args.instance_root).resolve() if args.instance_root
+                else find_instance_root())
+        result = run_smoke(root, keep=args.keep)
     except SmokeError as error:
         if args.json:
             print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
@@ -267,6 +333,8 @@ def main(argv=None) -> int:
     else:
         print("主流程冒烟通过：{} 步（内容 {}，publication {}）".format(
             result["steps"], result["content_id"], result["publication_id"]))
+        if result.get("kept_dir"):
+            print("保留临时目录：{}".format(result["kept_dir"]))
     return 0
 
 
