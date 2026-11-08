@@ -251,6 +251,37 @@ class BinOpcTestCase(unittest.TestCase):
         # 没选的角色留空 = 该 CLI 的默认模型
         self.assertEqual("", roles["gm"]["model"])
 
+    def test_answers_with_free_args_are_rejected(self):
+        # 自由参数等于给实例内容开一条往启动命令行里塞任意开关的路：不接。
+        answers = self.tmp / "answers-args.json"
+        answers.write_text(json.dumps({
+            "roles": {"content": {"args": ["--dangerously-skip-permissions"]}}
+        }, ensure_ascii=False), encoding="utf-8")
+        proc = self.run_opc(
+            "install", str(self.tmp / "instance"), "t", "--template", str(ROOT),
+            "--no-input", "--skip-smoke", "--answers", str(answers))
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("args", proc.stdout + proc.stderr)
+
+    def test_hand_written_role_args_never_reach_the_launcher(self):
+        # 实例里手写的 args 字段不生效：启动参数只由模版算出。
+        target = self.install_instance()
+        path = target / "roles.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for role in data["roles"]:
+            if role["name"] == "content":
+                role["args"] = ["--dangerously-skip-permissions"]
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        proc = subprocess.run(
+            ["bash", str(target / "scripts" / "opc-install.sh"),
+             "--no-input", "t", "--skip-smoke"],
+            cwd=str(target), env=self.env, capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertNotIn("--dangerously-skip-permissions",
+                         self.launcher_of(target, "content"))
+        self.assertIn("args", proc.stderr)
+
     def test_launcher_composes_model_args_per_cli(self):
         target = self.install_instance({
             "roles": {

@@ -325,16 +325,13 @@ for role in $roles; do
   model_args="$(opc_cli_model_args "$cli" "$model")"
   # 必备开关：codex 少了 --no-daemon，命令会跑到 HC 的调度之外。
   required_args="$(opc_cli_required_args "$cli")"
-  # 角色自带的额外参数（可选字段）：同样只放行干净的字符。
-  role_args=""
-  while IFS= read -r a; do
-    [[ -n "$a" ]] || continue
-    if ! [[ "$a" =~ ^[A-Za-z0-9._:=/,-]+$ ]]; then
-      echo "角色 $role 的 args 不合法：${a}" >&2
-      exit 1
-    fi
-    role_args="${role_args:+$role_args }$a"
-  done < <(opc_role_list "$role" args)
+  # 角色配置里没有自由参数字段：启动命令行只拼模版自己算出来的参数。
+  # 实例里若留着手写的 args 字段，明确告诉 owner 它不生效，而不是静默忽略。
+  if [[ -n "$(opc_role_list "$role" args)" ]]; then
+    echo "提示：角色 $role 的 roles.json 里有 args 字段，已不生效——" >&2
+    echo "      启动参数由模版按 CLI 与权限档算出，自由参数会变成往别人的" >&2
+    echo "      启动命令行里塞开关的路。需要别的开关请改模版机制。" >&2
+  fi
 
   cli_base="$(basename "$cli")"
   # 只有 claude 走 settings-<角色>.json；别的 CLI 用各自的原生参数
@@ -357,8 +354,8 @@ export OPC_ROOT OPC_SETTINGS OPC_CLI OPC_ROLE
 for _sh in zsh bash sh; do
   _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
   case "\$_sh" in
-    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $model_args $required_args $role_args $extra_args' ;;
-    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $model_args $required_args $role_args $extra_args' ;;
+    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $model_args $required_args $extra_args' ;;
+    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $model_args $required_args $extra_args' ;;
   esac
 done
 echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
