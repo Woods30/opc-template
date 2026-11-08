@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 干净实例的端到端测试：安装结构 + 完整内容闭环 + generated 视图 + inbox task ID。
+# 干净实例的端到端测试：安装结构 + 完整内容闭环 + generated 视图 + 任务卡闭环。
 #
 # 跑法：
 #   bash tests/test_opc_instance.sh
@@ -226,9 +226,22 @@ expect "growth 完成复盘" tools/opc-workflow transition "$publication_id" --t
   --conclusion continue --next-action "继续观察同类选题" --actor growth
 expect "gm 关闭内容" tools/opc-workflow transition "$content_id" --to closed --actor gm
 
-# ---- 3. inbox task ID 与业务引用 ----
-printf '\n- [2026-12-07 10:00] 发起方：gm | 任务 ID：task-abc123 | 业务引用：%s | 任务：跟进复盘 | 验收：有结论\n' \
+# ---- 3. 任务卡闭环：创建 → 完成 → 看板 ----
+# 收件箱里的历史条目不再进入看板，也不是待办来源。
+printf '\n- [2026-12-07 10:00] 发起方：gm | 任务 ID：task-inboxold | 业务引用：%s | 任务：跟进复盘 | 验收：有结论\n' \
   "$publication_id" >> knowledge/inbox/gm.md
+
+expect "按需创建任务卡" tools/opc-workflow create-task --assignee gm \
+  --task-id task-abc123 --task "跟进复盘" --acceptance "有结论" \
+  --reference "$publication_id" --next gm --terminal "等待 owner 决定" --actor gm
+expect "任务卡详情可读回" tools/opc-workflow show-task task-abc123
+expect "任务卡列出可过滤" tools/opc-workflow list-tasks --assignee gm --state open
+expect "缺结果时完成任务卡被拒绝" bash -c \
+  '! tools/opc-workflow complete-task task-abc123 --actor gm >/dev/null 2>&1'
+expect "完成任务卡" tools/opc-workflow complete-task task-abc123 \
+  --result "复盘结论见发布记录" --completed-at 2026-12-07T11:00:00+08:00 --actor gm
+expect "重复完成幂等" tools/opc-workflow complete-task task-abc123 \
+  --result "复盘结论见发布记录" --actor gm
 
 expect "validate 通过" tools/opc-workflow validate
 expect "build 刷新生成视图" tools/opc-workflow build
@@ -237,12 +250,16 @@ expect "已关闭内容不进选题日历" bash -c "! grep -q '$content_id' know
 expect "发布记录展示复盘结论" grep -q "continue" knowledge/business/wechat/发布记录.md
 expect "发布记录展示下一项行动" grep -q "继续观察同类选题" knowledge/business/wechat/发布记录.md
 expect "看板 JSON 生成" test -f knowledge/business/dashboard.json
-check "看板只把真实条目当任务" "1" \
+check "看板只把任务卡当任务" "1" \
   "$(jq -r '.tasks | length' knowledge/business/dashboard.json 2>/dev/null)"
 check "看板记录 stable task ID" "task-abc123" \
   "$(jq -r '.tasks[0].task_id' knowledge/business/dashboard.json 2>/dev/null)"
 check "看板记录业务引用" "$publication_id" \
   "$(jq -r '.tasks[0].reference' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板记录完成结果" "复盘结论见发布记录" \
+  "$(jq -r '.tasks[0].result' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板不出现收件箱条目" "0" \
+  "$(jq -r '[.tasks[] | select(.task_id == "task-inboxold")] | length' knowledge/business/dashboard.json 2>/dev/null)"
 check "看板内容状态为 closed" "closed" \
   "$(jq -r --arg id "$content_id" '.contents[] | select(.content_id == $id) | .status' \
      knowledge/business/dashboard.json 2>/dev/null)"
