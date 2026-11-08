@@ -3354,6 +3354,51 @@ class WorkflowTestCase(unittest.TestCase):
             ["create"], [event["action"] for event in record["events"]]
         )
 
+    def test_only_the_orchestrator_can_dispatch(self):
+        # 派工只有编排者能做：角色之间不自行开卡。
+        result = self.create_task(assignee="growth", actor="content")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("派工", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+    def test_only_the_assignee_can_write_the_completion(self):
+        record, card = self.create_task_record(assignee="content", actor="gm")
+
+        refused = self.run_workflow(
+            "complete-task", record["task_id"], "--result", "别人的结论",
+            "--actor", "growth")
+        self.assertEqual(1, refused.returncode)
+        self.assertIn("承接角色", refused.stderr)
+        after, _text = parse_frontmatter(card)
+        self.assertEqual("open", after["state"])
+        self.assertIsNone(after["result"])
+
+        accepted = self.run_workflow(
+            "complete-task", record["task_id"], "--result", "本周清单已交付",
+            "--actor", "content")
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        done, _text = parse_frontmatter(card)
+        self.assertEqual("done", done["state"])
+        self.assertEqual("本周清单已交付", done["result"])
+
+    def test_only_the_assignee_or_requester_can_cancel(self):
+        record, card = self.create_task_record(assignee="content", actor="gm")
+
+        refused = self.run_workflow(
+            "cancel-task", record["task_id"], "--reason", "不做了", "--actor", "growth")
+        self.assertEqual(1, refused.returncode)
+        self.assertIn("撤销", refused.stderr)
+        after, _text = parse_frontmatter(card)
+        self.assertEqual("open", after["state"])
+
+        accepted = self.run_workflow(
+            "cancel-task", record["task_id"], "--reason", "需求作废", "--actor", "gm")
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        cancelled, _text = parse_frontmatter(card)
+        self.assertEqual("cancelled", cancelled["state"])
+        self.assertEqual("需求作废", cancelled["cancel_reason"])
+
     def test_create_task_creates_the_task_directory_on_demand(self):
         self.assertFalse((self.instance / "knowledge" / "tasks").exists())
 

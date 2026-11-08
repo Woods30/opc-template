@@ -28,6 +28,10 @@
 actor 是内容卡的**归属记录**，不是授权：OPC_ROLE 由角色启动器导出，但调用方
 自己也能设置它，工具无法自证调用者是谁。因此 actor 检查只防误用；权限由 owner
 为每个角色选择的 CLI 原生模式与用户级配置控制。
+
+任务卡的**写**按委派契约分工：派工只有编排者，完成只有承接角色，撤销限发起方
+与承接方。读不设边界——实例里所有角色本来就能 `cat knowledge/tasks/*.md`，
+给读命令加过滤只会制造「看起来有边界」的错觉。
 """
 
 from __future__ import annotations
@@ -68,6 +72,8 @@ DASHBOARD_CONTRACT_VERSION = 1
 DASHBOARD_MARKER = '"read_only": true'
 GENERATED_MARKER = "GENERATED FILE — READ ONLY"
 DEFAULT_ACTOR = "content"
+# 编排者：唯一有权派工的角色。派工 = 建一张任务卡。
+ORCHESTRATOR_ROLE = "gm"
 CONTENT_ID_RE = re.compile(r"^content-\d{8}-\d{12}-[0-9a-f]{8}$")
 PUBLICATION_ID_RE = re.compile(
     r"^publication-\d{8}-\d{12}-[0-9a-f]{8}$"
@@ -3589,6 +3595,25 @@ def load_task_card(root: Path, task_id: str):
     return record, path, source
 
 
+def authorize_task_write(record, actor, action):
+    """核对写这张卡的人：完成只有承接角色，撤销限发起方与承接角色。
+
+    与 resolve_actor 同一个信任边界：工具无法自证调用者是谁，这些检查防的是
+    误用（角色越权改别人的卡），不是伪造。
+    """
+    assignee = record.get("assignee")
+    requester = record.get("requester")
+    if action == "complete" and actor != assignee:
+        raise WorkflowError(
+            f"只有承接角色「{assignee}」能写完成态：actor「{actor}」不能写这张卡"
+        )
+    if action == "cancel" and actor not in (assignee, requester):
+        raise WorkflowError(
+            f"只有承接角色「{assignee}」或发起方「{requester}」能撤销这张卡："
+            f"actor「{actor}」不能撤"
+        )
+
+
 def create_task(
     root: Path,
     assignee: str | None,
@@ -3605,6 +3630,13 @@ def create_task(
     root = ensure_instance(root)
     actor = resolve_actor(root, actor_arg)
     roles = configured_roles(root)
+
+    # 派工只有编排者能做：角色之间不自行开卡。
+    if actor != ORCHESTRATOR_ROLE:
+        raise WorkflowError(
+            f"派工只有编排者能做：actor「{actor}」不能建任务卡，"
+            f"请让编排者「{ORCHESTRATOR_ROLE}」派工"
+        )
 
     assignee = required_text("承接角色", assignee)
     if assignee not in roles:
@@ -3683,6 +3715,7 @@ def complete_task(
     root = ensure_instance(root)
     actor = resolve_actor(root, actor_arg)
     record, path, source = load_task_card(root, task_id)
+    authorize_task_write(record, actor, "complete")
     state = record.get("state")
     result_text = optional_text(result)
 
@@ -3741,6 +3774,7 @@ def cancel_task(
     root = ensure_instance(root)
     actor = resolve_actor(root, actor_arg)
     record, path, source = load_task_card(root, task_id)
+    authorize_task_write(record, actor, "cancel")
     state = record.get("state")
     reason_text = optional_text(reason)
 
