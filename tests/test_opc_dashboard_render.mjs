@@ -194,7 +194,7 @@ function payload(overrides = {}) {
         acceptance: "10 个选题",
         state: "open",
         reason: null,
-        source_path: "knowledge/inbox/content.md",
+        source_path: "knowledge/tasks/task-abc.md",
       },
     ],
     approvals: [],
