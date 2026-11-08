@@ -12,6 +12,10 @@ from .hashutil import sha256_file
 
 PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")
 CHANNEL_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
+# 模型名会写进启动器并交给 CLI 解析：只放行干净的字符。
+MODEL_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
+# 角色自带的额外 CLI 参数：同样只放行干净的字符。
+ARG_RE = re.compile(r"^[A-Za-z0-9._:=/,-]+$")
 
 
 def slugify(name):
@@ -67,7 +71,12 @@ def copy_config(payload, manifest, target):
 
 
 def apply_answers(target, answers):
-    """把 /opc-init 的问答结果写进 roles.json / channels.json。"""
+    """把 /opc-init 的问答结果写进 roles.json / channels.json。
+
+    逐角色的回答可以带 model（该角色用哪个模型，留空 = 该 CLI 的默认模型）
+    与 args（额外 CLI 参数）。字段缺失不动角色已有的值：老实例的角色配置
+    没有 model 字段时照样能用，按该 CLI 的默认模型跑。
+    """
     if not answers:
         return
     roles_path = Path(target) / "roles.json"
@@ -83,6 +92,18 @@ def apply_answers(target, answers):
             role["cli"] = str(patch["cli"])
         if patch.get("permissionMode"):
             role["permissionMode"] = str(patch["permissionMode"])
+        if "model" in patch:
+            model = str(patch.get("model") or "")
+            if model and not MODEL_RE.match(model):
+                raise OpcError("角色 {} 的模型名不合法：{}".format(role.get("name"), model))
+            role["model"] = model
+        if "args" in patch:
+            args = [str(arg) for arg in (patch.get("args") or [])]
+            for arg in args:
+                if not ARG_RE.match(arg):
+                    raise OpcError(
+                        "角色 {} 的参数不合法：{}".format(role.get("name"), arg))
+            role["args"] = args
     safefile.write_json(roles_path, roles_data)
 
     channels = answers.get("channels")

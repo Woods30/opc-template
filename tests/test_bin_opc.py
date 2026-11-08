@@ -7,6 +7,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -184,6 +185,199 @@ class BinOpcTestCase(unittest.TestCase):
         (target / "agents").symlink_to(outside)
         self.run_opc("upgrade", str(target), "--template", str(ROOT), "--skip-smoke")
         self.assertEqual([], sorted(p.name for p in outside.iterdir()))
+
+
+    # ---- 每角色 CLI 与模型 + 名册注册表 ----
+
+    def install_instance(self, answers=None):
+        """装一个实例；answers 非空时走 --answers 路径。"""
+        target = self.tmp / "instance"
+        argv = ["install", str(target), "t", "--template", str(ROOT),
+                "--no-input", "--skip-smoke"]
+        if answers is not None:
+            path = self.tmp / "answers.json"
+            path.write_text(
+                json.dumps(answers, ensure_ascii=False), encoding="utf-8")
+            argv += ["--answers", str(path)]
+        proc = self.run_opc(*argv)
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        return target
+
+    def roles_of(self, target):
+        data = json.loads((target / "roles.json").read_text(encoding="utf-8"))
+        return {r["name"]: r for r in data["roles"]}
+
+    def launcher_of(self, target, role):
+        path = target / ".opc" / "run" / (role + ".sh")
+        self.assertTrue(path.is_file(), path)
+        return path.read_text(encoding="utf-8")
+
+    def test_template_roles_leave_model_empty(self):
+        # 模版只定机制，不定模型：每个角色的 model 留空表示用该 CLI 的默认模型。
+        data = json.loads(
+            (ROOT / "template" / "roles.json").read_text(encoding="utf-8"))
+        for role in data["roles"]:
+            self.assertIn("model", role, role["name"])
+            self.assertEqual("", role["model"], role["name"])
+
+    def test_template_has_no_literal_model_name(self):
+        # 模版里不能写死任何具体模型名：模型参数只能是变量。
+        pattern = re.compile(r"--model\s+[A-Za-z0-9]|(?<![a-zA-Z])model=\\\\?\"[A-Za-z0-9]")
+        for path in (ROOT / "template").rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            hit = pattern.search(text)
+            self.assertIsNone(
+                hit, "{} 里写死了模型名：{}".format(path, hit.group(0) if hit else ""))
+
+    def test_answers_write_model_into_instance_roles(self):
+        target = self.install_instance({
+            "roles": {
+                "content": {
+                    "enabled": True,
+                    "cli": "claude",
+                    "model": "spec-model-alpha",
+                    "permissionMode": "dontAsk",
+                }
+            }
+        })
+        roles = self.roles_of(target)
+        self.assertEqual("spec-model-alpha", roles["content"]["model"])
+        self.assertEqual("dontAsk", roles["content"]["permissionMode"])
+        # 没选的角色留空 = 该 CLI 的默认模型
+        self.assertEqual("", roles["gm"]["model"])
+
+    def test_launcher_composes_model_args_per_cli(self):
+        target = self.install_instance({
+            "roles": {
+                "content": {
+                    "enabled": True,
+                    "cli": "claude",
+                    "model": "spec-model-alpha",
+                    "permissionMode": "dontAsk",
+                },
+                "growth": {
+                    "enabled": True,
+                    "cli": "codex",
+                    "model": "spec-model-beta",
+                    "permissionMode": "dontAsk",
+                },
+            }
+        })
+        claude_launcher = self.launcher_of(target, "content")
+        self.assertIn("--model spec-model-alpha", claude_launcher)
+        self.assertIn("--permission-mode dontAsk", claude_launcher)
+
+        codex_launcher = self.launcher_of(target, "growth")
+        # Codex 用配置覆盖写模型，并且必须带独立运行开关
+        self.assertIn("-c model=", codex_launcher)
+        self.assertIn("spec-model-beta", codex_launcher)
+        self.assertIn("--no-daemon", codex_launcher)
+
+    def test_install_without_model_uses_cli_default(self):
+        target = self.install_instance()
+        for role in ("gm", "content", "growth", "dev"):
+            launcher = self.launcher_of(target, role)
+            self.assertNotIn("--model ", launcher, role)
+            self.assertNotIn("-c model=", launcher, role)
+        self.assertEqual("", self.roles_of(target)["gm"]["model"])
+
+    def test_upgrade_keeps_model_and_tolerates_missing_model(self):
+        target = self.install_instance({
+            "roles": {"content": {"enabled": True, "cli": "claude",
+                                 "model": "spec-model-alpha"}}
+        })
+        proc = self.run_opc("upgrade", str(target), "--template", str(ROOT),
+                            "--skip-smoke")
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual("spec-model-alpha", self.roles_of(target)["content"]["model"])
+        self.assertIn("--model spec-model-alpha", self.launcher_of(target, "content"))
+
+        # 旧实例的角色配置没有 model 字段：照样能升级，按默认模型跑。
+        path = target / "roles.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for role in data["roles"]:
+            role.pop("model", None)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        proc = self.run_opc("upgrade", str(target), "--template", str(ROOT),
+                            "--skip-smoke")
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertNotIn("--model ", self.launcher_of(target, "content"))
+        self.assertNotIn("-c model=", self.launcher_of(target, "content"))
+
+    def test_lib_dispatches_model_args_per_cli(self):
+        lib = ROOT / "template" / "scripts" / "lib.sh"
+        def call(expr):
+            proc = subprocess.run(
+                ["bash", "-c", '. "%s" >/dev/null 2>&1; %s' % (lib, expr)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            return proc.stdout.strip()
+        self.assertEqual("--model spec-model-alpha",
+                         call("opc_cli_model_args claude spec-model-alpha"))
+        self.assertIn("-c model=", call("opc_cli_model_args codex spec-model-alpha"))
+        self.assertEqual("", call("opc_cli_model_args claude ''"))
+        self.assertEqual("--no-daemon", call("opc_cli_required_args codex"))
+        self.assertEqual("", call("opc_cli_required_args claude"))
+        # Codex 角色的默认权限档与 Claude Code 角色对齐：不审批
+        self.assertEqual("bypassPermissions",
+                         call("opc_cli_default_permission_mode codex"))
+
+    def test_interactive_install_asks_cli_and_model(self):
+        # 交互式安装要能逐角色选 CLI 与模型：模型清单拿不到时允许手填模型名。
+        bindir = self.tmp / "bin"
+        bindir.mkdir(parents=True, exist_ok=True)
+        for name in ("claude", "codex"):
+            stub = bindir / name
+            stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            stub.chmod(0o755)
+        env = dict(self.env)
+        env["PATH"] = "{}:{}".format(bindir, env.get("PATH", ""))
+
+        target = self.tmp / "instance"
+        proc = subprocess.run(
+            [sys.executable, str(OPC), "install", str(target), "t",
+             "--template", str(ROOT), "--interactive", "--skip-smoke"],
+            cwd=str(ROOT), env=env, capture_output=True, text=True, check=False,
+            # 逐角色：启用？→ 用哪个 CLI？；最后再逐个问模型。
+            input="y\n1\ny\n1\nn\nn\nspec-model-alpha\nspec-model-beta\n")
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        roles = self.roles_of(target)
+        self.assertEqual("spec-model-alpha", roles["gm"]["model"])
+        self.assertEqual("spec-model-beta", roles["content"]["model"])
+        self.assertIn("--model spec-model-alpha", self.launcher_of(target, "gm"))
+
+    def test_team_md_is_registry(self):
+        target = self.install_instance({
+            "roles": {"content": {"enabled": True, "cli": "claude",
+                                 "model": "spec-model-alpha"}}
+        })
+        text = (target / "knowledge" / "team.md").read_text(encoding="utf-8")
+        for column in ("角色", "终端名", "启动器", "HC 模板名", "所在 tab",
+                       "CLI", "模型", "权限模式", "负责的子树"):
+            self.assertIn(column, text)
+        # 模型为空写「默认模型」，不留空字段
+        self.assertIn("默认模型", text)
+        self.assertIn("spec-model-alpha", text)
+        # 委派由编排者按注册表发起；旧的「按名册终端名发通知」退休
+        self.assertIn("委派", text)
+        self.assertIn("编排者", text)
+        self.assertNotIn("hc send <终端名>", text)
+        # 边界与读屏约定保留
+        self.assertIn("只有名册里的角色终端才属于本实例", text)
+        self.assertIn("不用地址形式", text)
+        # 每个角色一行，列出 CLI、模型与权限模式
+        for role in ("gm", "content", "growth", "dev"):
+            self.assertIn(role, text)
+
+    def test_install_creates_task_dir(self):
+        target = self.install_instance()
+        self.assertTrue((target / "knowledge" / "tasks").is_dir())
 
 
 if __name__ == "__main__":

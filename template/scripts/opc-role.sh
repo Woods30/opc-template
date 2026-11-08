@@ -94,12 +94,6 @@ EOF
     [[ -f "$ROOT/agents/$name/CLAUDE.md" ]] || printf '%s\n' '@AGENTS.md' > "$ROOT/agents/$name/CLAUDE.md"
     [[ -f "$ROOT/agents/$name/GEMINI.md" ]] || printf '%s\n' '@./AGENTS.md' > "$ROOT/agents/$name/GEMINI.md"
 
-    inbox="$ROOT/knowledge/inbox/$name.md"
-    if [[ ! -f "$inbox" ]]; then
-      opc_write_inbox "$name" "$inbox"
-      echo "已创建收件箱：knowledge/inbox/$name.md"
-    fi
-
     scope_json=$(printf '%s' "$scope" | tr ',' '\n' | sed '/^$/d' \
       | jq -R . | jq -s .)
     # 技能名要能安全地拼进 skills/<name>/SKILL.md，挡住路径穿越。
