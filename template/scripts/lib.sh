@@ -40,15 +40,6 @@ opc_role_exists() {
   jq -e --arg n "$1" '.roles[] | select(.name==$n)' "$(opc_roles_file)" >/dev/null 2>&1
 }
 
-# 新收件箱的固定头部。install 与 role add 都走这里，避免新增角色拿到另一套
-# 任务格式；只负责生成内容，调用方仍要守住「文件存在就不覆盖」。
-opc_write_inbox() { # opc_write_inbox <角色> <目标文件>
-  local role="$1"
-  local target="$2"
-  printf '# %s 收件箱\n\n派工写入本文件，结果回写原记录；一项任务始终只占一行，最新的在最下面。`knowledge/inbox/` 只有 gm 可写。\n\n派工格式：\n\n```\n- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务 ID：task-<稳定 ID> | 业务引用：<content_id / publication_id / -> | 任务：<做什么> | 验收：<怎么算完成>\n```\n\n完成后由执行角色先用 `hc send <前缀>-gm` 通知，gm 再把**原记录**改成：\n\n```\n- ✅ [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务 ID：task-<稳定 ID> | 业务引用：<content_id / publication_id / -> | 任务：<做什么> | 验收：<怎么算完成> | 完成时间：YYYY-MM-DD HH:MM | 结果：<一句话结论与产出路径>\n```\n\n`结果` 必填；细节较长时只写一句话结论与产出路径。`hc send` 只负责通知，任务与结果事实都在本文件。派工后再用 `hc send <前缀>-%s` 通知收件人。\n\n**只执行行首既无 `✅` 也无 `⛔` 的条目。** 撤销时把原记录改成 `- ⛔ 已撤销：<原因> - [派工时间] ...`。详见 `AGENTS.md`「状态来源」一节。\n\n---\n\n## 当前队列\n\n（空）\n' \
-    "$role" "$role" > "$target"
-}
-
 opc_role_enabled() {
   [[ "$(opc_role_field "$1" enabled)" == "true" ]]
 }

@@ -375,5 +375,10 @@ class BinOpcTestCase(unittest.TestCase):
         for role in ("gm", "content", "growth", "dev"):
             self.assertIn(role, text)
 
+    def test_install_creates_task_dir(self):
+        target = self.install_instance()
+        self.assertTrue((target / "knowledge" / "tasks").is_dir())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -534,13 +534,11 @@ done
 
 # 2b-2. 固定目录、收件箱与目录型 scope（只建缺失的，不覆盖已有内容）
 # canonical 内容区与 workflow 的事实入口；review/ 与 daily/ 是旧操作模型，不再创建。
+# tasks/ 是任务卡目录：委派时任务卡先落在这里，再交给承接角色。
+# 收件箱已退休：不再建 knowledge/inbox/。既有实例里已有的目录不删。
 mkdir -p "$ROOT/knowledge/content" "$ROOT/knowledge/decisions" \
-         "$ROOT/knowledge/inbox"
+         "$ROOT/knowledge/tasks"
 for role in $roles; do
-  inbox="$ROOT/knowledge/inbox/$role.md"
-  if [[ ! -f "$inbox" ]]; then
-    opc_write_inbox "$role" "$inbox"
-  fi
   # 目录型 scope 一并建出来，避免角色第一次写文件时目录不存在
   while IFS= read -r scope; do
     [[ -n "$scope" ]] || continue
