@@ -302,13 +302,83 @@ test("紧急项汇总受阻内容、缺指标、缺复盘与待审批", () => {
   assert.equal(blocked.source_path, "knowledge/content/content-3/内容卡.md");
 });
 
-test("内容流水线按状态分组", () => {
-  const stages = model.pipeline(model.applyFilters(payload(), model.emptyFilters()));
-  assert.deepEqual(
-    stages.map(stage => stage.status),
-    ["drafting", "ready"],
+test("workflow 阶段固定显示，并同时归入内容与发布记录", () => {
+  const stages = model.workflowStages(
+    model.applyFilters(payload(), model.emptyFilters()),
   );
-  assert.equal(stages[1].items.length, 1);
+  assert.deepEqual(
+    stages.map(stage => stage.key),
+    ["proposed", "drafting", "reviewing", "ready", "published", "reviewed"],
+  );
+  assert.deepEqual(
+    stages.map(stage => stage.label),
+    ["选题", "撰写", "审核", "就绪", "已发布", "已复盘"],
+  );
+  assert.deepEqual(
+    stages.map(stage => stage.items.map(item => `${item.kind}:${item.id}`)),
+    [
+      [],
+      ["content:content-3"],
+      [],
+      ["content:content-1", "publication:publication-2"],
+      ["publication:publication-1"],
+      [],
+    ],
+  );
+  assert.equal(stages[0].items.length, 0, "空阶段也必须保留");
+  assert.equal(stages[1].items[0].draft_path, "knowledge/content/content-3/主稿.md");
+});
+
+test("当前行动按审批、阻塞、任务和复盘排序", () => {
+  const actions = model.currentActions(
+    model.applyFilters(payload(), model.emptyFilters()),
+  );
+  assert.deepEqual(
+    actions.map(action => action.kind),
+    ["approval", "blocked", "task", "review"],
+  );
+  assert.equal(actions[0].role, "owner");
+  assert.equal(actions[1].detail, "缺素材");
+  assert.equal(actions[2].role, "content");
+  assert.equal(actions[3].role, "growth");
+});
+
+test("publication 先补指标再复盘，两项都归 growth", () => {
+  const publication = {
+    ...payload().publications[0],
+    role: "gm",
+    needs_metrics: true,
+    needs_review: true,
+  };
+  const missingMetrics = model
+    .currentActions(
+      model.applyFilters(
+        payload({ publications: [publication], approvals: [] }),
+        model.emptyFilters(),
+      ),
+    )
+    .filter(action => action.id === publication.publication_id);
+  assert.deepEqual(
+    missingMetrics.map(action => [action.kind, action.role]),
+    [["metrics", "growth"]],
+    "指标未完成时，尚不可执行的复盘不应出现在当前行动里",
+  );
+
+  const readyForReview = model
+    .currentActions(
+      model.applyFilters(
+        payload({
+          publications: [{ ...publication, needs_metrics: false }],
+          approvals: [],
+        }),
+        model.emptyFilters(),
+      ),
+    )
+    .filter(action => action.id === publication.publication_id);
+  assert.deepEqual(
+    readyForReview.map(action => [action.kind, action.role]),
+    [["review", "growth"]],
+  );
 });
 
 test("发布节奏分开计划与已发布", () => {
@@ -550,7 +620,9 @@ test("空实例给出空状态而不是伪数据", () => {
   assert.equal(model.isEmpty(view), true);
   assert.equal(view.counts.contents, 0);
   assert.deepEqual(model.urgentItems(view), []);
-  assert.deepEqual(model.pipeline(view), []);
+  assert.equal(model.workflowStages(view).length, 6);
+  assert.equal(model.workflowStages(view).every(stage => stage.items.length === 0), true);
+  assert.deepEqual(model.currentActions(view), []);
 });
 
 test("没业务数据是正常状态，坏缓存才算错误", () => {
