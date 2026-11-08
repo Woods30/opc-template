@@ -19,6 +19,17 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LINT = os.path.join(ROOT, "template", "tools", "opc-lint")
+# 规约回归可以用 OPC_RULES_ROOT 指向另一份载荷（例如改动前的 HEAD），用来证明用例先红后绿。
+RULES_ROOT = os.environ.get("OPC_RULES_ROOT", ROOT)
+
+
+def rules_file(rel):
+    return os.path.join(RULES_ROOT, "template", rel)
+
+
+def read_rules(rel):
+    with open(rules_file(rel), encoding="utf-8") as fh:
+        return fh.read()
 
 
 def load_module():
@@ -246,6 +257,63 @@ class LintTestCase(unittest.TestCase):
         checks = lint.run_checks(ROOT)
         failed = [c for c in checks if c.status == lint.STATUS_FAIL]
         self.assertEqual([], [(c.id, c.detail) for c in failed])
+
+    # ---- 委派契约与选题源契约的规约一致性 ----
+
+    def test_shared_rules_declare_delegation_contract(self):
+        text = read_rules("AGENTS.md")
+        for phrase in (
+            "委派契约", "任务卡", "链边单向直送下游", "不经编排者中转",
+            "链条到终点即停", "不设唤醒次数预算",
+            "owner 直接下指令", "角色请求裁决", "任务链到达审批点",
+            "完成态由工具写入任务卡", "回报只是通知", "选题池",
+        ):
+            self.assertIn(phrase, text, phrase)
+
+    def test_shared_rules_retire_inbox_dispatch_protocol(self):
+        text = read_rules("AGENTS.md")
+        for phrase in ("空闲时主动检查", "巡检收件箱", "任务队列", "待办队列"):
+            self.assertNotIn(phrase, text, phrase)
+
+    def test_role_rules_retire_inbox_dispatch_protocol(self):
+        for role in ("gm", "content", "growth", "dev"):
+            text = read_rules("agents/{}/AGENTS.md".format(role))
+            for phrase in ("空闲时主动检查", "巡检收件箱", "任务队列", "待办队列"):
+                self.assertNotIn(phrase, text, (role, phrase))
+
+    def test_role_rules_start_with_memory_injection_triplet(self):
+        for role in ("gm", "content", "growth", "dev"):
+            text = read_rules("agents/{}/AGENTS.md".format(role))
+            for phrase in (
+                "只读三件套", "品牌口径",
+                "knowledge/work/{}/LESSONS.md".format(role),
+                "本次任务的详情", "整个业务目录", "不读已完成的条目",
+                "不读别人的收件箱",
+            ):
+                self.assertIn(phrase, text, (role, phrase))
+            self.assertRegex(text, r"\*\*不读\*\*整个业务目录")
+
+    def test_topic_source_skill_has_valid_frontmatter_and_no_concrete_source(self):
+        path = rules_file("skills/topic-source/SKILL.md")
+        self.assertEqual([], lint.skill_frontmatter_problems(path, "topic-source"))
+        text = read_rules("skills/topic-source/SKILL.md")
+        self.assertIn("不内置任何具体站点", text)
+        self.assertNotIn("http://", text)
+        self.assertNotIn("https://", text)
+
+    def test_topic_pool_seed_is_declared_and_url_free(self):
+        with open(rules_file("install-manifest.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        source = "seeds/knowledge/business/选题池.md"
+        self.assertIn(
+            {"source": source, "target": "knowledge/business/选题池.md"},
+            manifest["seeds"],
+        )
+        self.assertIn(source, manifest["seedRules"])
+        text = read_rules(source)
+        self.assertIn("单一副本", text)
+        self.assertNotIn("http://", text)
+        self.assertNotIn("https://", text)
 
     # ---- L1 业务路径 ----
 
