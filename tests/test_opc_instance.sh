@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 干净实例的端到端测试：安装结构 + 完整内容闭环 + generated 视图 + 任务卡闭环。
+# 干净实例的端到端测试：安装结构 + 完整内容闭环 + 委派闭环 + generated 视图 + 模型选择。
 #
 # 跑法：
 #   bash tests/test_opc_instance.sh
@@ -72,7 +72,8 @@ expect "新实例有生成的选题日历入口" grep -q "GENERATED FILE — REA
 expect "新实例有 workflow" test -x "$INST/tools/opc-workflow"
 expect "新实例有 preflight" test -x "$INST/tools/preflight"
 expect "新实例自带机制指纹" test -f "$INST/.opc/mechanism.json"
-expect "新实例有 gm inbox" test -f "$INST/knowledge/inbox/gm.md"
+expect "新实例有任务卡目录" test -d "$INST/knowledge/tasks"
+reject "新实例不再有收件箱目录" test -e "$INST/knowledge/inbox"
 expect "渠道目录只有发布记录" test -f "$INST/knowledge/business/wechat/发布记录.md"
 expect "渠道发布记录标记 generated" grep -q "GENERATED FILE — READ ONLY" \
   "$INST/knowledge/business/wechat/发布记录.md"
@@ -87,6 +88,38 @@ reject "实例不再持有 sync-policy.json" test -e "$INST/sync-policy.json"
 expect "全局布局只装一套" test -f "$HERDR_APP_HOME/layouts/opc.json"
 expect "全局看板 mod 已安装" test -d "$HERDR_APP_HOME/mods/opc-dashboard"
 expect "实例已登记到注册表" grep -q "$INST" "$OPC_CONFIG_DIR/instances.json"
+
+# ---- 1a. 名册是角色注册表：每个角色一行，记清怎么起、用什么 CLI 与模型 ----
+registry_rows() { # registry_rows <team.md>：角色注册表里的表格行
+  awk '/^## 角色注册表/{f=1;next} /^## /{f=0} f && /^\|/' "$1"
+}
+registry_field() { # registry_field <team.md> <角色> <列号>
+  registry_rows "$1" | awk -F'|' -v role="$2" -v col="$3" '
+    $0 ~ "^\\| " role " " {
+      gsub(/^[ \t]+|[ \t]+$/, "", $col)
+      gsub(/`/, "", $col)
+      print $col
+      exit
+    }'
+}
+team_header="$(registry_rows "$INST/knowledge/team.md" | head -1)"
+for col in 角色 终端名 启动器 "HC 模板名" 所在 tab CLI 模型 权限模式 负责的子树; do
+  expect "名册表头有「${col}」列" grep -q "$col" <<< "$team_header"
+done
+for role in gm content growth dev; do
+  check "名册里 $role 的 CLI 是 claude" "claude" \
+    "$(registry_field "$INST/knowledge/team.md" "$role" 7)"
+  check "名册里 $role 的模型列有值" "默认模型" \
+    "$(registry_field "$INST/knowledge/team.md" "$role" 8)"
+  check "名册里 $role 的权限模式" "bypassPermissions" \
+    "$(registry_field "$INST/knowledge/team.md" "$role" 9)"
+  check "名册里 $role 的所在 tab" "$role" \
+    "$(registry_field "$INST/knowledge/team.md" "$role" 6)"
+done
+# 名册是 printf 拼出来的：占位符要全部替换，反引号原样保留
+expect "名册没留下未替换的占位符" \
+  bash -c "! grep -q '%s' '$INST/knowledge/team.md'"
+expect "名册保留反引号" grep -q '`' "$INST/knowledge/team.md"
 
 # ---- 1b. 角色目录与 hc 模板 ----
 only_ref() { # only_ref <文件>：入口文件只能是对 AGENTS.md 的引用，不能拷正文
@@ -128,41 +161,33 @@ check "重跑安装器不改写实例的角色正文" "$before" \
 expect "hc 模板反映改后的正文" \
   grep -q "owner 的补充说明" "$HERDR_CORE_HOME/templates/t-gm.md"
 
-# ---- 1c. 所有收件箱共用同一套任务与结果格式 ----
-# 每个任务只占收件人的一条记录；完成时回写原行，不另造「上报」条目。
+# ---- 1c. 任务卡是派工的载体：完成态由工具写入，撤销也写在卡上 ----
+# 收件箱已退休：派工不再落收件箱，任务卡是状态与完成的唯一真源。
+expect "任务卡目录已建好" test -d "$INST/knowledge/tasks"
+expect "任务卡目录初始为空" \
+  bash -c "test -z \"\$(ls -A '$INST/knowledge/tasks')\""
 for role in gm content growth dev; do
-  expect "收件箱 $role 讲清派工与结果回写原记录" \
-    grep -q "派工写入本文件，结果回写原记录" "$INST/knowledge/inbox/$role.md"
-  expect "收件箱 $role 给出完整派工格式" \
-    grep -q "| 任务 ID：task-.*| 业务引用：.*| 任务：.*| 验收：" "$INST/knowledge/inbox/$role.md"
-  expect "收件箱 $role 给出完整完成格式" \
-    grep -q "完成时间：YYYY-MM-DD HH:MM | 结果：<一句话结论与产出路径>" "$INST/knowledge/inbox/$role.md"
-  expect "收件箱 $role 明确结果必填" \
-    grep -q "结果.*必填" "$INST/knowledge/inbox/$role.md"
+  expect "角色 $role 的简报指向任务卡" \
+    grep -q "knowledge/tasks/<task_id>.md" "$INST/agents/$role/AGENTS.md"
+  expect "角色 $role 的简报不提收件箱" \
+    bash -c "! grep -qi 'inbox' '$INST/agents/$role/AGENTS.md'"
 done
-for role in gm content growth dev; do
-  expect "收件箱 $role 保留当前队列小节" \
-    grep -q "## 当前队列" "$INST/knowledge/inbox/$role.md"
-  expect "收件箱 $role 保留空队列占位" \
-    grep -q "（空）" "$INST/knowledge/inbox/$role.md"
+expect "编排者用工具派工" \
+  grep -q "tools/opc-workflow create-task" "$INST/agents/gm/AGENTS.md"
+expect "编排者用工具查任务卡" \
+  grep -q "tools/opc-workflow list-tasks" "$INST/agents/gm/AGENTS.md"
+for role in content growth dev; do
+  expect "角色 $role 用工具写完成态" \
+    grep -q "tools/opc-workflow complete-task" "$INST/agents/$role/AGENTS.md"
+  expect "角色 $role 不自己写别人的任务卡" \
+    grep -q "不自行写别人的任务卡" "$INST/agents/$role/AGENTS.md"
 done
-# printf 没把 Markdown 打坏：占位符全部替换，反引号、完成/撤销标记、条目竖线原样输出
-expect "收件箱头没留下未替换的占位符" \
-  bash -c "! grep -q '%s' '$INST/knowledge/inbox/content.md'"
-expect "收件箱头保留反引号" \
-  grep -q '`knowledge/inbox/`' "$INST/knowledge/inbox/gm.md"
-expect "收件箱头保留完成标记" \
-  grep -q "✅" "$INST/knowledge/inbox/gm.md"
-expect "收件箱头保留撤销标记" \
-  grep -q "⛔ 已撤销" "$INST/knowledge/inbox/gm.md"
-expect "收件箱头保留条目格式的竖线" \
-  grep -q "| 任务 ID：task-" "$INST/knowledge/inbox/content.md"
-
-# 收件箱只在文件缺失时创建：已有的头不被改写，由 gm 在会话内自行对齐
-before_inbox="$(shasum "$INST/knowledge/inbox/gm.md" | awk '{print $1}')"
-(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
-check "重跑安装器不改写已有收件箱" "$before_inbox" \
-  "$(shasum "$INST/knowledge/inbox/gm.md" | awk '{print $1}')"
+expect "共享规约写明任务卡是状态唯一真源" \
+  grep -q "任务卡是状态的唯一真源" "$INST/AGENTS.md"
+expect "共享规约写明撤销也写在卡上" \
+  grep -q "撤销也写在任务卡上" "$INST/AGENTS.md"
+expect "共享规约写明不直接改别人的任务卡" \
+  grep -q "不要直接改别人的任务卡" "$INST/AGENTS.md"
 
 # ---- 2. 完整生命周期：proposed → ready → publication → published → metrics → reviewed → closed ----
 cd "$INST" || exit 1
@@ -226,45 +251,104 @@ expect "growth 完成复盘" tools/opc-workflow transition "$publication_id" --t
   --conclusion continue --next-action "继续观察同类选题" --actor growth
 expect "gm 关闭内容" tools/opc-workflow transition "$content_id" --to closed --actor gm
 
-# ---- 3. 任务卡闭环：创建 → 完成 → 看板 ----
-# 收件箱里的历史条目不再进入看板，也不是待办来源。
-printf '\n- [2026-12-07 10:00] 发起方：gm | 任务 ID：task-inboxold | 业务引用：%s | 任务：跟进复盘 | 验收：有结论\n' \
-  "$publication_id" >> knowledge/inbox/gm.md
+# ---- 3. 委派闭环：派工建卡 → 读回 → 完成态写回同一张卡 ----
+# 一次派工一张卡：详情、验收、链边与终点都写在卡上；完成态由工具写回这张卡。
+created_task="$(tools/opc-workflow create-task --assignee gm \
+  --task "跟进复盘" --acceptance "有结论" --reference "$publication_id" \
+  --next gm --terminal "等待 owner 决定" --actor gm 2>&1)"
+task_id="$(printf '%s' "$created_task" | sed -n 's/^已创建 \(task-[0-9a-z]*\).*/\1/p')"
+if [[ -n "$task_id" ]]; then ok "派工建出任务卡"; else bad "派工建出任务卡：$created_task"; fi
 
-expect "按需创建任务卡" tools/opc-workflow create-task --assignee gm \
-  --task-id task-abc123 --task "跟进复盘" --acceptance "有结论" \
-  --reference "$publication_id" --next gm --terminal "等待 owner 决定" --actor gm
-expect "任务卡详情可读回" tools/opc-workflow show-task task-abc123
-expect "任务卡列出可过滤" tools/opc-workflow list-tasks --assignee gm --state open
-expect "缺结果时完成任务卡被拒绝" bash -c \
-  '! tools/opc-workflow complete-task task-abc123 --actor gm >/dev/null 2>&1'
-expect "完成任务卡" tools/opc-workflow complete-task task-abc123 \
+expect "任务卡落在任务目录" test -f "knowledge/tasks/$task_id.md"
+expect "任务卡可读回" tools/opc-workflow show-task "$task_id"
+expect "任务卡可按角色与状态列出" tools/opc-workflow list-tasks --assignee gm --state open
+
+card="$(tools/opc-workflow show-task "$task_id" 2>&1)"
+expect "任务卡正文带任务详情" grep -q "跟进复盘" <<< "$card"
+expect "任务卡写明验收" grep -q '"acceptance": "有结论"' <<< "$card"
+expect "任务卡写明链边" grep -q '"next": "gm"' <<< "$card"
+expect "任务卡写明终点" grep -q '"terminal": "等待 owner 决定"' <<< "$card"
+expect "任务卡记着业务引用" grep -q "\"reference\": \"$publication_id\"" <<< "$card"
+expect "任务卡记着自己的 ID" grep -q "\"task_id\": \"$task_id\"" <<< "$card"
+
+# 第二张卡派给 content，留在开放状态：看板要同时有开放任务与完成事实
+created_open="$(tools/opc-workflow create-task --assignee content \
+  --task "起草一篇稿子" --acceptance "有主稿" --actor gm 2>&1)"
+open_id="$(printf '%s' "$created_open" | sed -n 's/^已创建 \(task-[0-9a-z]*\).*/\1/p')"
+if [[ -n "$open_id" ]]; then ok "第二张任务卡派给 content"; else bad "第二张任务卡派给 content：$created_open"; fi
+expect "两张卡的 ID 不一样" test "$task_id" != "$open_id"
+
+# 完成必须有结果：缺结果就拒绝，别留半个完成态
+expect "缺结果时完成任务卡被拒" bash -c \
+  "! tools/opc-workflow complete-task '$task_id' --actor gm >/dev/null 2>&1"
+expect "完成任务卡" tools/opc-workflow complete-task "$task_id" \
   --result "复盘结论见发布记录" --completed-at 2026-12-07T11:00:00+08:00 --actor gm
-expect "重复完成幂等" tools/opc-workflow complete-task task-abc123 \
+expect "重复完成幂等" tools/opc-workflow complete-task "$task_id" \
   --result "复盘结论见发布记录" --actor gm
+expect "完成态不能被改写" bash -c \
+  "! tools/opc-workflow complete-task '$task_id' --result '换个说法' --actor gm >/dev/null 2>&1"
+
+done_card="$(tools/opc-workflow show-task "$task_id" 2>&1)"
+expect "完成态写回同一张卡" grep -q '"state": "done"' <<< "$done_card"
+expect "完成态记着完成时间" grep -q '"completed_at": "2026-12-07T11:00:00+08:00"' <<< "$done_card"
+expect "完成态记着结果" grep -q '"result": "复盘结论见发布记录"' <<< "$done_card"
+expect "完成后任务 ID 不变" grep -q "\"task_id\": \"$task_id\"" <<< "$done_card"
+
+# 撤销也写在卡上：撤销写回原卡并留原因
+created_cancel="$(tools/opc-workflow create-task --assignee dev \
+  --task "修一个工具缺陷" --acceptance "缺陷关闭" --actor gm 2>&1)"
+cancel_id="$(printf '%s' "$created_cancel" | sed -n 's/^已创建 \(task-[0-9a-z]*\).*/\1/p')"
+expect "缺原因时撤销被拒" bash -c \
+  "! tools/opc-workflow cancel-task '$cancel_id' --actor gm >/dev/null 2>&1"
+expect "撤销任务卡" tools/opc-workflow cancel-task "$cancel_id" --reason "需求作废" --actor gm
+cancel_card="$(tools/opc-workflow show-task "$cancel_id" 2>&1)"
+expect "撤销写回任务卡" grep -q '"state": "cancelled"' <<< "$cancel_card"
+expect "撤销留下原因" grep -q '"cancel_reason": "需求作废"' <<< "$cancel_card"
 
 expect "validate 通过" tools/opc-workflow validate
+
+# 任务卡是实例自己的资产：重跑安装器不改写它
+before_card="$(shasum "knowledge/tasks/$task_id.md" | awk '{print $1}')"
+(cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
+check "重跑安装器不改写已有任务卡" "$before_card" \
+  "$(shasum "knowledge/tasks/$task_id.md" | awk '{print $1}')"
+
+# ---- 4. generated 视图：看板只认任务卡，收件箱里的旧条目不算待办 ----
+# 老实例里可能还留着收件箱：往里追加条目也不能变成看板上的任务。
+mkdir -p knowledge/inbox
+printf '# 任务\n\n' > knowledge/inbox/gm.md
+printf -- '- [2026-12-07 10:00] 发起方：gm | 任务 ID：task-inboxold | 业务引用：%s | 任务：跟进复盘 | 验收：有结论\n' \
+  "$publication_id" >> knowledge/inbox/gm.md
 expect "build 刷新生成视图" tools/opc-workflow build
+expect "有遗留收件箱时 validate 仍通过" tools/opc-workflow validate
 
 expect "已关闭内容不进选题日历" bash -c "! grep -q '$content_id' knowledge/business/选题日历.md"
 expect "发布记录展示复盘结论" grep -q "continue" knowledge/business/wechat/发布记录.md
 expect "发布记录展示下一项行动" grep -q "继续观察同类选题" knowledge/business/wechat/发布记录.md
 expect "看板 JSON 生成" test -f knowledge/business/dashboard.json
-check "看板只把任务卡当任务" "1" \
+check "看板只把任务卡当任务" "3" \
   "$(jq -r '.tasks | length' knowledge/business/dashboard.json 2>/dev/null)"
-check "看板记录 stable task ID" "task-abc123" \
-  "$(jq -r '.tasks[0].task_id' knowledge/business/dashboard.json 2>/dev/null)"
-check "看板记录业务引用" "$publication_id" \
-  "$(jq -r '.tasks[0].reference' knowledge/business/dashboard.json 2>/dev/null)"
-check "看板记录完成结果" "复盘结论见发布记录" \
-  "$(jq -r '.tasks[0].result' knowledge/business/dashboard.json 2>/dev/null)"
 check "看板不出现收件箱条目" "0" \
   "$(jq -r '[.tasks[] | select(.task_id == "task-inboxold")] | length' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板记着开放任务" "open" \
+  "$(jq -r --arg id "$open_id" '.tasks[] | select(.task_id==$id) | .state' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板记着开放任务的承接角色" "content" \
+  "$(jq -r --arg id "$open_id" '.tasks[] | select(.task_id==$id) | .assignee' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板记着已完成任务" "done" \
+  "$(jq -r --arg id "$task_id" '.tasks[] | select(.task_id==$id) | .state' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板记着完成结果" "复盘结论见发布记录" \
+  "$(jq -r --arg id "$task_id" '.tasks[] | select(.task_id==$id) | .result' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板记着完成时间" "2026-12-07T11:00:00+08:00" \
+  "$(jq -r --arg id "$task_id" '.tasks[] | select(.task_id==$id) | .completed_at' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板记着业务引用" "$publication_id" \
+  "$(jq -r --arg id "$task_id" '.tasks[] | select(.task_id==$id) | .reference' knowledge/business/dashboard.json 2>/dev/null)"
+check "看板范围只列开放任务" "$open_id" \
+  "$(jq -r '.scope.task_ids | join(" ")' knowledge/business/dashboard.json 2>/dev/null)"
 check "看板内容状态为 closed" "closed" \
   "$(jq -r --arg id "$content_id" '.contents[] | select(.content_id == $id) | .status' \
      knowledge/business/dashboard.json 2>/dev/null)"
 
-# ---- 4. 没有 Herdr 时 workflow / build / preflight 仍可独立工作 ----
+# ---- 4b. 没有 Herdr 时 workflow / build / preflight 仍可独立工作 ----
 # 本测试全程只用 PATH 里的 python3/jq 等基础命令，从不调用 herdr-app 或 hc；
 # 上面每一步都成功即证明这一点。
 expect "生成视图无需 Herdr 即可读取" test -s knowledge/business/选题日历.md
@@ -280,14 +364,16 @@ expect "新角色的 Claude 入口文件只引用 AGENTS.md" \
   only_ref "$INST/agents/tester/CLAUDE.md"
 expect "新角色的 Gemini 入口文件只引用 AGENTS.md" \
   only_ref "$INST/agents/tester/GEMINI.md"
-expect "新角色的收件箱用统一任务格式" \
-  grep -q "| 任务 ID：task-" "$INST/knowledge/inbox/tester.md"
-expect "新角色的收件箱保留当前队列小节" \
-  grep -q "## 当前队列" "$INST/knowledge/inbox/tester.md"
-expect "新角色的收件箱保留完成与撤销规则" \
-  bash -c "grep -q '✅' '$INST/knowledge/inbox/tester.md' && grep -q '⛔ 已撤销' '$INST/knowledge/inbox/tester.md'"
-expect "新角色的简报不要求写 gm 收件箱" \
-  bash -c "! grep -q '写.*knowledge/inbox/gm.md' '$INST/agents/tester/AGENTS.md'"
+expect "新角色的简报指向任务卡" \
+  grep -q "knowledge/tasks/<task_id>.md" "$INST/agents/tester/AGENTS.md"
+expect "新角色的简报用工具写完成态" \
+  grep -q "tools/opc-workflow complete-task" "$INST/agents/tester/AGENTS.md"
+expect "新角色的简报不要求改别人的任务卡" \
+  grep -q "不要直接改别人的任务卡" "$INST/agents/tester/AGENTS.md"
+expect "新角色的简报不提收件箱" \
+  bash -c "! grep -qi 'inbox' '$INST/agents/tester/AGENTS.md'"
+expect "新角色的简报不要求写 gm 的任务卡" \
+  bash -c "! grep -q '写.*knowledge/tasks/gm' '$INST/agents/tester/AGENTS.md'"
 expect "新角色的简报写明等 gm 派工" grep -q "等 gm 派工" "$INST/agents/tester/AGENTS.md"
 expect "新角色的 roles.json 里有描述" \
   test -n "$(jq -r '.roles[] | select(.name=="tester") | .description' "$INST/roles.json")"
@@ -378,7 +464,7 @@ jq '(.roles[] | select(.name=="growth" or .name=="dev") | .enabled) = true' \
   "$INST/roles.json" > "$INST/roles.json.tmp" && mv "$INST/roles.json.tmp" "$INST/roles.json"
 (cd "$INST" && scripts/opc-install.sh --no-input t >/dev/null 2>&1)
 
-for skill in opc-workflow knowledge-writing instance-ops; do
+for skill in opc-workflow knowledge-writing instance-ops topic-source; do
   expect "新实例含技能 $skill" test -f "$INST/skills/$skill/SKILL.md"
 done
 
@@ -389,7 +475,7 @@ index_skills() {
 }
 check "gm 的索引列出三个技能" "opc-workflow knowledge-writing instance-ops" \
   "$(index_skills gm | paste -sd ' ' -)"
-check "content 的索引列出两个技能" "knowledge-writing opc-workflow" \
+check "content 的索引列出三个技能" "knowledge-writing opc-workflow topic-source" \
   "$(index_skills content | paste -sd ' ' -)"
 check "growth 的索引列出两个技能" "knowledge-writing opc-workflow" \
   "$(index_skills growth | paste -sd ' ' -)"
@@ -454,7 +540,7 @@ for role in gm content growth dev; do
 done
 
 # 9b. 技能库：模版带的技能整库复制到实例
-for skill in opc-workflow knowledge-writing instance-ops; do
+for skill in opc-workflow knowledge-writing instance-ops topic-source; do
   expect "技能库整库复制到实例" test -f "$E2E/skills/$skill/SKILL.md"
 done
 
@@ -574,6 +660,62 @@ fi
 lint_out="$("$UP/scripts/opc-lint.sh" 2>&1)"
 rc=$?
 check "owner 改过角色简报后实例 lint 仍通过" "0" "$rc"
+
+# ---- 10. 带模型选择的安装：roles.json 记模型，启动器按 CLI 拼模型参数 ----
+# 模型是角色的属性：装实例时就能选，落进 roles.json，也落进该角色的启动器。
+MODEL_INST="$WORK/inst-model"
+cat > "$WORK/answers-model.json" <<'EOF'
+{
+  "roles": {
+    "gm": {"enabled": true, "cli": "claude", "model": "spec-model-alpha"},
+    "content": {"enabled": true, "cli": "claude", "model": "spec-model-alpha"},
+    "growth": {"enabled": true, "cli": "codex", "model": "spec-model-beta"},
+    "dev": {"enabled": true, "cli": "codex", "model": ""}
+  }
+}
+EOF
+"$ROOT/bin/opc" install "$MODEL_INST" mdl --template "$ROOT" --no-input --skip-smoke \
+  --answers "$WORK/answers-model.json" >/dev/null 2>&1
+check "带模型选择的安装返回 0" "0" "$?"
+
+check "roles.json 记下 claude 角色的模型" "spec-model-alpha" \
+  "$(jq -r '.roles[] | select(.name=="gm") | .model' "$MODEL_INST/roles.json")"
+check "roles.json 记下 codex 角色的模型" "spec-model-beta" \
+  "$(jq -r '.roles[] | select(.name=="growth") | .model' "$MODEL_INST/roles.json")"
+check "留空模型时 roles.json 的模型为空" "" \
+  "$(jq -r '.roles[] | select(.name=="dev") | .model' "$MODEL_INST/roles.json")"
+check "名册里记着 codex 角色的模型" "spec-model-beta" \
+  "$(registry_field "$MODEL_INST/knowledge/team.md" "growth" 8)"
+check "名册里没选模型的角色写默认模型" "默认模型" \
+  "$(registry_field "$MODEL_INST/knowledge/team.md" "dev" 8)"
+
+# 启动器实际交给 CLI 的参数：把里面的 exec 换成假 CLI 跑一遍，看它收到什么。
+# 文件里 codex 的写法是 -c model=\"...\"，引号留给内层 shell 解析，
+# CLI 最终收到的是 -c model="<模型名>"。
+launcher_args() { # launcher_args <启动器>
+  local stub payload
+  stub="$(mktemp)"
+  printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done\n' > "$stub"
+  chmod +x "$stub"
+  payload="$(sed -n "s/^.*-lc '\(.*\)' ;;.*$/\1/p" "$1" | head -1)"
+  OPC_ROOT="$MODEL_INST" OPC_CLI="$stub" OPC_SETTINGS="$MODEL_INST/.opc/settings.json" \
+    sh -c "$payload"
+  rm -f "$stub"
+}
+gm_args="$(launcher_args "$MODEL_INST/.opc/run/gm.sh" | paste -sd ' ' -)"
+growth_args="$(launcher_args "$MODEL_INST/.opc/run/growth.sh" | paste -sd ' ' -)"
+dev_args="$(launcher_args "$MODEL_INST/.opc/run/dev.sh" | paste -sd ' ' -)"
+
+expect "claude 角色的启动器带 --model" grep -q -- "--model spec-model-alpha" <<< "$gm_args"
+expect "codex 角色的启动器带 -c model=" \
+  grep -q -- '-c model="spec-model-beta"' <<< "$growth_args"
+expect "codex 角色的启动器强制 --no-daemon" grep -q -- "--no-daemon" <<< "$growth_args"
+expect "留空模型的启动器不带模型参数" \
+  bash -c "! printf '%s' '$dev_args' | grep -q -- '--model'"
+expect "留空模型的启动器不带 -c model=" \
+  bash -c "! printf '%s' '$dev_args' | grep -q -- '-c model='"
+expect "留空模型的 codex 启动器仍带 --no-daemon" \
+  grep -q -- "--no-daemon" <<< "$dev_args"
 
 say ""
 say "汇总：通过 ${PASS} 项 / 失败 ${FAIL} 项"
