@@ -422,6 +422,68 @@ opc_cli_permission_args() {
   esac
 }
 
+# ---- 模型 → 各 CLI 自己的参数 ----
+# 模版只提供机制，不决定模型：模型清单由各 CLI 自己报告，模版里不写任何具体
+# 模型名。模型留空表示用该 CLI 的默认模型，这时不加任何模型参数。
+
+# 模型 → 该 CLI 的启动参数（只含该 CLI 认识的开关，不含 CLI 本身）。
+#   claude → --model <模型>（别名或全名都行）
+#   codex  → -c model="<模型>"（配置覆盖）
+# 参数里的引号要留到内层 shell 解析，所以写的是 \"：内层 sh 收到的是
+# model="<模型>"，codex 才能把它当字符串读。
+opc_cli_model_args() {
+  local cli="$1" model="$2"
+  [[ -n "$model" ]] || return 0
+  case "$(basename "$cli")" in
+    claude) printf '%s' "--model $model" ;;
+    codex)  printf '%s' "-c model=\\\"$model\\\"" ;;
+    *)      printf '%s' '' ;;
+  esac
+}
+
+# 该 CLI 要求的必备启动开关：缺了它，命令会跑到 HC 的调度之外。
+# codex 必须带 --no-daemon，否则它的命令不在 HC 的调度里，委派会变成
+# 「发得出去，收不回来」。
+opc_cli_required_args() {
+  case "$(basename "$1")" in
+    codex) printf '%s' '--no-daemon' ;;
+    *)     printf '%s' '' ;;
+  esac
+}
+
+# 该 CLI 自己报告的可用模型，一行一个。拿不到清单时返回空串，
+# 调用方退回「手填模型名」。清单来自 CLI 自己的输出，模版不内置任何模型名。
+opc_cli_models() {
+  local cli="$1" out=""
+  case "$(basename "$cli")" in
+    claude)
+      # claude 没有列模型的子命令，但它在 --model 的说明里报出自己的别名。
+      out="$("$cli" --help 2>/dev/null \
+        | awk '/--model <model>/{grab=1;next} grab && /^  -/{exit} grab' \
+        | tr '\n' ' ' \
+        | grep -oE '\(e\.g\.[^)]*\)' \
+        | grep -oE "'[A-Za-z0-9._:-]+'" \
+        | tr -d "'" | sort -u || true)" ;;
+    codex)
+      out="$("$cli" debug models 2>/dev/null \
+        | jq -r '.models[]? | select(.visibility == "list") | .slug' 2>/dev/null \
+        | sort -u || true)" ;;
+    *) ;;
+  esac
+  printf '%s' "$out"
+}
+
+# 该 CLI 的默认权限档（角色没写 permissionMode 时用）。
+# Codex 与 Claude Code 角色对齐到「不审批」档（bypassPermissions）：
+# 子会话卡在审批弹窗上，编排者就会一直等下去。Claude Code 角色在 roles.json
+# 里本来就写死了这一档，这里的兜底保持原样，不放宽既有实例。
+opc_cli_default_permission_mode() {
+  case "$(basename "$1")" in
+    codex) printf '%s' 'bypassPermissions' ;;
+    *)     printf '%s' 'default' ;;
+  esac
+}
+
 # ---- 模版仓库守卫 ----
 
 # 是否是模版仓库。模版仓库只装机制与占位骨架，不承载业务数据：

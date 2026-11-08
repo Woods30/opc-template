@@ -5,7 +5,7 @@
 #   scripts/opc-install.sh [前缀] [选项]
 #
 # 选项：
-#   --interactive   先检测本机装了哪些 CLI，再逐个选角色与 CLI
+#   --interactive   先检测本机装了哪些 CLI，再逐个选角色、CLI 与模型
 #   --no-input      不提问（脚本、测试、CI 用）
 #   --skip-smoke    跳过主流程冒烟（工具链自检；默认要跑）
 #   两个都不给时：终端里跑就问，重定向/管道里跑就不问。
@@ -23,7 +23,7 @@ usage() {
 用法：scripts/opc-install.sh [前缀] [选项]
 
 选项：
-  --interactive   先检测本机装了哪些 CLI，再逐个选角色与 CLI
+  --interactive   先检测本机装了哪些 CLI，再逐个选角色、CLI 与模型
   --no-input      不提问（脚本、测试、CI 用）
   --skip-smoke    跳过主流程冒烟（工具链自检；默认要跑）
 EOF
@@ -81,11 +81,24 @@ ask() {
   printf '%s' "$answer"
 }
 
+# 可选的一问：读到 EOF 返回非零，不中止安装。
+# 模型选择是第二轮的附加项，输入没了就按「用该 CLI 的默认模型」处理。
+ask_optional() {
+  local prompt="$1" answer=""
+  printf '%s' "$prompt" >&2
+  if ! IFS= read -r answer; then
+    printf '\n' >&2
+    return 1
+  fi
+  printf '%s' "$answer"
+}
+
 # 逐个角色问「启用吗」「用哪个 CLI」，答案写回 roles.json。
 # 默认值取当前配置：现在的 CLI 装着就还是它，否则用检测到的第一个。
 choose_roles() {
   local roles_file clis cli role answer enable chosen default_index
   local total i enabled_names sel current_cli
+  local models model model_default no_more n m
 
   roles_file="$(opc_roles_file)"
   clis="$(opc_detect_clis | paste -sd ' ' -)"
@@ -156,6 +169,50 @@ choose_roles() {
       '. + [{name: $n, enabled: $e, cli: $c}]' <<< "$sel")"
   done
 
+  # 第二轮：逐角色选模型。清单由该 CLI 自己报告，模版不内置任何模型名；
+  # 拿不到清单时允许手填模型名。留空表示用该 CLI 的默认模型。
+  no_more=0
+  for role in $(opc_all_roles); do
+    chosen="$(jq -r --arg n "$role" '.[] | select(.name==$n) | if .enabled then .cli else "" end' <<< "$sel")"
+    [[ -n "$chosen" ]] || continue
+    model_default="$(opc_role_field "$role" model)"
+    model="$model_default"
+    if [[ $no_more -eq 0 ]]; then
+      models="$(opc_cli_models "$chosen")"
+      if [[ -n "$models" ]]; then
+        echo "  ${role} 的模型清单（由 ${chosen} 自己报告）：" >&2
+        n=0
+        while IFS= read -r m; do
+          [[ -n "$m" ]] || continue
+          n=$((n + 1))
+          printf '    %d) %s\n' "$n" "$m" >&2
+        done <<< "$models"
+      fi
+      if ! answer="$(ask_optional "  ${role} 用哪个模型？[留空 = 该 CLI 的默认模型；可填编号或模型名] ")"; then
+        no_more=1
+        answer=""
+      fi
+      if [[ -n "$answer" ]]; then
+        if [[ "$answer" =~ ^[0-9]+$ ]] && [[ -n "$models" ]]; then
+          model="$(printf '%s\n' "$models" | sed -n "${answer}p")"
+          if [[ -z "$model" ]]; then
+            echo "  编号超出范围：${answer}" >&2
+            exit 2
+          fi
+        else
+          model="$answer"
+        fi
+        # 模型名会写进启动器并交给 CLI 解析：只放行干净的字符
+        if ! [[ "$model" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+          echo "  模型名不合法：${model}（只允许字母数字与 . _ : / -）" >&2
+          exit 2
+        fi
+      fi
+    fi
+    sel="$(jq -c --arg n "$role" --arg m "$model" \
+      'map(if .name == $n then . + {model: $m} else . end)' <<< "$sel")"
+  done
+
   if [[ -z "$enabled_names" ]]; then
     echo "至少要启用一个角色，已中止（roles.json 未改动）。" >&2
     exit 1
@@ -165,7 +222,7 @@ choose_roles() {
     .roles |= map(. as $r |
       ($sel | map(select(.name == $r.name)) | .[0]) as $s |
       if $s == null then .
-      elif $s.enabled then . + {enabled: true, cli: $s.cli}
+      elif $s.enabled then . + {enabled: true, cli: $s.cli, model: $s.model}
       else . + {enabled: false}
       end)
   ' "$roles_file" > "$roles_file.tmp" && mv "$roles_file.tmp" "$roles_file"
@@ -249,7 +306,7 @@ for role in $roles; do
   #             --dangerously-bypass-approvals-and-sandbox
   #   其他   —— 不接管权限，按该 CLI 默认跑，装完提示 owner 自己确认语义
   mode="$(opc_role_field "$role" permissionMode)"
-  mode="${mode:-default}"
+  mode="${mode:-$(opc_cli_default_permission_mode "$cli")}"
   valid_modes="$(opc_cli_permission_modes "$cli")"
   if [[ -n "$valid_modes" ]]; then
     case " $valid_modes " in
@@ -258,6 +315,27 @@ for role in $roles; do
     esac
   fi
   perm_args="$(opc_cli_permission_args "$cli" "$mode")"
+
+  # 模型：留空表示用该 CLI 的默认模型，这时不加任何模型参数。
+  # 写法按 CLI 分派（claude 用 --model，codex 用配置覆盖），口径在 lib.sh。
+  model="$(opc_role_field "$role" model)"
+  if [[ -n "$model" ]] && ! [[ "$model" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+    echo "角色 $role 的 model 不合法：${model}（只允许字母数字与 . _ : / -）" >&2
+    exit 1
+  fi
+  model_args="$(opc_cli_model_args "$cli" "$model")"
+  # 必备开关：codex 少了 --no-daemon，命令会跑到 HC 的调度之外。
+  required_args="$(opc_cli_required_args "$cli")"
+  # 角色自带的额外参数（可选字段）：同样只放行干净的字符。
+  role_args=""
+  while IFS= read -r a; do
+    [[ -n "$a" ]] || continue
+    if ! [[ "$a" =~ ^[A-Za-z0-9._:=/,-]+$ ]]; then
+      echo "角色 $role 的 args 不合法：${a}" >&2
+      exit 1
+    fi
+    role_args="${role_args:+$role_args }$a"
+  done < <(opc_role_list "$role" args)
 
   cli_base="$(basename "$cli")"
   # 只有 claude 走 settings-<角色>.json；别的 CLI 用各自的原生参数
@@ -280,8 +358,8 @@ export OPC_ROOT OPC_SETTINGS OPC_CLI OPC_ROLE
 for _sh in zsh bash sh; do
   _p="\$(command -v "\$_sh" 2>/dev/null)" || continue
   case "\$_sh" in
-    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $extra_args' ;;
-    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $extra_args' ;;
+    sh) exec "\$_p" -lc 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $model_args $required_args $role_args $extra_args' ;;
+    *) exec "\$_p" -lic 'cd "\$OPC_ROOT" && exec "\$OPC_CLI" $perm_args $model_args $required_args $role_args $extra_args' ;;
   esac
 done
 echo "OPC：找不到可用的 shell（zsh / bash / sh）" >&2
