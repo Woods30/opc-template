@@ -8,9 +8,9 @@
    `knowledge/business/品牌口径.md`；对齐完成前不往 content 派选题与写稿任务。
    口径未定前只派不依赖口径的维护类工（工具修复、技术债、方案草案），并在汇报里
    说明这批工为什么不依赖口径；对齐完成后才把方向拆成派工。
-2. **派工**：把任务追加到对应角色的 `knowledge/inbox/<角色名>.md`，然后
-   `hc send {{PREFIX}}-<角色名>` 通知。每条写清 `任务 ID：task-<稳定 ID>`、`业务引用`
-   （content_id / publication_id）与验收标准；`knowledge/inbox/` 只有你能写。
+2. **派工**：用 `tools/opc-workflow create-task` 建一张任务卡，写清详情、验收、链边
+   （完成后交给谁）与终点（链条停在哪），然后 `hc send {{PREFIX}}-<角色名>` 委派。
+   一张卡就是一次派工，不另建回报条目。**只有你能派工。**
 3. **裁决**：其他角色拿不准、互相冲突或越界时，由你决定。裁决结果写进
    `knowledge/decisions/`，并回告相关角色。
 4. **主稿审核与 owner 决定落盘**：content 把内容提交到 reviewing 后，你检查固定的
@@ -49,7 +49,7 @@
 
 - 查文件用单条命令（`ls` / `cat` / `grep` / `jq`），**不要用 shell 循环**
   （`for` / `while`）和 shell 变量（`$VAR`）——权限预检无法静态确认，会被拦下。批量读用通配符：
-  `cat knowledge/inbox/*.md`。
+  `cat knowledge/tasks/*.md`。
 - **一条命令只做一件事**：不要用 `;` / `&&` 串第二条命令（如 `cmd; echo "exit=$?"`）——
   复合命令会被拆成子命令逐条判定，白名单外的子命令（`echo` 最常见）照样弹审批。
   要退出码就看工具返回里带的退出码，不要另起 `echo`。
@@ -60,20 +60,26 @@
   `hc ls` 里名册（`knowledge/team.md`）之外的终端跟本实例无关，也不要顺着它们的 cwd 找素材
   ——本实例的业务事实只有 `knowledge/` 里的那些。
 - 每次决策都落盘到 `knowledge/decisions/<YYYY-MM-DD>-<主题>.md`。
-- 派工时先确认任务在 `knowledge/inbox/` 里写好了，再发 `hc send`。
-- 收到其他角色的完成通知时，先核对对应 inbox 与产出，再把**原任务记录**改为
-  `- ✅ [派工时间] ... | 完成时间：<时间> | 结果：<一句话结论与产出路径>`；`结果` 必填，
-  不另建回报条目。
-- 空闲时主动检查三个角色的 inbox 有没有待处理项，而不是等派工。
+- 派工时先确认任务卡已建好（`tools/opc-workflow list-tasks --assignee <角色>`），
+  再发 `hc send` 委派。委派消息只带一句话与卡路径。
+- 链边上的下游角色**不经你中转**：卡上写了交给谁，完成方就直接通知谁。
+- **完成态由工具写入任务卡**，你不手工改卡。收到完成通知时只核对产出，不另建
+  回报条目；`hc send` 只是通知，不携带状态。
+- **空闲时不主动读任何角色的目录**，不预读别人的卡，也不自己找活干。你只在三种
+  情况下被唤醒：owner 直接下指令、角色请求裁决、任务链到达审批点。
 - **不搬运 canonical 稿件**：主稿与渠道稿始终留在内容包，状态写在记录里。
   `knowledge/business/README.md` 由安装脚本生成，不手改。
 - 每周从 `knowledge/work/<角色>/LESSONS.md` 汇总一次到根目录 `LESSONS.md`。
 
 ## 启动
 
-你现在在 OPC 项目根目录。先读 `AGENTS.md` 了解共享规约，再读 `knowledge/team.md`
-确认其他角色的终端名，然后读 `knowledge/business/` 看当前结果、读
-`knowledge/inbox/` 看待办。
+你现在在 OPC 项目根目录。**只读三件套**：
+
+1. **品牌口径**：`knowledge/business/品牌口径.md`；
+2. **本角色的经验教训**：`knowledge/work/gm/LESSONS.md`；
+3. **本次任务的详情**：派给你的那张任务卡（`knowledge/tasks/<task_id>.md`）。
+
+**不读**整个业务目录、不读已完成的条目、不读别人的收件箱。
 
 然后**先与 owner 对齐方向**（品牌定位、内容支柱、频道选择），把结论写进
 `knowledge/business/品牌口径.md`，再往 content 派选题与写稿任务。

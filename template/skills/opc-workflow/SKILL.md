@@ -1,12 +1,46 @@
 ---
 name: opc-workflow
-description: 用 tools/opc-workflow 推进内容生命周期：建卡、转态、审批落盘、发布事实、复盘与关闭。
+description: 用 tools/opc-workflow 推进内容生命周期：建卡、转态、审批落盘、发布事实、复盘与关闭，以及 content 从选题池选题的边界。
 ---
 
 # 内容生命周期操作手册
 
 内容事实只有一处真源：`tools/opc-workflow` 写出的 canonical 记录。所有状态变化、
 审批决定与发布事实都通过命令落盘，不要靠改文件或搬目录表达状态。
+
+## 选题从池里来
+
+**content 自己从选题池选题，gm 不指定写哪一篇。** gm 给的是**量与约束**（写几篇、
+什么节奏、验收标准），content 自主决定写池里哪一篇。
+
+- **选题池**是业务事实区的单一副本：`knowledge/business/选题池.md`。池子里是
+  **候选条目**——带原文出处、来源属性与处置标记的素材。**候选条目不是选题**：
+  它是「可以选的」，不是「要写的」。
+- **处置标记**（已用 / 已弃 / 待定）记在候选条目上，用来避免同一条被消费两次。
+- **池空则不写**：池子里没有可用条目时，content 回报「无可用选题」，**不硬凑选题**。
+  「选题还没想好」不是理由——池子空就是没有素材。
+
+### 机械过滤与语义判断的分工
+
+| 层 | 谁做 | 判据 |
+|---|---|---|
+| 机械过滤 | 工具 | 来源类型排除、标题词表排除、分类标签排除；来源分类只做优先级标记，不丢弃 |
+| 语义判断 | content | 支柱匹配、时效、口径合规、与在写或已排期内容去重 |
+
+选题源契约（来源标识、许可状态字段、候选条目格式、增量语义、过滤判据的表达方式）
+见 `topic-source` 技能。
+
+### 护栏
+
+满足**任一条**就不许开题：
+
+1. **品牌口径未对齐**——`knowledge/business/品牌口径.md` 里的定位、支柱、术语还没定，
+   写出来的稿子必然返工；
+2. **候选条目没有原文出处可核实**——没法核实的事不写；
+3. **与在写或已排期的内容重复**——同一件事不写第二遍。
+
+选题定了才建卡：用 `create-content` 建 proposed 内容卡，卡上带上这条候选条目的
+出处，便于回溯事实来源。
 
 ## 固定位置
 
@@ -33,6 +67,8 @@ knowledge/content/<content_id>/
 | 目的 | 命令 |
 |---|---|
 | 建卡 | `tools/opc-workflow create-content --title "<标题>" [--source "<来源>"] [--target-date YYYY-MM-DD] --actor content` |
+| 列任务卡 | `tools/opc-workflow list-tasks [--assignee <角色>] [--state open\|done\|cancelled]` |
+| 读任务卡 | `tools/opc-workflow show-task <task_id>` |
 | 进入写稿 | `tools/opc-workflow transition <content_id> --to drafting --actor content` |
 | 提交审阅 | `tools/opc-workflow transition <content_id> --to reviewing --actor content` |
 | 落盘审批决定 | `tools/opc-workflow transition <content_id> --decision <approved\|changes_requested\|rejected> --actor gm [--note "<原因>"]` |
@@ -54,7 +90,7 @@ knowledge/content/<content_id>/
 
 ## 谁在什么时候动
 
-- **content**：建卡、写稿、提交审阅、请求渠道稿审阅、记录自己发现的阻塞。
+- **content**：从选题池选题、建卡、写稿、提交审阅、请求渠道稿审阅、记录自己发现的阻塞。
 - **gm**：落盘 owner 的审批决定、建 publication、排期、落盘发布事实、解除阻塞、
   关闭内容、作废选题。
 - **growth**：记录指标与账号级观测、完成 publication 复盘。
