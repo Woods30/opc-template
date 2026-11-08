@@ -352,5 +352,28 @@ class BinOpcTestCase(unittest.TestCase):
         self.assertEqual("spec-model-beta", roles["content"]["model"])
         self.assertIn("--model spec-model-alpha", self.launcher_of(target, "gm"))
 
+    def test_team_md_is_registry(self):
+        target = self.install_instance({
+            "roles": {"content": {"enabled": True, "cli": "claude",
+                                 "model": "spec-model-alpha"}}
+        })
+        text = (target / "knowledge" / "team.md").read_text(encoding="utf-8")
+        for column in ("角色", "终端名", "启动器", "HC 模板名", "所在 tab",
+                       "CLI", "模型", "权限模式", "负责的子树"):
+            self.assertIn(column, text)
+        # 模型为空写「默认模型」，不留空字段
+        self.assertIn("默认模型", text)
+        self.assertIn("spec-model-alpha", text)
+        # 委派由编排者按注册表发起；旧的「按名册终端名发通知」退休
+        self.assertIn("委派", text)
+        self.assertIn("编排者", text)
+        self.assertNotIn("hc send <终端名>", text)
+        # 边界与读屏约定保留
+        self.assertIn("只有名册里的角色终端才属于本实例", text)
+        self.assertIn("不用地址形式", text)
+        # 每个角色一行，列出 CLI、模型与权限模式
+        for role in ("gm", "content", "growth", "dev"):
+            self.assertIn(role, text)
+
 if __name__ == "__main__":
     unittest.main()

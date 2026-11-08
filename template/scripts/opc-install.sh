@@ -590,15 +590,20 @@ if [[ -f "$CHANNELS_FILE" ]]; then
   } > "$ROOT/knowledge/business/README.md"
 fi
 
-# 3. 团队名册（角色引用终端名时的唯一权威来源）
+# 3. 团队名册（角色注册表）：角色怎么起、用什么 CLI 与模型、权限如何、归哪棵子树
 {
   echo "# 团队名册"
   echo
   echo "> 本文件由 \`scripts/opc-install.sh\` 生成，**不要手改**。"
   echo "> 改角色请编辑 \`roles.json\`，或跑 \`scripts/opc-role.sh\`。"
   echo
-  echo "| 角色 | 终端名 | 模板名 | CLI | 负责的子树 |"
-  echo "|---|---|---|---|---|"
+  echo "## 角色注册表"
+  echo
+  echo "每个角色一行的注册表：会话怎么起、用哪个 CLI 与模型、权限如何、归哪棵子树。"
+  echo "编排者按这张表委派。"
+  echo
+  echo "| 角色 | 终端名 | 启动器 | HC 模板名 | 所在 tab | CLI | 模型 | 权限模式 | 负责的子树 |"
+  echo "|---|---|---|---|---|---|---|---|---|"
   for role in $roles; do
     scope_md=""
     while IFS= read -r s; do
@@ -609,10 +614,21 @@ fi
       esac
       [[ -z "$scope_md" ]] && scope_md="$item" || scope_md="${scope_md}、$item"
     done <<< "$(opc_role_scope "$role")"
-    echo "| $role | \`$PREFIX-$role\` | \`$PREFIX-$role\` | $(opc_role_cli "$role") | $scope_md |"
+    cli="$(opc_role_cli "$role")"
+    # 模型留空表示用该 CLI 的默认模型：写清楚，不留空字段
+    model="$(opc_role_field "$role" model)"
+    [[ -n "$model" ]] || model="默认模型"
+    mode="$(opc_role_field "$role" permissionMode)"
+    mode="${mode:-$(opc_cli_default_permission_mode "$cli")}"
+    echo "| $role | \`$PREFIX-$role\` | \`.opc/run/$role.sh\` | \`$PREFIX-$role\` | \`$role\` | \`$cli\` | $model | \`$mode\` | $scope_md |"
   done
   echo
-  echo "\`hc send <终端名> \"<消息>\"\` 用的是上表的终端名。查当前存活终端用 \`hc ls\`。"
+  echo "## 约定"
+  echo
+  echo "- **只有名册里的角色终端才属于本实例**；名册之外的终端与本实例无关，也不要顺着它们的 cwd 取材。"
+  echo "- **跨终端读屏按名册终端名，不用地址形式**：读别的角色的屏幕用上表的终端名，不要用 \`hc ls\` 里的地址。"
+  echo "- **委派一律由编排者按本注册表发起**：编排者是唯一发起方，按上表的终端名与启动器路径把任务卡交给承接角色。旧的「按名册终端名发通知」约定退休，不再作为委派方式。"
+  echo "- 查当前存活终端用 \`hc ls\`；启动某个角色用上表的启动器路径。"
   echo
   echo "## CLI 能力差异"
   echo
