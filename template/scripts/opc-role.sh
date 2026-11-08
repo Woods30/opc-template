@@ -77,15 +77,19 @@ case "$cmd" in
 
 ## 工作方式
 
-- 动手前先读 \`AGENTS.md\` 与 \`knowledge/team.md\`。
+- 动手前先读 \`knowledge/business/品牌口径.md\`、\`knowledge/work/$name/LESSONS.md\`，
+  以及派给你的那张任务卡（\`knowledge/tasks/<task_id>.md\`）。
 - 产出写进自己负责的子树，命名带日期。
-- 完成后 \`hc send {{PREFIX}}-gm "完成：<一句话结论> | 产出：<文件路径>"\`，由 gm 把结果回写原任务记录。
-- 拿不准时用 \`hc send {{PREFIX}}-gm\` 说明问题；不要直接写 \`knowledge/inbox/\`，它只有 gm 可写。
+- 完成后用 \`tools/opc-workflow complete-task <task_id> --result "<一句话结论与产出路径>"\`
+  写完成态——完成态由工具写入任务卡，你不手工改卡；再用
+  \`hc send {{PREFIX}}-gm "完成：<一句话结论> | 产出：<文件路径>"\` 通知下游或 gm。
+- 拿不准时用 \`hc send {{PREFIX}}-gm\` 说明问题，请求裁决；**不要直接改别人的任务卡**。
 
 ## 启动
 
-你现在在 OPC 项目根目录。先读 \`AGENTS.md\` 了解共享规约，再读 \`knowledge/team.md\`
-确认其他角色的终端名，然后读 \`knowledge/\` 下的已有内容。
+你现在在 OPC 项目根目录。**只读三件套**：品牌口径（\`knowledge/business/品牌口径.md\`）、
+本角色的经验教训（\`knowledge/work/$name/LESSONS.md\`）、本次任务的详情（任务卡）。
+其余一律不读：不读整个业务目录，不读已完成的条目，不读别人的任务卡。
 
 $startup
 EOF

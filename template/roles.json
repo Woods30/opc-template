@@ -31,13 +31,15 @@
       "template": "agents/content/AGENTS.md",
       "skills": [
         "knowledge-writing",
-        "opc-workflow"
+        "opc-workflow",
+        "topic-source"
       ],
       "permissionMode": "bypassPermissions",
       "scope": [
         "knowledge/work/content",
         "knowledge/content",
-        "knowledge/business/品牌口径.md"
+        "knowledge/business/品牌口径.md",
+        "knowledge/business/选题池.md"
       ],
       "approvedSkills": []
     },

@@ -150,8 +150,7 @@ def build_fixture(root: Path) -> Path:
           + "\n---\n\n# 指标目录\n")
     write(root / "knowledge" / "team.md",
           "# 团队名册\n\n| 角色 | 终端名 |\n|---|---|\n| gm | smoke-gm |\n")
-    write(root / "knowledge" / "inbox" / "gm.md", "")
-    for name in ("content", "decisions"):
+    for name in ("content", "decisions", "tasks"):
         (root / "knowledge" / name).mkdir(parents=True, exist_ok=True)
     return root
 

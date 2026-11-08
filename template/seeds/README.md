@@ -8,17 +8,17 @@
 | 文件 | 内容 |
 |---|---|
 | `INSTANCE.md` | 本实例专属信息：前缀、频道、运行参数、已知待办 |
-| `knowledge/team.md` | 团队名册：角色、终端名、各自能写哪块（自动生成） |
+| `knowledge/team.md` | 角色注册表：角色、CLI、模型、权限模式、所在 tab（自动生成） |
 
 ## 目录
 
 ```text
 knowledge/           唯一事实来源
 ├── content/         canonical 内容包：内容卡、主稿、publications/
-├── business/        结果、常驻口径与 generated 只读视图（频道目录只放发布记录）
-├── work/<角色>/     过程：草稿、提案、日志、template-proposals/
+├── business/        结果、常驻口径、选题池与 generated 只读视图（频道目录只放发布记录）
+├── work/<角色>/     过程：草稿、提案、日志、LESSONS.md、template-proposals/
 ├── decisions/       决策记录
-└── inbox/           任务队列（只有 gm 可写；只执行行首既无 ✅ 也无 ⛔ 的条目）
+└── tasks/           任务卡：派工详情、验收、链边、终点与完成态（由工具维护）
 agents/<角色>/       角色材料目录：入口是 AGENTS.md，目录里可放参考稿与清单
 skills/<名字>/       统一技能库：SKILL.md；角色按 roles.json 的 skills 选用
 ```
