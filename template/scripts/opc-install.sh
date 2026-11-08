@@ -302,8 +302,7 @@ for role in $roles; do
   # 权限模式统一翻成各 CLI 自己的语义：OPC 不把 claude 的参数硬塞给别的 CLI。
   # 口径在 lib.sh（opc_cli_permission_modes / opc_cli_permission_args），这里只调用。
   #   claude —— --permission-mode <mode>，另有 settings-<角色>.json 托管规则
-  #   codex  —— --sandbox / --ask-for-approval / --approve-for-me /
-  #             --dangerously-bypass-approvals-and-sandbox
+  #   codex  —— --sandbox / --ask-for-approval / --approve-for-me
   #   其他   —— 不接管权限，按该 CLI 默认跑，装完提示 owner 自己确认语义
   mode="$(opc_role_field "$role" permissionMode)"
   mode="${mode:-$(opc_cli_default_permission_mode "$cli")}"

@@ -324,9 +324,16 @@ class BinOpcTestCase(unittest.TestCase):
         self.assertEqual("", call("opc_cli_model_args claude ''"))
         self.assertEqual("--no-daemon", call("opc_cli_required_args codex"))
         self.assertEqual("", call("opc_cli_required_args claude"))
-        # Codex 角色的默认权限档与 Claude Code 角色对齐：不审批
-        self.assertEqual("bypassPermissions",
+        # Codex 角色的默认权限档是「不弹窗、保留沙箱」：不审批，但不掉沙箱。
+        self.assertEqual("dontAsk",
                          call("opc_cli_default_permission_mode codex"))
+        # 任何档位都不许把 codex 的沙箱整个关掉：那个开关只在外部已沙箱化
+        # 的环境里成立，OPC 实例不是。
+        for mode in call("opc_cli_permission_modes codex").split():
+            args = call("opc_cli_permission_args codex %s" % mode)
+            self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", args)
+        self.assertIn("--ask-for-approval never",
+                      call("opc_cli_permission_args codex bypassPermissions"))
 
     def test_interactive_install_asks_cli_and_model(self):
         # 交互式安装要能逐角色选 CLI 与模型：模型清单拿不到时允许手填模型名。

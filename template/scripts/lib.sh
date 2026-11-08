@@ -393,7 +393,11 @@ opc_cli_permission_modes() {
 #   auto             → 自动评审代替人审批（codex: --approve-for-me）
 #   plan             → 只读探查
 #   dontAsk          → 不弹窗，需要审批的一律失败
-#   bypassPermissions→ 跳过审批与沙箱（官方定位：只在隔离环境里用）
+#   bypassPermissions→ 不弹窗审批
+# codex 的 bypassPermissions **不**映射到 --dangerously-bypass-approvals-and-sandbox：
+# 那个开关的官方定位是「只在外部已经沙箱化的环境里用」，而 OPC 实例不是；而
+# Claude Code 的 bypassPermissions 仍保留工作目录写入拦截与 deny 规则，直接
+# 对齐过去等于悄悄抬高权限。两边都取「不弹窗 + 保留沙箱」这一档。
 opc_cli_permission_args() {
   local cli="$1" mode="$2"
   case "$(basename "$cli")" in
@@ -404,8 +408,7 @@ opc_cli_permission_args() {
         default|manual|acceptEdits) printf '%s' '--sandbox workspace-write --ask-for-approval on-request' ;;
         auto)                         printf '%s' '--approve-for-me --sandbox workspace-write' ;;
         plan)                         printf '%s' '--sandbox read-only --ask-for-approval on-request' ;;
-        dontAsk)                      printf '%s' '--sandbox workspace-write --ask-for-approval never' ;;
-        bypassPermissions)            printf '%s' '--dangerously-bypass-approvals-and-sandbox' ;;
+        dontAsk|bypassPermissions)    printf '%s' '--sandbox workspace-write --ask-for-approval never' ;;
         *)                            printf '%s' '' ;;
       esac ;;
     *)
@@ -465,12 +468,12 @@ opc_cli_models() {
 }
 
 # 该 CLI 的默认权限档（角色没写 permissionMode 时用）。
-# Codex 与 Claude Code 角色对齐到「不审批」档（bypassPermissions）：
-# 子会话卡在审批弹窗上，编排者就会一直等下去。Claude Code 角色在 roles.json
-# 里本来就写死了这一档，这里的兜底保持原样，不放宽既有实例。
+# codex 取 dontAsk：不弹窗审批，子会话不会卡在审批弹窗上让编排者一直等；
+# 沙箱仍在，权限不比 Claude Code 的同名档更高。Claude Code 保持 default，
+# 不放宽既有实例。
 opc_cli_default_permission_mode() {
   case "$(basename "$1")" in
-    codex) printf '%s' 'bypassPermissions' ;;
+    codex) printf '%s' 'dontAsk' ;;
     *)     printf '%s' 'default' ;;
   esac
 }
