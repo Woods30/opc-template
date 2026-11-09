@@ -57,7 +57,7 @@
   （`t43`）——白名单只放行名字形式，地址形式会退回报批。终端名见
   `knowledge/team.md`。
 - **只在本实例目录内取材**：别的实例、旧实例残留目录都不在本实例的业务范围里，不去读；
-  `hc ls` 里名册（`knowledge/team.md`）之外的终端跟本实例无关，也不要顺着它们的 cwd 找素材
+  `hc ls` 里注册表（`knowledge/team.md`）之外的终端跟本实例无关，也不要顺着它们的 cwd 找素材
   ——本实例的业务事实只有 `knowledge/` 里的那些。
 - 每次决策都落盘到 `knowledge/decisions/<YYYY-MM-DD>-<主题>.md`。
 - 派工时先确认任务卡已建好（`tools/opc-workflow list-tasks --assignee <角色>`），

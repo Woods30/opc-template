@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 安装 OPC 实例：按 roles.json 生成 hc 模板、权限白名单、启动器与团队名册。
+# 安装 OPC 实例：按 roles.json 生成 hc 模板、权限白名单、启动器与角色注册表。
 #
 # 用法：
 #   scripts/opc-install.sh [前缀] [选项]
@@ -619,8 +619,8 @@ fi
   echo
   echo "## 约定"
   echo
-  echo "- **只有名册里的角色终端才属于本实例**；名册之外的终端与本实例无关，也不要顺着它们的 cwd 取材。"
-  echo "- **跨终端读屏按名册终端名，不用地址形式**：读别的角色的屏幕用上表的终端名，不要用 \`hc ls\` 里的地址。"
+  echo "- **只有注册表里的角色终端才属于本实例**；注册表之外的终端与本实例无关，也不要顺着它们的 cwd 取材。"
+  echo "- **跨终端读屏按注册表里的终端名，不用地址形式**：读别的角色的屏幕用上表的终端名，不要用 \`hc ls\` 里的地址。"
   echo "- **委派一律由编排者按本注册表发起**：编排者是唯一发起方，按上表的终端名与启动器路径把任务卡交给承接角色。旧的「按名册终端名发通知」约定退休，不再作为委派方式。"
   echo "- 查当前存活终端用 \`hc ls\`；启动某个角色用上表的启动器路径。"
   echo
@@ -678,7 +678,7 @@ echo "已安装 OPC 实例：前缀 $PREFIX"
 echo "  角色：$(echo $roles | tr ' ' ', ')"
 echo "  模板：$TEMPLATES/$PREFIX-<角色>.md"
 echo "  权限：$ROOT/.opc/settings-<角色>.json（仅 claude 角色）"
-echo "  名册：$ROOT/knowledge/team.md"
+echo "  注册表：$ROOT/knowledge/team.md"
 echo "  $smoke_note"
 echo "  $build_note"
 echo "  $ui_note"

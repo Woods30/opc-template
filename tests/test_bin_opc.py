@@ -407,7 +407,7 @@ class BinOpcTestCase(unittest.TestCase):
         self.assertIn("编排者", text)
         self.assertNotIn("hc send <终端名>", text)
         # 边界与读屏约定保留
-        self.assertIn("只有名册里的角色终端才属于本实例", text)
+        self.assertIn("只有注册表里的角色终端才属于本实例", text)
         self.assertIn("不用地址形式", text)
         # 每个角色一行，列出 CLI、模型与权限模式
         for role in ("gm", "content", "growth", "dev"):

@@ -1,6 +1,6 @@
 ---
 name: instance-ops
-description: 运行实例的日常操作：启停角色终端、查名册与状态、管频道、升级模版，以及出问题时去哪里查。
+description: 运行实例的日常操作：启停角色终端、查注册表与状态、管频道、升级模版，以及出问题时去哪里查。
 ---
 
 # 实例运维
@@ -32,10 +32,10 @@ scripts/opc-panes.sh [角色...]
 - 每个角色在自己那个 tab 里跑一个常驻会话。**当前实例的完整注册表在
   `knowledge/team.md`**，那是唯一权威来源——委派前先查注册表，不要凭记忆拼终端名。
 - `hc ls` 列出的是**全部** live 终端，包括别的实例、别的项目空间，以及目录已被删掉却还挂着的
-  残终端。名册之外的终端与本实例无关，不要读它们的屏幕。
+  残终端。注册表之外的终端与本实例无关，不要读它们的屏幕。
 - 跨终端读屏用终端名：`hc read <前缀>-<角色>`。地址形式（如 `t43`）不在白名单里，会退回报批。
 - 角色增删启停：`scripts/opc-role.sh list | add <角色> | enable <角色> | disable <角色>`。
-  改完会自动重跑安装脚本，模板、权限与名册同步更新。
+  改完会自动重跑安装脚本，模板、权限与注册表同步更新。
 
 ## 查状态
 
@@ -77,7 +77,7 @@ scripts/opc-status.sh
 
 | 现象 | 去哪里看 |
 |---|---|
-| 角色没起来 / 终端找不到 | `scripts/opc-status.sh`、`knowledge/team.md`；`hc ls` 里名册之外的终端与本实例无关 |
+| 角色没起来 / 终端找不到 | `scripts/opc-status.sh`、`knowledge/team.md`；`hc ls` 里注册表之外的终端与本实例无关 |
 | 内容状态不对 | `tools/opc-workflow validate`，再看内容卡与事件链 |
 | 看板、日历、发布记录不对 | 重跑 `tools/opc-workflow build`；这些是 generated 只读视图，别手工编辑 |
 | 工具链本身不通 | `tools/opc-smoke`（不读业务数据，缺目录也能跑） |

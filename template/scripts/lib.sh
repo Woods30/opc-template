@@ -343,7 +343,7 @@ opc_mods_dir()      { printf '%s/mods'      "$(opc_app_home)"; }
 
 # ---- 各 CLI 的 Skill 与权限模型 ----
 # 不同 CLI 的「技能在哪」和「谁来批」不是一回事，OPC 不能把 Claude 的规则
-# 直接套给别的 CLI。这些函数是唯一的口径来源：安装器、名册、状态脚本共用。
+# 直接套给别的 CLI。这些函数是唯一的口径来源：安装器、注册表、状态脚本共用。
 
 opc_cli_skill_source() {
   case "$(basename "$1")" in
