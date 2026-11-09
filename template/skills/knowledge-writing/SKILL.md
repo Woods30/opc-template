@@ -85,8 +85,8 @@ knowledge/
 | `reference` | 业务引用（content_id / publication_id），没有就写 `-` |
 | `task` | **任务详情**：长需求写在这里 |
 | `acceptance` | **验收标准**：做到哪算完 |
-| `next` | **链边**：完成后交给谁 |
-| `terminal` | **终点**：链条停在哪 |
+| `next` | **链边**：完成后交给谁；留空表示链条到此为止 |
+| `terminal` | **终点**：链条停在哪（**必填**） |
 | `events` | 事件链 |
 | `completed_at` | 完成时间 |
 | `result` | 结果：一句话结论与产出路径 |
@@ -99,12 +99,14 @@ knowledge/
 
 | 目的 | 命令 |
 |---|---|
-| 创建 | `tools/opc-workflow create-task --assignee <角色> --task "<详情>" --acceptance "<验收>" [--title "<标题>"] [--reference <业务引用>] [--next <下游角色>] [--terminal "<终点>"] [--task-id task-<id>] [--actor gm]` |
+| 创建 | `tools/opc-workflow create-task --assignee <角色> --task "<详情>" --acceptance "<验收>" --terminal "<终点>" [--title "<标题>"] [--reference <业务引用>] [--next <下游角色>] [--task-id task-<id>] [--actor gm]` |
 | 完成 | `tools/opc-workflow complete-task <task_id> --result "<一句话结论与产出路径>" [--completed-at "<offset-aware ISO 8601>"]` |
 | 撤销 | `tools/opc-workflow cancel-task <task_id> --reason "<原因>"` |
 | 列出 | `tools/opc-workflow list-tasks [--assignee <角色>] [--state open\|done\|cancelled]` |
 | 读单张 | `tools/opc-workflow show-task <task_id>` |
 
+- **终点必填**：链条停在哪是卡上的边界，缺了它就没人能判断这条链停没停。
+  **链边可以留空**——那是「链条到此为止」的写法，完成后通知编排者。
 - **任务 ID** 形如 `task-<小写字母数字>`，全实例唯一。`create-task` 不带 `--task-id`
   时按「承接角色 + 时间 + 任务文本」派生一个稳定 ID——同一张卡改措辞时 ID 不漂移。
 - **完成是原子写**：完成时间与结果一起落盘，**缺结果或缺完成时间直接拒绝**，不允许写出

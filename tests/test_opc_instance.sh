@@ -273,7 +273,7 @@ expect "任务卡记着自己的 ID" grep -q "\"task_id\": \"$task_id\"" <<< "$c
 
 # 第二张卡派给 content，留在开放状态：看板要同时有开放任务与完成事实
 created_open="$(tools/opc-workflow create-task --assignee content \
-  --task "起草一篇稿子" --acceptance "有主稿" --actor gm 2>&1)"
+  --task "起草一篇稿子" --acceptance "有主稿" --terminal "本卡为终点" --actor gm 2>&1)"
 open_id="$(printf '%s' "$created_open" | sed -n 's/^已创建 \(task-[0-9a-z]*\).*/\1/p')"
 if [[ -n "$open_id" ]]; then ok "第二张任务卡派给 content"; else bad "第二张任务卡派给 content：$created_open"; fi
 expect "两张卡的 ID 不一样" test "$task_id" != "$open_id"
@@ -296,7 +296,7 @@ expect "完成后任务 ID 不变" grep -q "\"task_id\": \"$task_id\"" <<< "$don
 
 # 撤销也写在卡上：撤销写回原卡并留原因
 created_cancel="$(tools/opc-workflow create-task --assignee dev \
-  --task "修一个工具缺陷" --acceptance "缺陷关闭" --actor gm 2>&1)"
+  --task "修一个工具缺陷" --acceptance "缺陷关闭" --terminal "本卡为终点" --actor gm 2>&1)"
 cancel_id="$(printf '%s' "$created_cancel" | sed -n 's/^已创建 \(task-[0-9a-z]*\).*/\1/p')"
 expect "缺原因时撤销被拒" bash -c \
   "! tools/opc-workflow cancel-task '$cancel_id' --actor gm >/dev/null 2>&1"

@@ -3285,6 +3285,7 @@ class WorkflowTestCase(unittest.TestCase):
         task="产出本周选题清单",
         acceptance="10 个选题",
         actor="gm",
+        terminal="等待 owner 决定",
         extra=(),
         env=None,
     ):
@@ -3297,6 +3298,8 @@ class WorkflowTestCase(unittest.TestCase):
             "--acceptance",
             acceptance,
         ]
+        if terminal is not None:
+            args.extend(["--terminal", terminal])
         if actor is not None:
             args.extend(["--actor", actor])
         args.extend(extra)
@@ -3418,6 +3421,23 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertIn("正文要求：不超过 800 字", record["task"])
         self.assertIn("# 任务卡", body)
         self.assertNotIn("正文要求：不超过 800 字", body)
+
+    def test_create_task_requires_a_terminal(self):
+        # 终点是卡上的边界：链条停在哪说不清，链条就停不住。
+        result = self.create_task(terminal=None)
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("终点", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+    def test_create_task_allows_an_empty_chain_edge(self):
+        # 链边留空是「链条到此为止」的写法，不是缺字段。
+        result = self.create_task(assignee="content", extra=("--next", ""))
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        record, _text = parse_frontmatter(self.task_cards()[0])
+        self.assertEqual("", record["next"])
+        self.assertEqual("等待 owner 决定", record["terminal"])
 
     def test_create_task_requires_acceptance(self):
         result = self.run_workflow(

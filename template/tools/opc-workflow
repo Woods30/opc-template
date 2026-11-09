@@ -3455,6 +3455,13 @@ def validate_task_record(
     for field in ("reference", "acceptance", "next", "terminal"):
         if not isinstance(record.get(field), str):
             errors.append(Diagnostic(source, f"字段 {field} 必须是字符串"))
+    # 终点是卡上的边界，缺了它就没人能判断链条停没停。
+    if isinstance(record.get("terminal"), str) and not record["terminal"].strip():
+        errors.append(Diagnostic(source, "字段 terminal 必须是非空字符串"))
+    # 链边非空时必须指向一个真实角色——手工改卡写歪了要挡住。
+    next_role = record.get("next")
+    if isinstance(next_role, str) and next_role.strip() and next_role not in known_roles:
+        errors.append(Diagnostic(source, f"next 使用非法角色「{next_role}」"))
 
     if not valid_offset_time(record.get("created_at")):
         errors.append(
@@ -3652,7 +3659,9 @@ def create_task(
     title = optional_text(title) or task_title(task)
     reference = optional_text(reference) or "-"
     next_role = optional_text(next_role)
-    terminal = optional_text(terminal)
+    # 终点必填：链条停在哪是卡上的边界，缺了它就没人能判断这条链停没停。
+    # 链边可以留空——那是「链条到此为止」的写法，完成后通知编排者。
+    terminal = required_text("终点", terminal)
     if next_role and next_role not in roles:
         raise WorkflowError(f"链边「{next_role}」必须是 roles.json 中的 role key")
 
@@ -4444,8 +4453,8 @@ def build_parser():
     create_task_parser.add_argument("--acceptance", help="验收标准（必填）")
     create_task_parser.add_argument("--title", help="任务卡标题；默认取任务详情第一行")
     create_task_parser.add_argument("--reference", help="业务引用；没有则填 -")
-    create_task_parser.add_argument("--next", help="链边：完成后交给谁")
-    create_task_parser.add_argument("--terminal", help="终点：链条停在哪")
+    create_task_parser.add_argument("--next", help="链边：完成后交给谁；留空表示链条到此为止")
+    create_task_parser.add_argument("--terminal", help="终点：链条停在哪（必填）")
     create_task_parser.add_argument(
         "--task-id",
         help="显式任务 ID；默认按承接角色 + 时间 + 任务文本派生",
