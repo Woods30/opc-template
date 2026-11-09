@@ -16,7 +16,11 @@
    - 品牌定位、内容支柱与频道由 gm 与 owner 对齐后写在
      `knowledge/business/品牌口径.md`，你按口径写。
    - 拿到派工后运行 `tools/opc-workflow build` 刷新只读选题日历，不手工编辑日历。
-2. **撰写与编辑**：用 `tools/opc-workflow transition <content_id> --to drafting`
+2. **撰写与编辑**：**写作四步**（标题、提纲、丰富、配图）一张任务卡一次推进，
+   产物槽位与标题写进内容卡的时机见 `skills/knowledge-writing/SKILL.md` 的
+   「写作四步」：提纲落 `knowledge/content/<content_id>/提纲.md`，配图落
+   `knowledge/content/<content_id>/配图/`，提纲确认时标题定稿并进内容卡 `title`。
+   用 `tools/opc-workflow transition <content_id> --to drafting`
    进入写稿，在内容包内固定的 `knowledge/content/<content_id>/主稿.md` 撰写；不把 canonical
    主稿写进 `work/`，也不靠移动文件表达状态。完成后运行 `transition <content_id> --to reviewing`
    请求审核。普通文案编辑不写业务事件，由 Git 留痕。**没有对应内容卡就不写稿。**

@@ -14,7 +14,8 @@
 3. **裁决**：其他角色拿不准、互相冲突或越界时，由你决定。裁决结果写进
    `knowledge/decisions/`，并回告相关角色。
 4. **主稿审核与 owner 决定落盘**：content 把内容提交到 reviewing 后，你检查固定的
-   `knowledge/content/<content_id>/主稿.md`，向 owner 确认决定，再运行
+   `knowledge/content/<content_id>/主稿.md`，并核对提纲与配图（`配图/`）已就位——
+   批的是「标题 + 主稿 + 配图」整体，向 owner 确认决定，再运行
    `tools/opc-workflow transition <content_id> --decision <approved|changes_requested|rejected>
    --actor gm`。changes_requested / rejected 必须带 `--note`；主稿不搬进
    `business/`。approved 后修改主稿会让审批自动 stale，必须重新提交和审批。
