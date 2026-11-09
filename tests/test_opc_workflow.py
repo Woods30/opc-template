@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONTENT_ID_RE = re.compile(r"^content-\d{8}-\d{12}-[0-9a-f]{8}$")
 PUBLICATION_ID_RE = re.compile(r"^publication-\d{8}-\d{12}-[0-9a-f]{8}$")
+TASK_ID_RE = re.compile(r"^task-[a-z0-9]{4,64}$")
 
 
 def parse_frontmatter(path):
@@ -2196,15 +2197,28 @@ class WorkflowTestCase(unittest.TestCase):
             0,
             self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
         )
-        self.write_inbox(
-            "gm",
-            [
-                "- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题",
-                "- ✅ [2026-11-03 08:00] 发起方：gm | 任务：修掉旧日历 | 验收：已删除 | "
-                "完成时间：2026-11-03 09:15 | 结果：旧日历已删除，见 knowledge/business/选题日历.md",
-            ],
+        self.create_task_record(
+            assignee="gm",
+            task="产出本周选题清单",
+            acceptance="10 个选题",
         )
-        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/inbox/gm.md` |"])
+        done_task, _card = self.create_task_record(
+            assignee="gm",
+            task="修掉旧日历",
+            acceptance="已删除",
+        )
+        completed = self.run_workflow(
+            "complete-task",
+            done_task["task_id"],
+            "--result",
+            "旧日历已删除，见 knowledge/business/选题日历.md",
+            "--completed-at",
+            "2026-11-03T09:15:00+08:00",
+            "--actor",
+            "gm",
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/tasks/` |"])
 
         result = self.run_workflow("build")
 
@@ -2242,7 +2256,7 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual("10 个选题", tasks[0]["acceptance"])
         self.assertIsNone(tasks[0]["completed_at"])
         self.assertIsNone(tasks[0]["result"])
-        self.assertEqual("2026-11-03 09:15", tasks[1]["completed_at"])
+        self.assertEqual("2026-11-03T09:15:00+08:00", tasks[1]["completed_at"])
         self.assertEqual(
             "旧日历已删除，见 knowledge/business/选题日历.md",
             tasks[1]["result"],
@@ -2301,9 +2315,10 @@ class WorkflowTestCase(unittest.TestCase):
 
     def test_build_dashboard_exposes_default_scope_and_filter_fields(self):
         publication_id, _publication_card = self.create_published_publication()
-        self.write_inbox(
-            "gm",
-            ["- [2026-11-04 09:30] 发起方：gm | 任务：跟进发布 | 验收：已确认"],
+        self.create_task_record(
+            assignee="gm",
+            task="跟进发布",
+            acceptance="已确认",
         )
 
         self.assertEqual(0, self.run_workflow("build").returncode)
@@ -2399,29 +2414,82 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual("渠道稿.md", approvals[0]["artifact"])
         self.assertIn(publication_id, payload["scope"]["publication_ids"])
 
-    def test_inbox_uses_stable_task_id_reference_and_skips_examples(self):
+    def test_task_card_reference_and_explicit_id_are_stable(self):
         content_id, _content_card = self.create_ready_content()
-        self.write_inbox(
-            "gm",
-            [
-                "```",
-                "- [YYYY-MM-DD HH:MM] 发起方：<角色> | 任务：<做什么> | 验收：<怎么算完成>",
-                "```",
-                "- [2026-12-01 09:30] 发起方：gm | 任务 ID：task-abc123 | 业务引用：{} | "
-                "任务：跟进复盘 | 验收：有结论".format(content_id),
-            ],
+        record, _card = self.create_task_record(
+            assignee="gm",
+            task="跟进复盘",
+            acceptance="有结论",
+            extra=(
+                "--task-id",
+                "task-abc123",
+                "--reference",
+                content_id,
+            ),
         )
-        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/inbox/gm.md` |"])
+        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/tasks/` |"])
 
         result = self.run_workflow("build")
 
         self.assertEqual(0, result.returncode, result.stderr)
         tasks = self.dashboard()["tasks"]
-        self.assertEqual(1, len(tasks), "围栏代码块里的示例不是待办")
+        self.assertEqual(1, len(tasks))
         self.assertEqual("task-abc123", tasks[0]["task_id"])
         self.assertEqual(content_id, tasks[0]["reference"])
+        self.assertEqual("knowledge/tasks/task-abc123.md", tasks[0]["source_path"])
 
-    def test_build_dashboard_reads_inbox_states_from_markers(self):
+    def test_dashboard_reads_open_done_and_cancelled_from_task_cards(self):
+        open_task, _card = self.create_task_record(
+            assignee="gm",
+            task="产出本周选题清单",
+            acceptance="10 个选题",
+        )
+        done_task, _card = self.create_task_record(
+            assignee="gm",
+            task="修掉旧日历",
+            acceptance="已删除",
+        )
+        cancelled_task, _card = self.create_task_record(
+            assignee="gm",
+            task="换个方向",
+            acceptance="无",
+        )
+        self.assertEqual(
+            0,
+            self.run_workflow(
+                "complete-task",
+                done_task["task_id"],
+                "--result",
+                "旧日历已删除",
+                "--actor",
+                "gm",
+            ).returncode,
+        )
+        self.assertEqual(
+            0,
+            self.run_workflow(
+                "cancel-task",
+                cancelled_task["task_id"],
+                "--reason",
+                "不再需要",
+                "--actor",
+                "gm",
+            ).returncode,
+        )
+
+        self.assertEqual(0, self.run_workflow("build").returncode)
+        payload = self.dashboard()
+        by_id = {task["task_id"]: task for task in payload["tasks"]}
+
+        self.assertEqual("open", by_id[open_task["task_id"]]["state"])
+        self.assertEqual("done", by_id[done_task["task_id"]]["state"])
+        self.assertIsNotNone(by_id[done_task["task_id"]]["completed_at"])
+        self.assertEqual("旧日历已删除", by_id[done_task["task_id"]]["result"])
+        self.assertEqual("cancelled", by_id[cancelled_task["task_id"]]["state"])
+        self.assertEqual("不再需要", by_id[cancelled_task["task_id"]]["reason"])
+        self.assertEqual([open_task["task_id"]], payload["scope"]["task_ids"])
+
+    def test_inbox_entries_do_not_add_tasks_to_the_dashboard(self):
         self.write_inbox(
             "gm",
             [
@@ -2435,75 +2503,37 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual(0, self.run_workflow("build").returncode)
         payload = self.dashboard()
 
-        self.assertEqual(
-            ["open", "done", "cancelled"],
-            [task["state"] for task in payload["tasks"]],
-        )
-        self.assertEqual("不再需要", payload["tasks"][2]["reason"])
-        self.assertEqual(
-            [payload["tasks"][0]["task_id"]],
-            payload["scope"]["task_ids"],
-        )
+        self.assertEqual([], payload["tasks"])
+        self.assertEqual([], payload["scope"]["task_ids"])
+        self.assertEqual(0, payload["counts"]["tasks"])
+        self.assertNotIn("knowledge/inbox/", self.dashboard_path().read_text(encoding="utf-8"))
 
-    def test_completed_inbox_entry_requires_a_nonempty_result(self):
-        self.write_inbox(
-            "dev",
-            [
-                "- ✅ [2026-11-04 09:30] 发起方：gm | 任务 ID：task-noresult | "
-                "业务引用：- | 任务：修复冒烟 | 验收：测试通过 | "
-                "完成时间：2026-11-04 10:00",
-            ],
-        )
-
-        self.assertEqual(0, self.run_workflow("build").returncode)
-        task = self.dashboard()["tasks"][0]
-
-        self.assertEqual("open", task["state"])
-        self.assertIsNone(task["completed_at"])
-        self.assertIsNone(task["result"])
-        self.assertEqual(["task-noresult"], self.dashboard()["scope"]["task_ids"])
-
-    def test_completed_inbox_entry_accepts_legacy_line_start_checkmark(self):
+    def test_legacy_inbox_formats_no_longer_affect_the_dashboard(self):
         self.write_inbox(
             "growth",
             [
                 "✅ - [2026-11-04 09:30] 发起方：gm | 任务 ID：task-legacy-start | "
                 "业务引用：- | 任务：整理渠道 | 验收：给出清单 | "
                 "完成时间：2026-11-04 11:20 | 结果：候选清单见 knowledge/work/growth/渠道.md",
-            ],
-        )
-
-        self.assertEqual(0, self.run_workflow("build").returncode)
-        tasks = self.dashboard()["tasks"]
-        self.assertEqual(1, len(tasks), "行首 legacy 完成条目不应被 parser 返回 None")
-        task = tasks[0]
-
-        self.assertEqual("done", task["state"])
-        self.assertEqual("2026-11-04 11:20", task["completed_at"])
-        self.assertEqual(
-            "候选清单见 knowledge/work/growth/渠道.md",
-            task["result"],
-        )
-
-    def test_completed_inbox_entry_accepts_legacy_checkmark_dash_prefix(self):
-        self.write_inbox(
-            "growth",
-            [
                 "- ✅ - [2026-11-04 09:30] 发起方：gm | 任务 ID：task-legacy | "
                 "业务引用：- | 任务：整理渠道 | 验收：给出清单 | "
                 "完成时间：2026-11-04 11:20 | 结果：候选清单见 knowledge/work/growth/渠道.md",
+                "- ✅ [2026-11-04 09:30] 发起方：gm | 任务 ID：task-noresult | "
+                "业务引用：- | 任务：修复冒烟 | 验收：测试通过 | "
+                "完成时间：2026-11-04 10:00",
             ],
+        )
+        record, _card = self.create_task_record(
+            assignee="content",
+            task="跟进发布",
+            acceptance="已确认",
         )
 
         self.assertEqual(0, self.run_workflow("build").returncode)
-        task = self.dashboard()["tasks"][0]
+        payload = self.dashboard()
 
-        self.assertEqual("done", task["state"])
-        self.assertEqual("2026-11-04 11:20", task["completed_at"])
-        self.assertEqual(
-            "候选清单见 knowledge/work/growth/渠道.md",
-            task["result"],
-        )
+        self.assertEqual([record["task_id"]], [task["task_id"] for task in payload["tasks"]])
+        self.assertEqual([record["task_id"]], payload["scope"]["task_ids"])
 
     def test_end_to_end_dashboard_covers_content_publish_metrics_and_tasks(self):
         publication_id, _publication_card = self.create_published_publication()
@@ -2512,11 +2542,12 @@ class WorkflowTestCase(unittest.TestCase):
             0,
             self.record_metrics(publication_id, "48h", {"views": 1234}).returncode,
         )
-        self.write_inbox(
-            "content",
-            ["- [2026-11-04 09:30] 发起方：gm | 任务：产出本周选题清单 | 验收：10 个选题"],
+        self.create_task_record(
+            assignee="content",
+            task="产出本周选题清单",
+            acceptance="10 个选题",
         )
-        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/inbox/gm.md` |"])
+        self.write_team(["| gm | `opc-gm` | `opc-gm` | claude | `knowledge/tasks/` |"])
 
         self.assertEqual(0, self.run_workflow("build").returncode)
         payload = self.dashboard()
@@ -3238,6 +3269,480 @@ class WorkflowTestCase(unittest.TestCase):
             if path.name.startswith(".opc-workflow-calendar-")
         ]
         self.assertEqual([], leftovers)
+
+
+    # ---------- 任务卡 ----------
+
+    def task_cards(self):
+        return sorted((self.instance / "knowledge" / "tasks").glob("*.md"))
+
+    def task_card(self, task_id):
+        return self.instance / "knowledge" / "tasks" / f"{task_id}.md"
+
+    def create_task(
+        self,
+        assignee="content",
+        task="产出本周选题清单",
+        acceptance="10 个选题",
+        actor="gm",
+        terminal="等待 owner 决定",
+        extra=(),
+        env=None,
+    ):
+        args = [
+            "create-task",
+            "--assignee",
+            assignee,
+            "--task",
+            task,
+            "--acceptance",
+            acceptance,
+        ]
+        if terminal is not None:
+            args.extend(["--terminal", terminal])
+        if actor is not None:
+            args.extend(["--actor", actor])
+        args.extend(extra)
+        return self.run_workflow(*args, env=env)
+
+    def create_task_record(self, **kwargs):
+        before = {card.name for card in self.task_cards()}
+        result = self.create_task(**kwargs)
+        self.assertEqual(0, result.returncode, result.stderr)
+        created = [
+            card for card in self.task_cards() if card.name not in before
+        ]
+        self.assertEqual(1, len(created))
+        record, _text = parse_frontmatter(created[0])
+        return record, created[0]
+
+    def task_body(self, card):
+        text = card.read_text(encoding="utf-8")
+        marker = text.find("\n---\n", 4)
+        self.assertTrue(marker > 0, "任务卡缺少 frontmatter 结束标记")
+        return text[marker + len("\n---\n") :]
+
+    def test_create_task_writes_a_card_with_the_agreed_fields(self):
+        result = self.create_task(
+            extra=(
+                "--reference",
+                "content-1",
+                "--next",
+                "gm",
+                "--terminal",
+                "等待 owner 决定",
+            )
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        cards = self.task_cards()
+        self.assertEqual(1, len(cards))
+        record, _text = parse_frontmatter(cards[0])
+        self.assertEqual(1, record["schema_version"])
+        self.assertEqual("task", record["record_type"])
+        self.assertTrue(TASK_ID_RE.fullmatch(record["task_id"]), record["task_id"])
+        self.assertEqual("产出本周选题清单", record["title"])
+        self.assertEqual("gm", record["requester"])
+        self.assertEqual("content", record["assignee"])
+        self.assertEqual("open", record["state"])
+        self.assertEqual("content-1", record["reference"])
+        self.assertEqual("产出本周选题清单", record["task"])
+        self.assertEqual("10 个选题", record["acceptance"])
+        self.assertEqual("gm", record["next"])
+        self.assertEqual("等待 owner 决定", record["terminal"])
+        self.assertIsNone(record["completed_at"])
+        self.assertIsNone(record["result"])
+        self.assertIsNone(record["cancel_reason"])
+        self.assertEqual(
+            ["create"], [event["action"] for event in record["events"]]
+        )
+
+    def test_only_the_orchestrator_can_dispatch(self):
+        # 派工只有编排者能做：角色之间不自行开卡。
+        result = self.create_task(assignee="growth", actor="content")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("派工", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+    def test_only_the_assignee_can_write_the_completion(self):
+        record, card = self.create_task_record(assignee="content", actor="gm")
+
+        refused = self.run_workflow(
+            "complete-task", record["task_id"], "--result", "别人的结论",
+            "--actor", "growth")
+        self.assertEqual(1, refused.returncode)
+        self.assertIn("承接角色", refused.stderr)
+        after, _text = parse_frontmatter(card)
+        self.assertEqual("open", after["state"])
+        self.assertIsNone(after["result"])
+
+        accepted = self.run_workflow(
+            "complete-task", record["task_id"], "--result", "本周清单已交付",
+            "--actor", "content")
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        done, _text = parse_frontmatter(card)
+        self.assertEqual("done", done["state"])
+        self.assertEqual("本周清单已交付", done["result"])
+
+    def test_only_the_assignee_or_requester_can_cancel(self):
+        record, card = self.create_task_record(assignee="content", actor="gm")
+
+        refused = self.run_workflow(
+            "cancel-task", record["task_id"], "--reason", "不做了", "--actor", "growth")
+        self.assertEqual(1, refused.returncode)
+        self.assertIn("撤销", refused.stderr)
+        after, _text = parse_frontmatter(card)
+        self.assertEqual("open", after["state"])
+
+        accepted = self.run_workflow(
+            "cancel-task", record["task_id"], "--reason", "需求作废", "--actor", "gm")
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        cancelled, _text = parse_frontmatter(card)
+        self.assertEqual("cancelled", cancelled["state"])
+        self.assertEqual("需求作废", cancelled["cancel_reason"])
+
+    def test_create_task_creates_the_task_directory_on_demand(self):
+        self.assertFalse((self.instance / "knowledge" / "tasks").exists())
+
+        result = self.create_task()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue((self.instance / "knowledge" / "tasks").is_dir())
+
+    def test_create_task_keeps_long_text_in_frontmatter_only(self):
+        result = self.create_task(task="写一篇稿子\n正文要求：不超过 800 字")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        card = self.task_cards()[0]
+        record, _text = parse_frontmatter(card)
+        body = self.task_body(card)
+        self.assertEqual("写一篇稿子", record["title"])
+        self.assertIn("正文要求：不超过 800 字", record["task"])
+        self.assertIn("# 任务卡", body)
+        self.assertNotIn("正文要求：不超过 800 字", body)
+
+    def test_create_task_requires_a_terminal(self):
+        # 终点是卡上的边界：链条停在哪说不清，链条就停不住。
+        result = self.create_task(terminal=None)
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("终点", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+    def test_create_task_allows_an_empty_chain_edge(self):
+        # 链边留空是「链条到此为止」的写法，不是缺字段。
+        result = self.create_task(assignee="content", extra=("--next", ""))
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        record, _text = parse_frontmatter(self.task_cards()[0])
+        self.assertEqual("", record["next"])
+        self.assertEqual("等待 owner 决定", record["terminal"])
+
+    def test_create_task_requires_acceptance(self):
+        result = self.run_workflow(
+            "create-task",
+            "--assignee",
+            "content",
+            "--task",
+            "写一篇稿子",
+            "--actor",
+            "gm",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("验收", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+    def test_create_task_rejects_unknown_assignee(self):
+        result = self.create_task(assignee="nobody")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("nobody", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+    def test_create_task_rejects_unknown_chain_target(self):
+        result = self.create_task(extra=("--next", "nobody"))
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("nobody", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+    def test_create_task_derives_distinct_ids(self):
+        first = self.create_task(task="产出本周选题清单")
+        second = self.create_task(task="跟进渠道复盘")
+
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual(0, second.returncode, second.stderr)
+        ids = []
+        for card in self.task_cards():
+            record, _text = parse_frontmatter(card)
+            ids.append(record["task_id"])
+        self.assertEqual(2, len(set(ids)))
+        for task_id in ids:
+            self.assertTrue(TASK_ID_RE.fullmatch(task_id), task_id)
+
+    def test_create_task_accepts_explicit_task_id(self):
+        result = self.create_task(extra=("--task-id", "task-abc123"))
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(self.task_card("task-abc123").is_file())
+
+    def test_create_task_rejects_a_malformed_task_id(self):
+        result = self.create_task(extra=("--task-id", "../outside"))
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual([], self.task_cards())
+
+    def test_create_task_refuses_to_overwrite_an_existing_card(self):
+        first = self.create_task(extra=("--task-id", "task-dup"))
+        self.assertEqual(0, first.returncode, first.stderr)
+        before = self.task_card("task-dup").read_bytes()
+
+        second = self.create_task(extra=("--task-id", "task-dup"))
+
+        self.assertEqual(1, second.returncode)
+        self.assertEqual(before, self.task_card("task-dup").read_bytes())
+
+    def test_task_commands_refuse_to_impersonate_another_role(self):
+        result = self.create_task(actor="gm", env={"OPC_ROLE": "content"})
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("OPC_ROLE", result.stderr)
+        self.assertEqual([], self.task_cards())
+
+        record, card = self.create_task_record()
+        before = card.read_bytes()
+        for command in ("complete-task", "cancel-task"):
+            args = [command, record["task_id"], "--actor", "gm"]
+            if command == "complete-task":
+                args.extend(["--result", "已完成"])
+            else:
+                args.extend(["--reason", "不需要"])
+            refused = self.run_workflow(*args, env={"OPC_ROLE": "content"})
+            self.assertEqual(1, refused.returncode, refused.stderr)
+            self.assertIn("OPC_ROLE", refused.stderr)
+        self.assertEqual(before, card.read_bytes())
+
+    def test_complete_task_records_the_completion_fact(self):
+        record, card = self.create_task_record()
+
+        result = self.run_workflow(
+            "complete-task",
+            record["task_id"],
+            "--result",
+            "10 个选题已给出",
+            "--actor",
+            "content",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        updated, text = parse_frontmatter(card)
+        self.assertEqual("done", updated["state"])
+        self.assertEqual("10 个选题已给出", updated["result"])
+        self.assertIsNotNone(updated["completed_at"])
+        self.assertEqual(
+            ["create", "complete"],
+            [event["action"] for event in updated["events"]],
+        )
+        self.assertIn("状态：done", text)
+
+    def test_repeated_completion_does_not_write_a_second_fact(self):
+        record, card = self.create_task_record()
+        first = self.run_workflow(
+            "complete-task",
+            record["task_id"],
+            "--result",
+            "已完成",
+            "--actor",
+            "content",
+        )
+        self.assertEqual(0, first.returncode, first.stderr)
+        before = card.read_bytes()
+
+        second = self.run_workflow(
+            "complete-task",
+            record["task_id"],
+            "--result",
+            "已完成",
+            "--actor",
+            "content",
+        )
+
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertEqual(before, card.read_bytes())
+        updated, _text = parse_frontmatter(card)
+        self.assertEqual(
+            1,
+            len(
+                [
+                    event
+                    for event in updated["events"]
+                    if event["action"] == "complete"
+                ]
+            ),
+        )
+
+    def test_completion_without_result_is_refused_and_leaves_the_card_alone(self):
+        record, card = self.create_task_record()
+        before = card.read_bytes()
+
+        result = self.run_workflow(
+            "complete-task",
+            record["task_id"],
+            "--actor",
+            "content",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("结果", result.stderr)
+        self.assertEqual(before, card.read_bytes())
+        updated, _text = parse_frontmatter(card)
+        self.assertEqual("open", updated["state"])
+
+    def test_completion_with_unusable_completion_time_is_refused(self):
+        record, card = self.create_task_record()
+        before = card.read_bytes()
+
+        result = self.run_workflow(
+            "complete-task",
+            record["task_id"],
+            "--result",
+            "已完成",
+            "--completed-at",
+            "昨天",
+            "--actor",
+            "content",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("完成时间", result.stderr)
+        self.assertEqual(before, card.read_bytes())
+
+    def test_cancel_task_writes_the_reason_back_to_the_card(self):
+        record, card = self.create_task_record()
+
+        result = self.run_workflow(
+            "cancel-task",
+            record["task_id"],
+            "--reason",
+            "不再需要",
+            "--actor",
+            "gm",
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        updated, _text = parse_frontmatter(card)
+        self.assertEqual("cancelled", updated["state"])
+        self.assertEqual("不再需要", updated["cancel_reason"])
+        self.assertIsNone(updated["completed_at"])
+        self.assertIsNone(updated["result"])
+        self.assertEqual(
+            ["create", "cancel"],
+            [event["action"] for event in updated["events"]],
+        )
+
+    def test_cancel_task_requires_a_reason(self):
+        record, card = self.create_task_record()
+        before = card.read_bytes()
+
+        result = self.run_workflow(
+            "cancel-task",
+            record["task_id"],
+            "--actor",
+            "gm",
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(before, card.read_bytes())
+
+    def test_cancel_task_refuses_a_completed_card(self):
+        record, _card = self.create_task_record()
+        completed = self.run_workflow(
+            "complete-task",
+            record["task_id"],
+            "--result",
+            "已完成",
+            "--actor",
+            "content",
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+        result = self.run_workflow(
+            "cancel-task",
+            record["task_id"],
+            "--reason",
+            "反悔",
+            "--actor",
+            "gm",
+        )
+
+        self.assertEqual(1, result.returncode)
+
+    def test_list_tasks_filters_by_assignee_and_state(self):
+        first, _card = self.create_task_record(
+            assignee="content",
+            task="产出本周选题清单",
+        )
+        second, _card = self.create_task_record(
+            assignee="growth",
+            task="整理渠道复盘",
+        )
+        completed = self.run_workflow(
+            "complete-task",
+            second["task_id"],
+            "--result",
+            "清单已整理",
+            "--actor",
+            "growth",
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+        everything = self.run_workflow("list-tasks")
+        self.assertEqual(0, everything.returncode, everything.stderr)
+        self.assertIn(first["task_id"], everything.stdout)
+        self.assertIn(second["task_id"], everything.stdout)
+
+        by_assignee = self.run_workflow("list-tasks", "--assignee", "content")
+        self.assertEqual(0, by_assignee.returncode, by_assignee.stderr)
+        self.assertIn(first["task_id"], by_assignee.stdout)
+        self.assertNotIn(second["task_id"], by_assignee.stdout)
+
+        by_state = self.run_workflow("list-tasks", "--state", "done")
+        self.assertEqual(0, by_state.returncode, by_state.stderr)
+        self.assertNotIn(first["task_id"], by_state.stdout)
+        self.assertIn(second["task_id"], by_state.stdout)
+
+    def test_show_task_prints_the_card_back(self):
+        record, card = self.create_task_record()
+
+        result = self.run_workflow("show-task", record["task_id"])
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(card.read_text(encoding="utf-8"), result.stdout)
+
+    def test_malformed_task_cards_are_rejected_instead_of_downgraded(self):
+        record, card = self.create_task_record()
+        record["state"] = "done"
+        record["completed_at"] = "2026-11-04T10:00:00+08:00"
+        record["result"] = ""
+        write_frontmatter(card, record)
+
+        listed = self.run_workflow("list-tasks")
+        shown = self.run_workflow("show-task", record["task_id"])
+        built = self.run_workflow("build")
+
+        self.assertEqual(1, listed.returncode)
+        self.assertEqual(1, shown.returncode)
+        self.assertIn("完成态", shown.stderr)
+        self.assertEqual(1, built.returncode)
+        self.assertFalse(self.dashboard_path().exists())
+
+    def test_show_task_reports_a_missing_card(self):
+        result = self.run_workflow("show-task", "task-missing")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("task-missing", result.stderr)
 
 
 if __name__ == "__main__":

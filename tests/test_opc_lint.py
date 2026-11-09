@@ -19,6 +19,17 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LINT = os.path.join(ROOT, "template", "tools", "opc-lint")
+# 规约回归可以用 OPC_RULES_ROOT 指向另一份载荷（例如改动前的 HEAD），用来证明用例先红后绿。
+RULES_ROOT = os.environ.get("OPC_RULES_ROOT", ROOT)
+
+
+def rules_file(rel):
+    return os.path.join(RULES_ROOT, "template", rel)
+
+
+def read_rules(rel):
+    with open(rules_file(rel), encoding="utf-8") as fh:
+        return fh.read()
 
 
 def load_module():
@@ -101,6 +112,8 @@ ROLES = {
             "skills": [],
             "permissionMode": "default",
             "scope": ["knowledge/work/gm"],
+            # 模版只定机制：模型留空表示用该 CLI 的默认模型，由实例自己选。
+            "model": "",
         }
     ]
 }
@@ -212,6 +225,7 @@ class LintTestCase(unittest.TestCase):
                 "skills": [],
                 "permissionMode": "default",
                 "scope": ["knowledge/work/{}".format(name)],
+                "model": "",
             }
         )
         self.write("roles.json", json.dumps(roles, ensure_ascii=False))
@@ -246,6 +260,64 @@ class LintTestCase(unittest.TestCase):
         checks = lint.run_checks(ROOT)
         failed = [c for c in checks if c.status == lint.STATUS_FAIL]
         self.assertEqual([], [(c.id, c.detail) for c in failed])
+
+    # ---- 委派契约与选题源契约的规约一致性 ----
+
+    def test_shared_rules_declare_delegation_contract(self):
+        text = read_rules("AGENTS.md")
+        for phrase in (
+            "委派契约", "任务卡", "链边单向直送下游", "不经编排者中转",
+            "链条到终点即停", "不设唤醒次数预算",
+            "owner 直接下指令", "角色请求裁决", "任务链到达审批点",
+            "完成态由工具写入任务卡", "回报只是通知", "选题池",
+        ):
+            self.assertIn(phrase, text, phrase)
+
+    def test_shared_rules_retire_inbox_dispatch_protocol(self):
+        text = read_rules("AGENTS.md")
+        for phrase in ("空闲时主动检查", "巡检收件箱", "任务队列", "待办队列"):
+            self.assertNotIn(phrase, text, phrase)
+
+    def test_role_rules_retire_inbox_dispatch_protocol(self):
+        for role in ("gm", "content", "growth", "dev"):
+            text = read_rules("agents/{}/AGENTS.md".format(role))
+            for phrase in ("空闲时主动检查", "巡检收件箱", "任务队列", "待办队列"):
+                self.assertNotIn(phrase, text, (role, phrase))
+
+    def test_role_rules_start_with_memory_injection_triplet(self):
+        for role in ("gm", "content", "growth", "dev"):
+            text = read_rules("agents/{}/AGENTS.md".format(role))
+            for phrase in (
+                "只读三件套", "品牌口径",
+                "knowledge/work/{}/LESSONS.md".format(role),
+                "本次任务的详情", "整个业务目录", "不读已完成的条目",
+                # 收件箱已退休：现在禁的是读别人的任务卡，不是收件箱。
+                "不读别人的任务卡",
+            ):
+                self.assertIn(phrase, text, (role, phrase))
+            self.assertRegex(text, r"\*\*不读\*\*整个业务目录")
+
+    def test_topic_source_skill_has_valid_frontmatter_and_no_concrete_source(self):
+        path = rules_file("skills/topic-source/SKILL.md")
+        self.assertEqual([], lint.skill_frontmatter_problems(path, "topic-source"))
+        text = read_rules("skills/topic-source/SKILL.md")
+        self.assertIn("不内置任何具体站点", text)
+        self.assertNotIn("http://", text)
+        self.assertNotIn("https://", text)
+
+    def test_topic_pool_seed_is_declared_and_url_free(self):
+        with open(rules_file("install-manifest.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        source = "seeds/knowledge/business/选题池.md"
+        self.assertIn(
+            {"source": source, "target": "knowledge/business/选题池.md"},
+            manifest["seeds"],
+        )
+        self.assertIn(source, manifest["seedRules"])
+        text = read_rules(source)
+        self.assertIn("单一副本", text)
+        self.assertNotIn("http://", text)
+        self.assertNotIn("https://", text)
 
     # ---- L1 业务路径 ----
 
@@ -312,6 +384,71 @@ class LintTestCase(unittest.TestCase):
     def test_role_entry_files_present_passes(self):
         checks = run_lint(self.repo)
         self.assertEqual(lint.STATUS_OK, checks["L34"].status)
+
+    # ---- L35–L37 模版不写死模型、不再拿收件箱派工 ----
+
+    def test_l35_template_role_with_model_fails(self):
+        # 模版替所有实例决定了模型：模型会下线，实例却改不动。
+        roles = json.loads(json.dumps(ROLES))
+        roles["roles"][0]["model"] = "spec-model-alpha"
+        self.write("roles.json", json.dumps(roles, ensure_ascii=False))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L35"].status)
+
+    def test_l35_template_role_without_model_field_fails(self):
+        # 模版侧要显式留空：字段缺失说不清是「默认」还是「忘了填」。
+        roles = json.loads(json.dumps(ROLES))
+        roles["roles"][0].pop("model")
+        self.write("roles.json", json.dumps(roles, ensure_ascii=False))
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L35"].status)
+
+    def test_l35_template_roles_leave_model_empty_passes(self):
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_OK, checks["L35"].status)
+
+    def test_l36_literal_model_in_payload_fails(self):
+        self.write("scripts/lib.sh", '# 用法\nclaude --model spec-model-alpha "$@"\n')
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L36"].status)
+
+    def test_l36_literal_model_in_config_cover_fails(self):
+        self.write("scripts/lib.sh", '# 用法\ncodex -c model="spec-model-alpha"\n')
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L36"].status)
+
+    def test_l36_model_variable_in_payload_passes(self):
+        self.write("scripts/lib.sh", '# 用法\nclaude --model "$model" "$@"\n')
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_OK, checks["L36"].status)
+
+    def test_l37_inbox_as_dispatch_source_fails(self):
+        self.write("AGENTS.md", "# 共有规约\n\n收件箱里的条目是派工来源。\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L37"].status)
+
+    def test_l37_idle_self_scan_fails(self):
+        self.write("AGENTS.md", "# 共有规约\n\n空闲时主动检查收件箱。\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L37"].status)
+
+    def test_l37_role_rule_with_inbox_fails(self):
+        self.write("agents/gm/AGENTS.md", "## 启动\n\n先读 AGENTS.md，然后以收件箱为准。\n")
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_FAIL, checks["L37"].status)
+
+    def test_l37_negated_inbox_rule_passes(self):
+        # 否定句是在禁止，不是在派工：不能被当成违规。
+        self.write(
+            "AGENTS.md",
+            "# 共有规约\n\n不读别人的收件箱，也不要把收件箱当待办来源。\n",
+        )
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_OK, checks["L37"].status)
+
+    def test_l37_compliant_rules_pass(self):
+        checks = run_lint(self.repo)
+        self.assertEqual(lint.STATUS_OK, checks["L37"].status)
 
     # ---- L3 占位 ----
 
@@ -944,6 +1081,18 @@ class LintTestCase(unittest.TestCase):
             fh.write(text)
         return path
 
+    def write_team_md(self, instance, row):
+        """造一份名册：注册表按安装器写出来的格式给一行角色。"""
+        path = os.path.join(instance, "knowledge", "team.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "# 团队名册\n\n## 角色注册表\n\n"
+                "| 角色 | 终端名 | 启动器 | HC 模板名 | 所在 tab | CLI | 模型 | 权限模式 | 负责的子树 |\n"
+                "|---|---|---|---|---|---|---|---|---|\n"
+                "{}\n".format(row))
+        return path
+
     def test_l24_missing_roles_json_fails(self):
         instance = self.instance_copy("l24")
         os.remove(os.path.join(instance, "roles.json"))
@@ -1046,8 +1195,59 @@ class LintTestCase(unittest.TestCase):
             "clean", [self.role_entry(skills=["demo"])])
         self.write_skill(instance, "demo", "---\nname: demo\ndescription: 说明。\n---\n\n正文。\n")
         checks = run_lint(instance)
-        for rule in ("L24", "L25", "L26", "L27", "L28", "L29", "L30", "L31", "L32", "L33"):
+        for rule in ("L24", "L25", "L26", "L27", "L28", "L29", "L30", "L31", "L32", "L33", "L38"):
             self.assertEqual(lint.STATUS_OK, checks[rule].status, rule)
+
+    # ---- L38–L39 实例的模型字段与名册 ----
+
+    def test_l38_illegal_model_value_fails(self):
+        # 模型名会被拼进启动命令行：奇怪字符就是往命令行里塞东西的路。
+        instance = self.instance_with_roles(
+            "l38", [self.role_entry(model="bad model; rm -rf /")])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L38"].status)
+
+    def test_l38_missing_model_field_passes(self):
+        # 旧实例没有 model 字段：按该 CLI 的默认模型跑，合法。
+        instance = self.instance_with_roles("l38b", [self.role_entry()])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_OK, checks["L38"].status)
+
+    def test_l38_valid_model_value_passes(self):
+        instance = self.instance_with_roles(
+            "l38c", [self.role_entry(model="spec-model-alpha")])
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_OK, checks["L38"].status)
+
+    def test_l39_missing_team_md_skips(self):
+        # 还没装过的实例没有名册：不误杀。
+        instance = self.instance_copy("l39")
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_SKIP, checks["L39"].status)
+
+    def test_l39_empty_cli_cell_fails(self):
+        instance = self.instance_copy("l39b")
+        self.write_team_md(
+            instance,
+            "| gm | `t-gm` | `.opc/run/gm.sh` | `t-gm` | `gm` |  | 默认模型 | `default` | `knowledge/work/gm` |")
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L39"].status)
+
+    def test_l39_empty_tab_cell_fails(self):
+        instance = self.instance_copy("l39c")
+        self.write_team_md(
+            instance,
+            "| gm | `t-gm` | `.opc/run/gm.sh` | `t-gm` |  | `claude` | 默认模型 | `default` | `knowledge/work/gm` |")
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_FAIL, checks["L39"].status)
+
+    def test_l39_valid_registry_passes(self):
+        instance = self.instance_copy("l39d")
+        self.write_team_md(
+            instance,
+            "| gm | `t-gm` | `.opc/run/gm.sh` | `t-gm` | `gm` | `claude` | 默认模型 | `default` | `knowledge/work/gm` |")
+        checks = run_lint(instance)
+        self.assertEqual(lint.STATUS_OK, checks["L39"].status)
 
     # ---- 退出码 ----
 

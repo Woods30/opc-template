@@ -20,7 +20,7 @@ export const GENERATED_SUFFIXES = [
 // canonical 事实源：只有它们变了才需要重跑 build。work/ 是过程，decisions/ 是日志。
 export const CANONICAL_PREFIXES = [
   "knowledge/content/",
-  "knowledge/inbox/",
+  "knowledge/tasks/",
   "knowledge/business/growth/",
 ];
 
@@ -46,7 +46,7 @@ export function terminalFocusPlan(address) {
 // 看板只读这些子树里的 canonical 记录；别的路径一律不读。
 export const SOURCE_PREFIXES = [
   "knowledge/content/",
-  "knowledge/inbox/",
+  "knowledge/tasks/",
   "knowledge/business/growth/",
 ];
 

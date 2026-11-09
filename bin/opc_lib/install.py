@@ -12,6 +12,8 @@ from .hashutil import sha256_file
 
 PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")
 CHANNEL_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
+# 模型名会写进启动器并交给 CLI 解析：只放行干净的字符。
+MODEL_RE = re.compile(r"^[A-Za-z0-9._:/-]+$")
 
 
 def slugify(name):
@@ -67,7 +69,17 @@ def copy_config(payload, manifest, target):
 
 
 def apply_answers(target, answers):
-    """把 /opc-init 的问答结果写进 roles.json / channels.json。"""
+    """把 /opc-init 的问答结果写进 roles.json / channels.json。
+
+    逐角色的回答可以带 model（该角色用哪个模型，留空 = 该 CLI 的默认模型）。
+    字段缺失不动角色已有的值：老实例的角色配置没有 model 字段时照样能用，
+    按该 CLI 的默认模型跑。
+
+    角色配置里**没有**自由参数字段：额外的 CLI 开关一律不接。启动器里拼的是
+    模版自己算出来的参数，自由参数等于给实例内容开了一条往启动命令行里塞
+    任意开关的路——角色能改自己实例里的 roles.json，就能借此改别人的启动
+    参数。需要别的开关时改模版的机制，不改实例配置。
+    """
     if not answers:
         return
     roles_path = Path(target) / "roles.json"
@@ -83,6 +95,16 @@ def apply_answers(target, answers):
             role["cli"] = str(patch["cli"])
         if patch.get("permissionMode"):
             role["permissionMode"] = str(patch["permissionMode"])
+        if "model" in patch:
+            model = str(patch.get("model") or "")
+            if model and not MODEL_RE.match(model):
+                raise OpcError("角色 {} 的模型名不合法：{}".format(role.get("name"), model))
+            role["model"] = model
+        if "args" in patch:
+            raise OpcError(
+                "角色 {} 的 args 不再支持：启动参数由模版按 CLI 与权限档算出，"
+                "自由参数会变成往别人的启动命令行里塞开关的路".format(role.get("name"))
+            )
     safefile.write_json(roles_path, roles_data)
 
     channels = answers.get("channels")

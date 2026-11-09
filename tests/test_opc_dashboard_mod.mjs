@@ -124,7 +124,7 @@ function payload(overrides = {}) {
         acceptance: "10 个选题",
         state: "open",
         reason: null,
-        source_path: "knowledge/inbox/content.md",
+        source_path: "knowledge/tasks/task-abc.md",
       },
       {
         task_id: "task-done",
@@ -135,7 +135,7 @@ function payload(overrides = {}) {
         acceptance: "已删除",
         state: "done",
         reason: null,
-        source_path: "knowledge/inbox/content.md",
+        source_path: "knowledge/tasks/task-abc.md",
       },
     ],
     approvals: [
@@ -442,7 +442,11 @@ test("生成视图的变化不触发 build，canonical 变化触发", () => {
     model.shouldRebuild(["knowledge/content/content-1/内容卡.md"]),
     true,
   );
-  assert.equal(model.shouldRebuild(["knowledge/inbox/gm.md"]), true);
+  assert.equal(
+    model.shouldRebuild(["knowledge/tasks/task-abc.md"]),
+    true,
+  );
+  assert.equal(model.shouldRebuild(["knowledge/inbox/gm.md"]), false);
   assert.equal(
     model.shouldRebuild(["knowledge/business/growth/渠道快照.md"]),
     true,
@@ -519,8 +523,12 @@ test("源文件路径只允许 canonical 子树，越界写法一律拒绝", () 
     true,
   );
   assert.equal(
-    model.isAllowedSourcePath("knowledge/inbox/gm.md"),
+    model.isAllowedSourcePath("knowledge/tasks/task-abc.md"),
     true,
+  );
+  assert.equal(
+    model.isAllowedSourcePath("knowledge/inbox/gm.md"),
+    false,
   );
   assert.equal(
     model.isAllowedSourcePath("knowledge/business/growth/渠道快照.md"),

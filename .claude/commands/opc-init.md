@@ -57,11 +57,15 @@ command -v hc herdr-app claude jq
    **选 `codex` 前先说清差异**——技能来源不同（claude 看 `.claude/skills/` 与
    `~/.claude/skills/`，codex 看 `.agents/skills/` 与 `~/.agents/skills/`），权限模型
    也不同（claude 由 OPC 生成 `settings-<角色>.json`；codex 只做启动参数映射）。
-3. **权限模式**：默认 `bypassPermissions`。选之前说清代价——该模式下 **allow 规则
+3. **每个角色用哪个模型**：默认**留空**（= 该 CLI 的默认模型，用户不必为每个角色
+   做决定）。用户知道写稿与开发适合的模型不一样，问他要哪个角色的模型名；
+   **不替用户挑模型**，用户说留空就留空。（`bin/opc install` 的交互式安装会自己
+   列出该 CLI 报的模型清单；本流程走 answers 文件，就直接问用户。）
+4. **权限模式**：默认 `bypassPermissions`。选之前说清代价——该模式下 **allow 规则
    不生效**，仍然拦得住的只有 deny 规则（`git`/`rm`/`sudo`/`hc keys` 与凭据路径）、
    文件工具的工作目录写入封锁、CLI 自己的保护路径；官方定位是「只在容器 / VM
    这类隔离环境里用」。想更严就选 `dontAsk`：不弹窗，未预先放行的一律拒绝。
-4. **内容频道清单**：默认沿用 `template/channels.json`（通常为空）。每个频道要一个
+5. **内容频道清单**：默认沿用 `template/channels.json`（通常为空）。每个频道要一个
    英文 id（小写 slug）和一个中文显示名；暂不做的写 `enabled: false`。
 
 ## 4. 调用 install
@@ -72,8 +76,8 @@ command -v hc herdr-app claude jq
 {
   "prefix": "acme",
   "roles": {
-    "gm": { "enabled": true, "cli": "claude", "permissionMode": "bypassPermissions" },
-    "content": { "enabled": true, "cli": "claude" }
+    "gm": { "enabled": true, "cli": "claude", "model": "", "permissionMode": "bypassPermissions" },
+    "content": { "enabled": true, "cli": "claude", "model": "<用户选的模型名，留空用该 CLI 的默认模型>" }
   },
   "channels": [
     { "id": "wechat", "name": "公众号", "enabled": true }
@@ -117,7 +121,7 @@ agent 不得代按（`hc keys` 也在 deny 清单里，代按不了）。
 
 - 不在模版仓库里直接创建实例；目标目录不能是模版目录。
 - 不改 `knowledge/` 下的业务内容。
-- 不替用户决定启用哪些角色、用哪个 CLI。
+- 不替用户决定启用哪些角色、用哪个 CLI、用哪个模型。
 - 不跳过依赖检查，不跳过提问直接安装。
 - 首次启动若停在「Do you trust this folder?」，提示用户在该 tab 手动确认，
   不要用 `hc keys` 代按。

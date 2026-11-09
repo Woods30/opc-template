@@ -17,15 +17,17 @@
 
 规则集随之分开：
 
-    模版侧（L1–L5、L7–L12、L15、L17–L23）
+    模版侧（L1–L5、L7–L12、L15、L17–L23、L34–L37）
                       查内容与安全表述：角色正文写没写清「等 gm 派工」、
                       「只在本实例目录内取材」，种子有没有占位，技能库
-                      frontmatter 合不合法。模版里的角色是默认值，坏在这里
-                      会被装进每个新实例，所以必须硬拦。
-    实例侧（L16、L24–L33）
+                      frontmatter 合不合法，模版有没有写死模型名，规约还
+                      提不提已退休的收件箱派工。模版里的角色是默认值，坏
+                      在这里会被装进每个新实例，所以必须硬拦。
+    实例侧（L16、L24–L33、L38–L39）
                       只查结构：实例元数据与机制指纹自洽、角色目录在不在、
                       路径越不越界、描述有没有、技能引用与 frontmatter
-                      对不对、根 AGENTS.md 在不在、hc 模板生成得了生成不了。
+                      对不对、根 AGENTS.md 在不在、hc 模板生成得了生成不了，
+                      角色配置的模型字段合不合法、名册注册表格式对不对。
                       实例的角色正文归 owner 管——owner 想怎么写就怎么写，
                       lint 不拦内容。
     两边都跑（L0、L6、L13、L14）
@@ -168,6 +170,60 @@ RE_STARTUP_HEADING = re.compile(r"^#{1,6}[ \t]*启动不自主开工[ \t]*$", re
 # 「等 gm 派工后再自己开题」既有「等 gm 派工」，也没有否定词。
 RE_AUTONOMY = re.compile(r"(?:自己|自行|直接)(?:开题|开工|找活|决定|做主|上手)|自选选题")
 SENTENCE_BREAKS = "。！？\n；;"
+
+# ---- 模型字段 ----
+# 实例侧角色配置的模型字段：字符集与安装器一致（bin/opc_lib/install.py
+# 的 MODEL_RE）。lint 在实例里独立跑，够不到那份代码，所以这里抄一份
+# 同样口径的字符集。
+RE_MODEL_VALUE = re.compile(r"^[A-Za-z0-9._:/-]+$")
+# 写死模型名的形态：命令行里跟了一个具体名字。只认形态，不列任何厂商
+# 或模型名——列出来就等于把名字写进模版。字面量拆开写，免得这条规则命中
+# 它自己的源码。
+RE_LITERAL_MODEL = re.compile(
+    r"--mo" + r"del[\s=]+[\"']?[A-Za-z0-9]"
+    r"|(?<![A-Za-z0-9_])mo" + r"del\s*=\s*\\{0,2}[\"'][A-Za-z0-9]")
+
+# ---- 已退休的收件箱派工协议 ----
+# 收件箱已退休：任务卡才是派工来源。规约里不许再把它当派工总线或
+# 待办来源，也不许写「空闲时主动检查」这类自持回路。
+# 判定按分句做，并认否定：「不读别人的收件箱」是在禁止，不是在派工。
+RE_INBOX = re.compile(r"收件箱|\binbox\b|knowledge/inbox")
+# 把收件箱当成活儿来源的说法。
+RE_INBOX_SOURCE = re.compile(
+    r"派工|派活|待办|待处理|任务来源|来源|为准|条目|未标记|队列"
+    r"|领取|认领|取任务|写进|投递|放到|送达")
+# 把收件箱当成巡检对象：自己去翻它不叫自持回路，叫没有派工来源。
+RE_SELF_SCAN = re.compile(r"巡检|扫描|轮询|检查|查看|翻")
+# 空闲时的自持回路：空闲 + 自己去找活。「空闲时不主动读…」这种写法
+# 是禁令，不能当成回路——否定词绑在动作前才算数。
+RE_IDLE = re.compile(r"空闲|闲着|闲下来|没事做|无事时|待命")
+RE_ACTIVE_SCAN = re.compile(
+    r"主动检查|主动巡检|主动扫描|主动查看|主动看|主动读|主动查|主动找"
+    r"|自己找|找活|巡检|扫描|轮询|检查")
+# 否定词：出现在动作之前就算数（中间允许少量修饰词）。
+RE_NEG_BIND = re.compile(
+    r"(?:不需要|没必要|不用|无需|不必|不要|不能|不得|不应|不可|禁止"
+    r"|无权|拒绝|不是|并非|不|别|勿|甭)"
+    r"(?:再|去|先|就|才|主动|自动|定时|定期|自己|自行)?"
+    r"[^。；;\n]{0,8}$")
+
+
+def split_clauses(text):
+    """把规约正文切成分句：句号、分号、换行、逗号、顿号都算边界。
+
+    判定必须落在分句上：例外得与动作写在同一句里，否则「不要读收件箱」
+    会被前半句的「不要」蒙混过关。
+    """
+    for segment in re.split(r"[。；;\n]", text or ""):
+        for clause in re.split(r"[，,、]", segment):
+            clause = clause.strip()
+            if clause:
+                yield clause
+
+
+def clause_action_negated(clause, start):
+    """动作前有没有绑定到它的否定词。"""
+    return bool(RE_NEG_BIND.search(clause[:start]))
 
 
 @dataclass
@@ -1700,6 +1756,248 @@ def check_l34_cli_entry_files(root):
     return c
 
 
+# ---- L35–L39：模型字段与收件箱协议 ----
+
+TEAM_REGISTRY_HEADING = "## 角色注册表"
+# 名册注册表里必须填实的四格：没有 CLI 就起不来会话，没有模型与权限档
+# 就不知道用哪套配置，没有 tab 就不知道把任务卡交给谁。
+TEAM_REQUIRED_COLUMNS = (
+    ("CLI", "CLI"),
+    ("模型", "模型"),
+    ("权限模式", "权限模式"),
+    ("所在 tab", "所在tab"),
+)
+
+
+def check_l35_template_model_empty(root):
+    """模版里的角色配置不写死模型名。
+
+    模版是公开的、多实例共用的：写死一个模型名等于替所有实例做了同一个
+    决定，而这个决定会过期（网关改名、模型下线、实例想换一个）。模版侧
+    一律留空，由实例自己选；留空表示用该 CLI 的默认模型。
+    """
+    c = Check("L35", "模版角色配置不写死模型名", source="roles.json")
+    payload = payload_root(root)
+    path = os.path.join(payload, "roles.json")
+    if not os.path.isfile(path):
+        c.status = STATUS_FAIL
+        c.detail.append("找不到 roles.json")
+        return c
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        c.status = STATUS_FAIL
+        c.detail.append("roles.json 读不了：{}".format(exc))
+        return c
+    roles = data.get("roles")
+    if not isinstance(roles, list) or not roles:
+        c.status = STATUS_FAIL
+        c.detail.append("roles.json 里没有角色")
+        return c
+    for role in roles:
+        name = role.get("name", "")
+        if "model" not in role:
+            c.status = STATUS_FAIL
+            c.detail.append("角色 {} 没有 model 字段：模版侧要显式留空，表示用该 CLI 的默认模型"
+                             .format(name))
+        elif role.get("model") != "":
+            c.status = STATUS_FAIL
+            c.detail.append("角色 {} 写死了模型名 {}：模版只定机制，模型由实例自己选"
+                             .format(name, role.get("model")))
+    return c
+
+
+def check_l36_no_literal_model(root, payload_tracked):
+    """模版载荷里不出现写死的模型名。
+
+    只认形态不认名字：命令行里跟了一个具体模型名就算命中。这里不列任何
+    厂商或模型名——列出来就等于把名字写进模版，这条规则自己先违规。
+    """
+    c = Check("L36", "模版不写死模型名", source="载荷全树")
+    base = payload_root(root)
+    for rel in payload_tracked:
+        text = read_text(os.path.join(base, rel))
+        if text is None:
+            continue
+        for num, line in enumerate(text.splitlines(), 1):
+            if RE_LITERAL_MODEL.search(line):
+                c.status = STATUS_FAIL
+                c.detail.append("{}:{} 写死了模型名：{}".format(rel, num, line.strip()[:60]))
+    return c
+
+
+def check_l37_no_inbox_dispatch(root):
+    """规约里不再把收件箱当派工总线，也没有空闲时的自持回路。
+
+    收件箱已退休：任务卡才是派工来源。规约再把收件箱说成派工总线或待办
+    来源，角色就会去一个不存在的目录找活；写「空闲时主动检查」这类自持
+    回路，角色就会在没有 owner 指令时自己开工。
+
+    判定按分句做，并认否定：「不读别人的收件箱」是在禁止，不是在派工。
+    """
+    c = Check("L37", "规约不用收件箱派工", source="AGENTS.md 与 agents/*/AGENTS.md")
+    payload = payload_root(root)
+    targets = []
+    root_rules = os.path.join(payload, "AGENTS.md")
+    if os.path.isfile(root_rules):
+        targets.append(root_rules)
+    agents_dir = os.path.join(payload, "agents")
+    if os.path.isdir(agents_dir):
+        for name in sorted(os.listdir(agents_dir)):
+            path = os.path.join(agents_dir, name, "AGENTS.md")
+            if os.path.isfile(path):
+                targets.append(path)
+    fails = []
+    for path in targets:
+        text = read_text(path)
+        if text is None:
+            continue
+        label = os.path.relpath(path, payload)
+        for clause in split_clauses(text):
+            has_inbox = bool(RE_INBOX.search(clause))
+            if has_inbox:
+                for match in RE_INBOX_SOURCE.finditer(clause):
+                    if clause_action_negated(clause, match.start()):
+                        continue
+                    fails.append("{}：把收件箱当成了派工或待办来源：{}"
+                                 .format(label, clause[:50]))
+                    break
+                for match in RE_SELF_SCAN.finditer(clause):
+                    if clause_action_negated(clause, match.start()):
+                        continue
+                    fails.append("{}：拿收件箱当巡检对象：{}".format(label, clause[:50]))
+                    break
+            if RE_IDLE.search(clause):
+                for match in RE_ACTIVE_SCAN.finditer(clause):
+                    if clause_action_negated(clause, match.start()):
+                        continue
+                    fails.append("{}：空闲时的自持回路：{}".format(label, clause[:50]))
+                    break
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
+def check_l38_instance_model(root):
+    """实例里的模型名要合法。
+
+    字符集与安装器一致（bin/opc_lib/install.py 的 MODEL_RE）：模型名会被
+    拼进启动命令行交给 CLI 解析，奇怪字符会变成往命令行里塞东西的路。
+    字段缺失是合法状态——旧实例没有这个字段，按该 CLI 的默认模型跑。
+    """
+    c = Check("L38", "实例模型名合法", source="roles.json")
+    roles, err = instance_roles(root)
+    if roles is None:
+        c.status = STATUS_SKIP
+        c.detail.append("{}，跳过".format(err))
+        return c
+    for role in roles:
+        if "model" not in role:
+            continue
+        model = role.get("model")
+        name = role.get("name", "")
+        if not isinstance(model, str):
+            c.status = STATUS_FAIL
+            c.detail.append("角色 {} 的 model 不是字符串".format(name))
+            continue
+        if not model:
+            continue
+        if not RE_MODEL_VALUE.fullmatch(model):
+            c.status = STATUS_FAIL
+            c.detail.append("角色 {} 的模型名不合法：{}（只允许字母数字与 . _ : / -）"
+                             .format(name, model))
+    return c
+
+
+def _cell_key(text):
+    """表格单元格的比较键：去掉空白与反引号。"""
+    return re.sub(r"\s+", "", (text or "").strip().strip("`"))
+
+
+def parse_team_registry(text):
+    """名册里的角色注册表。返回 (表头, 数据行) ；取不到返回 None。"""
+    lines = (text or "").splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == TEAM_REGISTRY_HEADING:
+            start = index + 1
+            break
+    if start is None:
+        return None
+    header = None
+    rows = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            break
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if header is None:
+            header = cells
+            continue
+        if all(set(cell) <= set("-: ") for cell in cells):
+            continue
+        rows.append(cells)
+    if header is None:
+        return None
+    return header, rows
+
+
+def check_l39_team_registry(root):
+    """实例名册里的角色注册表要能派工。
+
+    每个角色行的 CLI、模型、权限模式、所在 tab 四格必须填实：缺一格，
+    编排者就起不来会话、或者不知道把任务卡交给谁。模型留空时安装器写的
+    是「默认模型」，所以这一格永远不该是空的。
+
+    名册还不存在的实例按跳过处理——没装过的实例不该被这一步拦住。
+    """
+    c = Check("L39", "名册角色注册表格式合法", source="knowledge/team.md")
+    path = os.path.join(root, "knowledge", "team.md")
+    if not os.path.isfile(path):
+        c.status = STATUS_SKIP
+        c.detail.append("实例里没有 knowledge/team.md，跳过")
+        return c
+    text = read_text(path)
+    if text is None:
+        c.status = STATUS_FAIL
+        c.detail.append("knowledge/team.md 不是可读文本")
+        return c
+    parsed = parse_team_registry(text)
+    if parsed is None:
+        c.status = STATUS_FAIL
+        c.detail.append("knowledge/team.md 里没有「{}」小节下的注册表".format(
+            TEAM_REGISTRY_HEADING))
+        return c
+    header, rows = parsed
+    index_of = {}
+    for position, cell in enumerate(header):
+        index_of.setdefault(_cell_key(cell), position)
+    fails = []
+    for label, key in TEAM_REQUIRED_COLUMNS:
+        if key not in index_of:
+            fails.append("注册表缺少「{}」列：{}".format(label, "|".join(header)))
+    if fails:
+        c.status = STATUS_FAIL
+        c.detail.extend(fails)
+        return c
+    role_column = index_of.get(_cell_key("角色"), 0)
+    for row in rows:
+        role = row[role_column] if role_column < len(row) else "?"
+        for label, key in TEAM_REQUIRED_COLUMNS:
+            position = index_of[key]
+            value = row[position] if position < len(row) else ""
+            if not _cell_key(value):
+                fails.append("角色 {} 的「{}」是空的".format(role, label))
+    c.detail.extend(fails)
+    if fails:
+        c.status = STATUS_FAIL
+    return c
+
+
 # ---------------------------------------------------------------- 驱动
 
 
@@ -1737,6 +2035,9 @@ def run_checks(root, strict=False, words_file=None):
             check_l20_no_dead_refs(root, payload_tracked),
             check_l23_skills(root),
             check_l34_cli_entry_files(root),
+            check_l35_template_model_empty(root),
+            check_l36_no_literal_model(root, payload_tracked),
+            check_l37_no_inbox_dispatch(root),
         ]
         if policy is not None:
             checks.append(check_l13_proposals(root, policy))
@@ -1746,7 +2047,7 @@ def run_checks(root, strict=False, words_file=None):
     else:
         skipped = Check("SKIP", "模版侧规则跳过", source="这是实例仓库")
         skipped.status = STATUS_SKIP
-        skipped.detail.append("L1–L5、L7–L12、L15、L17–L23、L34 是模版侧内容规则，"
+        skipped.detail.append("L1–L5、L7–L12、L15、L17–L23、L34–L37 是模版侧内容规则，"
                               "在实例里跑没有意义：实例的角色正文归 owner 管")
         checks.append(skipped)
         if policy is not None:
@@ -1765,6 +2066,8 @@ def run_checks(root, strict=False, words_file=None):
         checks.append(check_l31_skill_available(root))
         checks.append(check_l32_root_agents(root))
         checks.append(check_l33_hc_template(root))
+        checks.append(check_l38_instance_model(root))
+        checks.append(check_l39_team_registry(root))
 
     if policy is not None:
         if template_mode:

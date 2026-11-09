@@ -14,6 +14,11 @@
     tools/opc-workflow transition <publication_id> --to scheduled|published|cancelled [...]
     tools/opc-workflow record-metrics <publication_id> --window 48h --observed-at ... --source ... --values ...
     tools/opc-workflow record-channel-snapshot --channel ... --observed-at ... --source ... --values ...
+    tools/opc-workflow create-task --assignee <角色> --task "<详情正文>" --acceptance "<验收>" [...]
+    tools/opc-workflow complete-task <task_id> --result "<结果>" [--completed-at ...]
+    tools/opc-workflow cancel-task <task_id> --reason "<原因>"
+    tools/opc-workflow list-tasks [--assignee <角色>] [--state open|done|cancelled]
+    tools/opc-workflow show-task <task_id>
     tools/opc-workflow validate
     tools/opc-workflow build
 
@@ -23,6 +28,14 @@
 actor 是内容卡的**归属记录**，不是授权：OPC_ROLE 由角色启动器导出，但调用方
 自己也能设置它，工具无法自证调用者是谁。因此 actor 检查只防误用；权限由 owner
 为每个角色选择的 CLI 原生模式与用户级配置控制。
+
+任务卡的**写**按委派契约分工：派工只有编排者，完成只有承接角色，撤销限发起方
+与承接方。**这三条同样不是授权边界**：actor 字符串调用方自己就能给，工具无法
+自证调用者是谁，它们防的是「角色跑错了命令」这类误用。真正的边界在 owner 为
+每个角色选的 CLI 原生权限模式与实例配置里——那里管得住的才是「不许写」。
+
+读不设边界：实例里所有角色本来就能 `cat knowledge/tasks/*.md`，给读命令加过滤
+只会制造「看起来有边界」的错觉。
 """
 
 from __future__ import annotations
@@ -45,7 +58,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 SCHEMA_VERSION = 1
 CONTENT_DIR = Path("knowledge") / "content"
 KNOWLEDGE_DIR = Path("knowledge")
-INBOX_DIR = KNOWLEDGE_DIR / "inbox"
+TASK_DIR = KNOWLEDGE_DIR / "tasks"
 TEAM_NAME = "team.md"
 BUSINESS_DIR = Path("knowledge") / "business"
 CALENDAR_NAME = "选题日历.md"
@@ -63,6 +76,8 @@ DASHBOARD_CONTRACT_VERSION = 1
 DASHBOARD_MARKER = '"read_only": true'
 GENERATED_MARKER = "GENERATED FILE — READ ONLY"
 DEFAULT_ACTOR = "content"
+# 编排者：唯一有权派工的角色。派工 = 建一张任务卡。
+ORCHESTRATOR_ROLE = "gm"
 CONTENT_ID_RE = re.compile(r"^content-\d{8}-\d{12}-[0-9a-f]{8}$")
 PUBLICATION_ID_RE = re.compile(
     r"^publication-\d{8}-\d{12}-[0-9a-f]{8}$"
@@ -93,6 +108,31 @@ METRIC_SCOPES = ("publication", "channel")
 REVIEW_CONCLUSIONS = ("continue", "iterate", "stop", "inconclusive")
 BLOCK_ACTORS = ("gm", "content")
 TASK_STATE_ORDER = {"open": 0, "done": 1, "cancelled": 2}
+TASK_STATES = ("open", "done", "cancelled")
+TASK_EVENT_ACTIONS = ("create", "complete", "cancel")
+TASK_ID_RE = re.compile(r"^task-[a-z0-9]{3,64}$")
+TASK_TITLE_MAX = 60
+TASK_FIELDS = frozenset(
+    {
+        "schema_version",
+        "record_type",
+        "task_id",
+        "title",
+        "requester",
+        "assignee",
+        "created_at",
+        "state",
+        "reference",
+        "task",
+        "acceptance",
+        "next",
+        "terminal",
+        "events",
+        "completed_at",
+        "result",
+        "cancel_reason",
+    }
+)
 
 
 class WorkflowError(Exception):
@@ -113,6 +153,12 @@ class ContentRecord:
 
 @dataclass
 class PublicationRecord:
+    source: str
+    data: dict
+
+
+@dataclass
+class TaskRecord:
     source: str
     data: dict
 
@@ -206,6 +252,21 @@ def require_text(label: str, value: str | None):
     if not value:
         raise WorkflowError(f"{label}不能为空")
     return value
+
+
+def optional_text(value: str | None):
+    """可选文本：空值归一成空串，不报错。"""
+    if value is None:
+        return ""
+    return value.strip()
+
+
+def required_text(label: str, value: str | None):
+    """必填文本：空值直接拒绝，错误消息说清缺哪个字段。"""
+    text = optional_text(value)
+    if not text:
+        raise WorkflowError(f"{label}不能为空")
+    return text
 
 
 def valid_offset_time(value):
@@ -1010,11 +1071,11 @@ def scan_growth_records(root: Path, publications: list[PublicationRecord]):
 # ---------- 解析与校验 ----------
 
 
-def parse_card_document(card: Path, source: str):
+def parse_card_document(card: Path, source: str, label: str = "内容卡"):
     try:
         text = card.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        return None, None, [Diagnostic(source, f"无法读取内容卡：{error}")]
+        return None, None, [Diagnostic(source, f"无法读取{label}：{error}")]
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].rstrip("\r\n") != "---":
         return None, None, [Diagnostic(source, "frontmatter 必须以 --- 开始")]
@@ -1034,8 +1095,8 @@ def parse_card_document(card: Path, source: str):
     return payload, "".join(lines[end + 1 :]), []
 
 
-def parse_frontmatter(card: Path, source: str):
-    payload, _body, errors = parse_card_document(card, source)
+def parse_frontmatter(card: Path, source: str, label: str = "内容卡"):
+    payload, _body, errors = parse_card_document(card, source, label)
     return payload, errors
 
 
@@ -3239,6 +3300,8 @@ def build_calendar(root: Path):
     growth = scan_growth_records(root, publications)
     errors.extend(growth.errors)
     warnings.extend(growth.warnings)
+    _task_records, task_errors = scan_task_cards(root)
+    errors.extend(task_errors)
     if errors:
         print_diagnostics(errors, warnings)
         return 1
@@ -3311,6 +3374,493 @@ def build_calendar(root: Path):
     return 0
 
 
+# ---------- 任务卡 ----------
+
+
+def derive_task_id(assignee: str, created_at: str, task: str) -> str:
+    """按承接角色 + 时间 + 任务文本派生稳定 ID。
+
+    与旧收件箱条目的派生思路一致：同一张卡改措辞时 ID 不漂移，
+    不同任务的 ID 不撞车。
+    """
+    digest = hashlib.sha256(
+        "|".join([assignee, created_at, task]).encode("utf-8")
+    ).hexdigest()
+    return f"task-{digest[:12]}"
+
+
+def task_title(task: str) -> str:
+    """标题取任务详情的第一行：长需求不会把标题撑爆。"""
+    text = task.strip()
+    if not text:
+        return ""
+    first = text.splitlines()[0].strip()
+    if len(first) > TASK_TITLE_MAX:
+        first = first[:TASK_TITLE_MAX].rstrip() + "…"
+    return first
+
+
+def render_task_body(record: dict) -> str:
+    """正文只留人类可读摘要；长文本只放 frontmatter 字段。"""
+    return "# 任务卡\n\n{}｜状态：{}\n".format(
+        record.get("title", ""), record.get("state", "")
+    )
+
+
+def render_task_card(record: dict) -> str:
+    return "---\n{}\n---\n\n{}".format(
+        json.dumps(record, ensure_ascii=False, indent=2),
+        render_task_body(record),
+    )
+
+
+def task_card_source(task_id: str) -> str:
+    return (TASK_DIR / f"{task_id}.md").as_posix()
+
+
+def validate_task_record(
+    source: str,
+    record: dict,
+    known_roles: dict,
+    file_stem: str | None = None,
+):
+    """校验任务卡。完成态必须同时有完成时间与结果，缺一就是半个完成态。"""
+    errors = []
+    errors.extend(validate_record_header(source, record, "task"))
+
+    task_id = record.get("task_id")
+    if not is_nonempty_string(task_id):
+        errors.append(Diagnostic(source, "task_id 必须是非空字符串"))
+    elif not TASK_ID_RE.fullmatch(task_id):
+        errors.append(Diagnostic(source, "task_id 必须形如 task-<小写字母数字>"))
+    elif file_stem is not None and task_id != file_stem:
+        errors.append(
+            Diagnostic(source, f"任务卡文件名与 task_id「{task_id}」不一致")
+        )
+
+    # 除上述字段外，任务卡只认约定的固定集合。多出来的字段多半是手工改卡时
+    # 写歪了位置，留着会成为另一份隐藏事实，校验阶段就要挡住。
+    for field in sorted(set(record) - TASK_FIELDS):
+        errors.append(Diagnostic(source, f"未知字段 {field}"))
+
+    for field in ("title", "task"):
+        if not is_nonempty_string(record.get(field)):
+            errors.append(Diagnostic(source, f"字段 {field} 必须是非空字符串"))
+    for field in ("requester", "assignee"):
+        value = record.get(field)
+        if not is_nonempty_string(value):
+            errors.append(Diagnostic(source, f"字段 {field} 必须是非空字符串"))
+        elif value not in known_roles:
+            errors.append(Diagnostic(source, f"{field} 使用非法角色「{value}」"))
+    for field in ("reference", "acceptance", "next", "terminal"):
+        if not isinstance(record.get(field), str):
+            errors.append(Diagnostic(source, f"字段 {field} 必须是字符串"))
+    # 终点是卡上的边界，缺了它就没人能判断链条停没停。
+    if isinstance(record.get("terminal"), str) and not record["terminal"].strip():
+        errors.append(Diagnostic(source, "字段 terminal 必须是非空字符串"))
+    # 链边非空时必须指向一个真实角色——手工改卡写歪了要挡住。
+    next_role = record.get("next")
+    if isinstance(next_role, str) and next_role.strip() and next_role not in known_roles:
+        errors.append(Diagnostic(source, f"next 使用非法角色「{next_role}」"))
+
+    if not valid_offset_time(record.get("created_at")):
+        errors.append(
+            Diagnostic(source, "created_at 必须是 offset-aware ISO 8601 时间")
+        )
+    state = record.get("state")
+    if state not in TASK_STATES:
+        errors.append(
+            Diagnostic(source, f"state 必须是 {'、'.join(TASK_STATES)} 之一")
+        )
+
+    completed_at = record.get("completed_at")
+    if completed_at is not None and not valid_offset_time(completed_at):
+        errors.append(
+            Diagnostic(source, "completed_at 必须是 offset-aware ISO 8601 时间")
+        )
+    result = record.get("result")
+    if result is not None and not isinstance(result, str):
+        errors.append(Diagnostic(source, "result 必须是字符串"))
+    cancel_reason = record.get("cancel_reason")
+    if cancel_reason is not None and not isinstance(cancel_reason, str):
+        errors.append(Diagnostic(source, "cancel_reason 必须是字符串"))
+
+    events = record.get("events")
+    if not isinstance(events, list) or not events:
+        errors.append(Diagnostic(source, "events 必须是非空数组"))
+        events = []
+    for index, event in enumerate(events):
+        label = f"第 {index + 1} 个 event"
+        if not isinstance(event, dict):
+            errors.append(Diagnostic(source, f"{label} 必须是 object"))
+            continue
+        if event.get("action") not in TASK_EVENT_ACTIONS:
+            errors.append(
+                Diagnostic(source, f"{label} 使用未知 action「{event.get('action')}」")
+            )
+        if not valid_offset_time(event.get("at")):
+            errors.append(
+                Diagnostic(source, f"{label} 的 at 必须是 offset-aware ISO 8601 时间")
+            )
+        actor = event.get("actor")
+        if not is_nonempty_string(actor):
+            errors.append(Diagnostic(source, f"{label} 字段 actor 缺失"))
+        elif actor not in known_roles:
+            errors.append(Diagnostic(source, f"{label} 使用非法 actor「{actor}」"))
+
+    completes = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("action") == "complete"
+    ]
+    cancels = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("action") == "cancel"
+    ]
+    if state == "done":
+        if not is_nonempty_string(completed_at):
+            errors.append(Diagnostic(source, "完成态缺少完成时间"))
+        if not is_nonempty_string(result):
+            errors.append(Diagnostic(source, "完成态缺少结果"))
+        if len(completes) != 1:
+            errors.append(Diagnostic(source, "完成态必须恰好有一条完成事实"))
+    elif completes:
+        errors.append(Diagnostic(source, "未完成的任务卡不能有完成事实"))
+    if state == "cancelled":
+        if not is_nonempty_string(cancel_reason):
+            errors.append(Diagnostic(source, "撤销的任务卡必须写明撤销原因"))
+        if len(cancels) != 1:
+            errors.append(Diagnostic(source, "撤销的任务卡必须恰好有一条撤销事实"))
+    elif cancels:
+        errors.append(Diagnostic(source, "未撤销的任务卡不能有撤销事实"))
+    return errors
+
+
+def scan_task_cards(root: Path):
+    """读任务卡目录。一张卡一次派工，完成态是卡上的事实。"""
+    directory = root / TASK_DIR
+    tasks = []
+    errors = []
+    if not directory.exists():
+        return tasks, errors
+    if directory.is_symlink() or not directory.is_dir():
+        return tasks, [
+            Diagnostic(TASK_DIR.as_posix(), "任务目录不能是 symlink，且必须是目录")
+        ]
+    known_roles = configured_roles(root)
+    for path in sorted(directory.glob("*.md")):
+        source = (TASK_DIR / path.name).as_posix()
+        if path.is_symlink():
+            errors.append(Diagnostic(source, "任务卡不能是 symlink"))
+            continue
+        if not path.is_file():
+            continue
+        record, parse_errors = parse_frontmatter(path, source, "任务卡")
+        errors.extend(parse_errors)
+        if record is None:
+            continue
+        errors.extend(
+            validate_task_record(source, record, known_roles, path.stem)
+        )
+        tasks.append(TaskRecord(source, record))
+
+    by_id = {}
+    for task in tasks:
+        task_id = task.data.get("task_id")
+        if not isinstance(task_id, str):
+            continue
+        by_id.setdefault(task_id, []).append(task.source)
+    for task_id, sources in sorted(by_id.items()):
+        if len(sources) < 2:
+            continue
+        joined = "、".join(sources)
+        for source in sources:
+            errors.append(
+                Diagnostic(source, f"重复 task_id「{task_id}」：{joined}")
+            )
+    return tasks, errors
+
+
+def load_task_card(root: Path, task_id: str):
+    """读单张任务卡。卡本身不合法时直接拒绝，不带着半个事实往下走。"""
+    task_id = optional_text(task_id)
+    if not TASK_ID_RE.fullmatch(task_id):
+        raise WorkflowError(f"任务 ID「{task_id}」非法：必须形如 task-<小写字母数字>")
+    path = root / TASK_DIR / f"{task_id}.md"
+    source = task_card_source(task_id)
+    if path.is_symlink():
+        raise WorkflowError(f"任务卡不能是 symlink：{source}")
+    if not path.is_file():
+        raise WorkflowError(f"任务卡不存在：{source}")
+    record, parse_errors = parse_frontmatter(path, source, "任务卡")
+    if parse_errors:
+        raise WorkflowError("；".join(error.message for error in parse_errors))
+    if record is None:
+        raise WorkflowError(f"任务卡无法解析：{source}")
+    problems = validate_task_record(
+        source, record, configured_roles(root), task_id
+    )
+    if problems:
+        raise WorkflowError("；".join(problem.message for problem in problems))
+    return record, path, source
+
+
+def authorize_task_write(record, actor, action):
+    """核对写这张卡的人：完成只有承接角色，撤销限发起方与承接角色。
+
+    与 resolve_actor 同一个信任边界：工具无法自证调用者是谁，这些检查防的是
+    误用（角色越权改别人的卡），不是伪造。
+    """
+    assignee = record.get("assignee")
+    requester = record.get("requester")
+    if action == "complete" and actor != assignee:
+        raise WorkflowError(
+            f"只有承接角色「{assignee}」能写完成态：actor「{actor}」不能写这张卡"
+        )
+    if action == "cancel" and actor not in (assignee, requester):
+        raise WorkflowError(
+            f"只有承接角色「{assignee}」或发起方「{requester}」能撤销这张卡："
+            f"actor「{actor}」不能撤"
+        )
+
+
+def create_task(
+    root: Path,
+    assignee: str | None,
+    task: str | None,
+    acceptance: str | None,
+    title: str | None,
+    reference: str | None,
+    next_role: str | None,
+    terminal: str | None,
+    task_id: str | None,
+    actor_arg: str | None,
+):
+    """创建任务卡：一次派工一张卡，卡上写明验收、链边与终点。"""
+    root = ensure_instance(root)
+    actor = resolve_actor(root, actor_arg)
+    roles = configured_roles(root)
+
+    # 派工只有编排者能做：角色之间不自行开卡。
+    if actor != ORCHESTRATOR_ROLE:
+        raise WorkflowError(
+            f"派工只有编排者能做：actor「{actor}」不能建任务卡，"
+            f"请让编排者「{ORCHESTRATOR_ROLE}」派工"
+        )
+
+    assignee = required_text("承接角色", assignee)
+    if assignee not in roles:
+        raise WorkflowError(f"承接角色「{assignee}」必须是 roles.json 中的 role key")
+    if not roles[assignee]:
+        raise WorkflowError(f"承接角色「{assignee}」在 roles.json 里已停用")
+    task = required_text("任务详情", task)
+    acceptance = required_text("验收标准", acceptance)
+    title = optional_text(title) or task_title(task)
+    reference = optional_text(reference) or "-"
+    next_role = optional_text(next_role)
+    # 终点必填：链条停在哪是卡上的边界，缺了它就没人能判断这条链停没停。
+    # 链边可以留空——那是「链条到此为止」的写法，完成后通知编排者。
+    terminal = required_text("终点", terminal)
+    if next_role and next_role not in roles:
+        raise WorkflowError(f"链边「{next_role}」必须是 roles.json 中的 role key")
+
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat(timespec="microseconds")
+    explicit_id = optional_text(task_id)
+    if explicit_id:
+        if not TASK_ID_RE.fullmatch(explicit_id):
+            raise WorkflowError(
+                f"任务 ID「{explicit_id}」非法：必须形如 task-<小写字母数字>"
+            )
+        new_id = explicit_id
+    else:
+        new_id = derive_task_id(assignee, created_at, task)
+
+    ensure_local_directory(root, TASK_DIR)
+    path = root / TASK_DIR / f"{new_id}.md"
+    if path.exists():
+        raise WorkflowError(f"任务卡已存在：{task_card_source(new_id)}")
+
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": "task",
+        "task_id": new_id,
+        "title": title,
+        "requester": actor,
+        "assignee": assignee,
+        "created_at": created_at,
+        "state": "open",
+        "reference": reference,
+        "task": task,
+        "acceptance": acceptance,
+        "next": next_role,
+        "terminal": terminal,
+        "events": [
+            {
+                "action": "create",
+                "at": created_at,
+                "actor": actor,
+                "to_state": "open",
+            }
+        ],
+        "completed_at": None,
+        "result": None,
+        "cancel_reason": None,
+    }
+    problems = validate_task_record(
+        task_card_source(new_id), record, roles, new_id
+    )
+    if problems:
+        raise WorkflowError("；".join(problem.message for problem in problems))
+    write_atomic(path, render_task_card(record))
+    return new_id, assignee, task_card_source(new_id), actor
+
+
+def complete_task(
+    root: Path,
+    task_id: str,
+    result: str | None,
+    completed_at: str | None,
+    actor_arg: str | None,
+):
+    """完成任务卡：完成时间与结果一起写，缺一项就拒绝，不写半个完成态。"""
+    root = ensure_instance(root)
+    actor = resolve_actor(root, actor_arg)
+    record, path, source = load_task_card(root, task_id)
+    authorize_task_write(record, actor, "complete")
+    state = record.get("state")
+    result_text = optional_text(result)
+
+    if state == "done":
+        if result_text and result_text != record.get("result"):
+            raise WorkflowError(
+                f"任务卡「{record['task_id']}」已是完成态，不能改写结果"
+            )
+        # 幂等：重复完成不产生第二条完成事实，卡也不被重写。
+        return record["task_id"], "done", actor, False
+    if state == "cancelled":
+        raise WorkflowError(f"任务卡「{record['task_id']}」已撤销，不能完成")
+    if not result_text:
+        raise WorkflowError("完成任务卡必须给出结果：缺结果就写不出完成态")
+
+    if completed_at is None:
+        at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    else:
+        at = optional_text(completed_at)
+        if not at:
+            raise WorkflowError("完成时间不能为空：缺完成时间就写不出完成态")
+        if not valid_offset_time(at):
+            raise WorkflowError("完成时间必须是 offset-aware ISO 8601 时间")
+
+    events = list(record.get("events") or [])
+    events.append(
+        {
+            "action": "complete",
+            "at": at,
+            "actor": actor,
+            "from_state": "open",
+            "to_state": "done",
+        }
+    )
+    updated = dict(record)
+    updated["state"] = "done"
+    updated["completed_at"] = at
+    updated["result"] = result_text
+    updated["events"] = events
+    problems = validate_task_record(
+        source, updated, configured_roles(root), record["task_id"]
+    )
+    if problems:
+        raise WorkflowError("；".join(problem.message for problem in problems))
+    write_atomic(path, render_task_card(updated))
+    return record["task_id"], "done", actor, True
+
+
+def cancel_task(
+    root: Path,
+    task_id: str,
+    reason: str | None,
+    actor_arg: str | None,
+):
+    """撤销任务卡：撤销写回任务卡并留原因，重启后没人会把旧任务捞回来重做。"""
+    root = ensure_instance(root)
+    actor = resolve_actor(root, actor_arg)
+    record, path, source = load_task_card(root, task_id)
+    authorize_task_write(record, actor, "cancel")
+    state = record.get("state")
+    reason_text = optional_text(reason)
+
+    if state == "cancelled":
+        return record["task_id"], "cancelled", actor, False
+    if state == "done":
+        raise WorkflowError(f"任务卡「{record['task_id']}」已完成，不能撤销")
+    if not reason_text:
+        raise WorkflowError("撤销任务卡必须给出原因")
+
+    at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    events = list(record.get("events") or [])
+    events.append(
+        {
+            "action": "cancel",
+            "at": at,
+            "actor": actor,
+            "from_state": "open",
+            "to_state": "cancelled",
+            "reason": reason_text,
+        }
+    )
+    updated = dict(record)
+    updated["state"] = "cancelled"
+    updated["cancel_reason"] = reason_text
+    updated["events"] = events
+    problems = validate_task_record(
+        source, updated, configured_roles(root), record["task_id"]
+    )
+    if problems:
+        raise WorkflowError("；".join(problem.message for problem in problems))
+    write_atomic(path, render_task_card(updated))
+    return record["task_id"], "cancelled", actor, True
+
+
+def task_sort_key(task: dict):
+    created = parse_timestamp(task.get("created_at"))
+    return (
+        TASK_STATE_ORDER.get(task.get("state"), len(TASK_STATE_ORDER)),
+        created or datetime.min.replace(tzinfo=timezone.utc),
+        task.get("task_id") or "",
+    )
+
+
+def list_task_cards(root: Path, assignee: str | None, state: str | None):
+    """列出任务卡：可按承接角色与状态过滤。"""
+    root = ensure_instance(root)
+    assignee = optional_text(assignee)
+    state = optional_text(state)
+    if state and state not in TASK_STATES:
+        raise WorkflowError(f"状态「{state}」非法：必须是 {'、'.join(TASK_STATES)}")
+    roles = configured_roles(root)
+    if assignee and assignee not in roles:
+        raise WorkflowError(f"承接角色「{assignee}」必须是 roles.json 中的 role key")
+    tasks, errors = scan_task_cards(root)
+    if errors:
+        raise WorkflowError("；".join(error.message for error in errors))
+    selected = [
+        task
+        for task in tasks
+        if (not assignee or task.data.get("assignee") == assignee)
+        and (not state or task.data.get("state") == state)
+    ]
+    return sorted(selected, key=lambda task: task_sort_key(task.data))
+
+
+def show_task_card(root: Path, task_id: str):
+    """读单张任务卡的原文。"""
+    root = ensure_instance(root)
+    _record, path, _source = load_task_card(root, task_id)
+    return path.read_text(encoding="utf-8")
+
+
 # ---------- dashboard ----------
 
 
@@ -3340,123 +3890,6 @@ def parse_timestamp(value):
 
 def strip_code(text: str):
     return text.strip().strip("`").strip()
-
-
-def split_task_fields(text: str):
-    """把「发起方：gm | 任务：xxx」拆成字段字典。"""
-    fields = {}
-    for chunk in text.split("|"):
-        for separator in ("：", ":"):
-            if separator in chunk:
-                key, _, value = chunk.partition(separator)
-                fields[key.strip()] = value.strip()
-                break
-    return fields
-
-
-def parse_inbox_entry(line: str, role: str, source: str):
-    """解析一行派工条目；不是派工条目时返回 None。"""
-    stripped = line.strip()
-    if stripped.startswith("✅ - ["):
-        stripped = "- ✅ [" + stripped[len("✅ - [") :]
-    if not stripped.startswith("- "):
-        return None
-    body = stripped[2:].strip()
-    state = "open"
-    if body.startswith("✅"):
-        state = "done"
-        body = body[1:].strip()
-    elif body.startswith("⛔"):
-        state = "cancelled"
-        body = body[1:].strip()
-    start = body.find("[")
-    end = body.find("]", start + 1) if start >= 0 else -1
-    if start < 0 or end < 0:
-        return None
-    prefix = body[:start].strip()
-    requested_at = body[start + 1:end].strip()
-    fields = split_task_fields(body[end + 1:])
-    task = fields.get("任务")
-    if not task:
-        return None
-    completed_at = fields.get("完成时间") or None
-    result = fields.get("结果") or None
-    # 完成必须同时留下时间与结果；缺任一项都仍是开放任务，避免一个裸 ✅
-    # 把事实不完整的任务从待办范围里静默移走。
-    if state == "done" and (not completed_at or not result):
-        state = "open"
-        completed_at = None
-        result = None
-    reason = None
-    if state == "cancelled":
-        reason = prefix
-        if reason.startswith("已撤销"):
-            reason = reason[len("已撤销") :].strip()
-            reason = reason.lstrip("：:").strip()
-        reason = reason.rstrip("-—:： ").strip() or None
-    digest = hashlib.sha256(
-        "|".join([role, requested_at, task]).encode("utf-8")
-    ).hexdigest()
-    # 条目可以显式写「任务 ID」：同一任务改措辞或补验收时 ID 不会漂移。
-    # 没写时按角色 + 时间 + 任务文本派生，保持旧条目的稳定标识。
-    explicit = strip_code(fields.get("任务 ID", ""))
-    if re.fullmatch(r"task-[0-9a-z][0-9a-z-]{3,39}", explicit):
-        task_id = explicit
-    else:
-        task_id = f"task-{digest[:12]}"
-    reference = strip_code(fields.get("业务引用", "")) or None
-    return {
-        "task_id": task_id,
-        "role": role,
-        "requester": fields.get("发起方"),
-        "requested_at": requested_at,
-        "task": task,
-        "acceptance": fields.get("验收"),
-        "reference": reference,
-        "state": state,
-        "completed_at": completed_at,
-        "result": result,
-        "reason": reason,
-        "source_path": source,
-    }
-
-
-def task_sort_key(task: dict):
-    parsed = parse_timestamp(task.get("requested_at"))
-    return (
-        TASK_STATE_ORDER.get(task.get("state"), len(TASK_STATE_ORDER)),
-        0 if parsed is None else 1,
-        parsed or datetime.min.replace(tzinfo=timezone.utc),
-        task.get("task_id") or "",
-    )
-
-
-def scan_inbox_tasks(root: Path):
-    """读 inbox 队列：只有未标记的条目是待办，其余是历史。"""
-    inbox = root / INBOX_DIR
-    tasks = []
-    if inbox.is_symlink() or not inbox.is_dir():
-        return tasks
-    for path in sorted(inbox.glob("*.md")):
-        if path.is_symlink() or not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            continue
-        source = path.relative_to(root).as_posix()
-        in_fence = False
-        for line in text.splitlines():
-            if line.strip().startswith("```"):
-                in_fence = not in_fence
-                continue
-            # 收件箱头部有格式示例；围栏代码块里的是说明，不是派工条目。
-            if in_fence:
-                continue
-            entry = parse_inbox_entry(line, path.stem, source)
-            if entry is not None:
-                tasks.append(entry)
-    return sorted(tasks, key=task_sort_key)
 
 
 def scan_team(root: Path):
@@ -3602,6 +4035,33 @@ def metric_summary_text(record: dict, catalog: dict, windows: list):
     return "；".join(parts)
 
 
+def dashboard_task_entry(task: TaskRecord):
+    """看板任务契约：开放任务与已完成事实都来自任务卡。
+
+    只带元数据：任务详情正文留在卡上，看板只带标题、验收与完成事实。
+    """
+    data = task.data
+    return {
+        "task_id": data.get("task_id"),
+        "title": data.get("title"),
+        "role": data.get("assignee"),
+        "assignee": data.get("assignee"),
+        "requester": data.get("requester"),
+        "created_at": data.get("created_at"),
+        "requested_at": data.get("created_at"),
+        "task": data.get("title"),
+        "acceptance": data.get("acceptance"),
+        "reference": data.get("reference"),
+        "next": data.get("next"),
+        "terminal": data.get("terminal"),
+        "state": data.get("state"),
+        "completed_at": data.get("completed_at"),
+        "result": data.get("result"),
+        "reason": data.get("cancel_reason"),
+        "source_path": task.source,
+    }
+
+
 def dashboard_as_of(contents: list, publications: list, tasks: list, growth: GrowthScan):
     """数据截止时间取所有记录时间的最大值，保证同一份数据算出同一个值。"""
     candidates = []
@@ -3612,7 +4072,9 @@ def dashboard_as_of(contents: list, publications: list, tasks: list, growth: Gro
             [entry.get("created_at"), entry.get("planned_at"), entry.get("published_at")]
         )
     for task in tasks:
-        candidates.append(task.get("requested_at"))
+        candidates.extend(
+            [task.get("created_at"), task.get("completed_at")]
+        )
     for windows in growth.publication_metrics.values():
         for window in windows:
             candidates.append(window.get("observed_at"))
@@ -3801,7 +4263,14 @@ def build_dashboard_payload(
             }
         )
 
-    tasks = scan_inbox_tasks(root)
+    task_records, task_errors = scan_task_cards(root)
+    errors.extend(task_errors)
+    tasks = [
+        dashboard_task_entry(task)
+        for task in sorted(
+            task_records, key=lambda item: task_sort_key(item.data)
+        )
+    ]
     as_of_text = dashboard_as_of(contents, publication_entries, tasks, growth)
     as_of = parse_timestamp(as_of_text)
     return {
@@ -3974,6 +4443,63 @@ def build_parser():
 
     subparsers.add_parser("validate", help="校验 canonical 内容卡")
     subparsers.add_parser("build", help="校验并原子生成选题日历")
+
+    create_task_parser = subparsers.add_parser(
+        "create-task",
+        help="创建任务卡：一次派工一张卡",
+    )
+    create_task_parser.add_argument("--assignee", required=True, help="承接角色")
+    create_task_parser.add_argument("--task", required=True, help="任务详情正文")
+    create_task_parser.add_argument("--acceptance", help="验收标准（必填）")
+    create_task_parser.add_argument("--title", help="任务卡标题；默认取任务详情第一行")
+    create_task_parser.add_argument("--reference", help="业务引用；没有则填 -")
+    create_task_parser.add_argument("--next", help="链边：完成后交给谁；留空表示链条到此为止")
+    create_task_parser.add_argument("--terminal", help="终点：链条停在哪（必填）")
+    create_task_parser.add_argument(
+        "--task-id",
+        help="显式任务 ID；默认按承接角色 + 时间 + 任务文本派生",
+    )
+    create_task_parser.add_argument(
+        "--actor",
+        help="roles.json 中的 role key；默认取 OPC_ROLE 或 content",
+    )
+
+    complete_task_parser = subparsers.add_parser(
+        "complete-task",
+        help="完成任务卡：完成时间与结果一起写",
+    )
+    complete_task_parser.add_argument("task_id", help="任务 ID")
+    complete_task_parser.add_argument("--result", help="完成结果")
+    complete_task_parser.add_argument(
+        "--completed-at",
+        help="完成时间（offset-aware ISO 8601）；默认取当前时间",
+    )
+    complete_task_parser.add_argument(
+        "--actor",
+        help="roles.json 中的 role key；默认取 OPC_ROLE 或 content",
+    )
+
+    cancel_task_parser = subparsers.add_parser(
+        "cancel-task",
+        help="撤销任务卡：撤销写回任务卡并留原因",
+    )
+    cancel_task_parser.add_argument("task_id", help="任务 ID")
+    cancel_task_parser.add_argument("--reason", help="撤销原因")
+    cancel_task_parser.add_argument(
+        "--actor",
+        help="roles.json 中的 role key；默认取 OPC_ROLE 或 content",
+    )
+
+    list_tasks_parser = subparsers.add_parser("list-tasks", help="列出任务卡")
+    list_tasks_parser.add_argument("--assignee", help="只看某个承接角色的任务")
+    list_tasks_parser.add_argument(
+        "--state",
+        choices=TASK_STATES,
+        help="只看某个状态的任务",
+    )
+
+    show_task_parser = subparsers.add_parser("show-task", help="读单张任务卡")
+    show_task_parser.add_argument("task_id", help="任务 ID")
     return parser
 
 
@@ -4086,6 +4612,64 @@ def main(argv=None):
             return 0
         if args.command == "validate":
             return validate_content(root)
+        if args.command == "create-task":
+            task_id, assignee, path, actor = create_task(
+                root,
+                args.assignee,
+                args.task,
+                args.acceptance,
+                args.title,
+                args.reference,
+                args.next,
+                args.terminal,
+                args.task_id,
+                args.actor,
+            )
+            print(f"已创建 {task_id}（assignee={assignee}）：{path}")
+            return 0
+        if args.command == "complete-task":
+            task_id, state, actor, changed = complete_task(
+                root,
+                args.task_id,
+                args.result,
+                args.completed_at,
+                args.actor,
+            )
+            print(
+                f"已更新 {task_id} → {state}（actor={actor}）"
+                if changed
+                else f"{task_id} 已是 {state}，未重复写入（actor={actor}）"
+            )
+            return 0
+        if args.command == "cancel-task":
+            task_id, state, actor, changed = cancel_task(
+                root,
+                args.task_id,
+                args.reason,
+                args.actor,
+            )
+            print(
+                f"已更新 {task_id} → {state}（actor={actor}）"
+                if changed
+                else f"{task_id} 已是 {state}，未重复写入（actor={actor}）"
+            )
+            return 0
+        if args.command == "list-tasks":
+            tasks = list_task_cards(root, args.assignee, args.state)
+            for task in tasks:
+                data = task.data
+                print(
+                    "{}  {}  {}  {}".format(
+                        data.get("task_id", ""),
+                        data.get("state", ""),
+                        data.get("assignee", ""),
+                        data.get("title", ""),
+                    )
+                )
+            return 0
+        if args.command == "show-task":
+            sys.stdout.write(show_task_card(root, args.task_id))
+            return 0
         if args.command == "build":
             return build_calendar(root)
     except WorkflowError as error:
