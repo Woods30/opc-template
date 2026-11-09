@@ -328,6 +328,21 @@ class LintTestCase(unittest.TestCase):
         for phrase in ("写作四步", "提纲.md", "配图/"):
             self.assertIn(phrase, text, phrase)
 
+    def test_gm_brief_lists_the_same_wake_triggers_as_shared_rules(self):
+        """gm 简报与公司规约的唤醒触发条数必须一致。
+
+        根规约写四种触发（含定时抓取完成的唤醒消息），角色简报若还写「三种」，
+        gm 读到抓取唤醒就会当成「不在我该醒的情况」——两份文件运行时都在上下文里，
+        说的不是同一件事。
+        """
+        shared = read_rules("AGENTS.md")
+        brief = read_rules("agents/gm/AGENTS.md")
+        self.assertIn("定时抓取完成的唤醒消息", shared)
+        self.assertIn("四种", shared)
+        self.assertIn("定时抓取完成的唤醒消息", brief)
+        self.assertIn("四种", brief)
+        self.assertNotIn("你只在三种", brief)
+
     def test_topic_pool_seed_is_declared_and_url_free(self):
         with open(rules_file("install-manifest.json"), encoding="utf-8") as fh:
             manifest = json.load(fh)
