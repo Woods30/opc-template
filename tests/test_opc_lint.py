@@ -304,6 +304,9 @@ class LintTestCase(unittest.TestCase):
         self.assertIn("不内置任何具体站点", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
+        self.assertIn("谁来过滤", text)
+        self.assertIn("抓取脚本", text)
+        self.assertIn("零接触", text)
 
     def test_knowledge_writing_skill_declares_writing_four_steps(self):
         # 写作四步与产物槽位是模版约定：技能里必须写清四步、两个固定落点，
