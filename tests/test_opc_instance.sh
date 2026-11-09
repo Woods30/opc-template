@@ -656,6 +656,22 @@ else
   ok "实例 lint 不查角色内容规则"
 fi
 
+# 9g. 流水线契约与分工断言（issue #34）
+if grep -q "第四类" "$E2E/AGENTS.md" 2>/dev/null; then
+  expect "实例 AGENTS.md 包含第四类触发" grep -q "第四类" "$E2E/AGENTS.md"
+fi
+expect "实例 topic-source 技能包含谁来过滤小节" grep -q "谁来过滤" "$E2E/skills/topic-source/SKILL.md"
+expect "实例 topic-source 技能包含抓取脚本与零接触" grep -q "抓取脚本" "$E2E/skills/topic-source/SKILL.md"
+if grep -q "提纲.md" "$E2E/skills/knowledge-writing/SKILL.md" 2>/dev/null; then
+  expect "实例 knowledge-writing 技能包含提纲.md" grep -q "提纲.md" "$E2E/skills/knowledge-writing/SKILL.md"
+fi
+if grep -q "配图/" "$E2E/skills/knowledge-writing/SKILL.md" 2>/dev/null; then
+  expect "实例 knowledge-writing 技能包含配图/" grep -q "配图/" "$E2E/skills/knowledge-writing/SKILL.md"
+fi
+if grep -q "标题" "$E2E/agents/content/AGENTS.md" 2>/dev/null && grep -q "提纲" "$E2E/agents/content/AGENTS.md" 2>/dev/null; then
+  expect "实例 content 简报包含写作步骤" grep -q "提纲" "$E2E/agents/content/AGENTS.md"
+fi
+
 # owner 改过角色简报也不该被实例 lint 拦：内容归 owner 管
 lint_out="$("$UP/scripts/opc-lint.sh" 2>&1)"
 rc=$?

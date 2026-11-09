@@ -304,6 +304,29 @@ class LintTestCase(unittest.TestCase):
         self.assertIn("不内置任何具体站点", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
+        self.assertIn("谁来过滤", text)
+        self.assertIn("抓取脚本", text)
+        self.assertIn("零接触", text)
+
+    def test_knowledge_writing_skill_declares_writing_four_steps(self):
+        # 写作四步与产物槽位是模版约定：技能里必须写清四步、两个固定落点，
+        # 以及标题在提纲确认时写进内容卡 title。
+        text = read_rules("skills/knowledge-writing/SKILL.md")
+        for phrase in (
+            "写作四步",
+            "knowledge/content/<content_id>/提纲.md",
+            "knowledge/content/<content_id>/主稿.md",
+            "knowledge/content/<content_id>/配图/",
+            "提纲确认",
+            "title",
+        ):
+            self.assertIn(phrase, text, phrase)
+
+    def test_content_rules_reference_writing_four_steps(self):
+        # content 规约要指向这套流程，不复制全文。
+        text = read_rules("agents/content/AGENTS.md")
+        for phrase in ("写作四步", "提纲.md", "配图/"):
+            self.assertIn(phrase, text, phrase)
 
     def test_topic_pool_seed_is_declared_and_url_free(self):
         with open(rules_file("install-manifest.json"), encoding="utf-8") as fh:
