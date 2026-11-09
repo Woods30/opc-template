@@ -304,6 +304,9 @@ class LintTestCase(unittest.TestCase):
         self.assertIn("不内置任何具体站点", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
+        self.assertIn("谁来过滤", text)
+        self.assertIn("抓取脚本", text)
+        self.assertIn("零接触", text)
 
     def test_topic_pool_seed_is_declared_and_url_free(self):
         with open(rules_file("install-manifest.json"), encoding="utf-8") as fh:
